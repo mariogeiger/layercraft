@@ -56,6 +56,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
         width,
         closed: true,
         points: start_near(contour.clone(), back_right(outline)),
+        travel_inside: false,
     };
     // The outer wall's shapes are the islands; without walls, the infill's shapes are.
     let mut islands: Vec<Island> = match layer.walls.first() {
@@ -127,7 +128,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                island.infill.push(Path { role, width, closed: false, points: line });
+                island.infill.push(Path { role, width, closed: false, points: line, travel_inside: false });
             }
         }
         areas.push(Fill { role, reach, max_link: 3.0 * spacing });

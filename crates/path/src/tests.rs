@@ -32,6 +32,7 @@ fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
         first_layer_shrink: 0.0,
         first_layer_width: 0.4,
         one_wall_on_top: false,
+        sparse_gap: 4.0,
     };
     let regions = split(&sections, &params).unwrap();
     let paths = trace(&regions, &PATHS).unwrap();
@@ -138,8 +139,9 @@ fn sparse_beads_never_cross_on_a_layer() {
 }
 
 #[test]
-fn neighbouring_lines_join_into_one_bead() {
+fn moves_between_neighbouring_lines_stay_inside() {
     let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
     let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::Solid).collect();
-    assert!(solid.len() <= 2, "{} separate solid beads", solid.len());
+    let outside = solid.iter().skip(1).filter(|p| !p.travel_inside).count();
+    assert!(outside <= 1, "{outside} of {} moves leave the part", solid.len());
 }

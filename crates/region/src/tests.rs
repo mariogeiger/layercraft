@@ -16,6 +16,7 @@ const PARAMS: RegionParams = RegionParams {
     first_layer_shrink: 0.0,
     first_layer_width: 0.4,
     one_wall_on_top: false,
+    sparse_gap: 2.0,
 };
 
 /// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
@@ -108,4 +109,22 @@ fn the_first_layer_is_wider_and_the_top_has_one_wall() {
     let side = 10.0 - 2.0 * (0.2 + s / 2.0);
     assert!(close(area(&top.top_surface), side * side), "{}", area(&top.top_surface));
     assert_eq!(regions.layers[8].walls.len(), 2);
+}
+
+#[test]
+fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
+    // A wide block whose top shells start early over a narrow step: the step's ring over the
+    // sparse infill below is 1 mm wide, under the 2 mm gap between sparse lines.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("base", [0.0; 3], [20.0, 20.0, 2.0]),
+            cuboid("step", [0.0, 0.0, 2.0], [20.0, 1.9, 3.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &PARAMS).unwrap();
+    for layer in &regions.layers {
+        let a = area(&layer.bridge);
+        assert!(a == 0.0 || a > 10.0, "layer {}: a {a} mm² sliver of bridge", layer.index);
+    }
 }

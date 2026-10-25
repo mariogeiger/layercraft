@@ -320,7 +320,15 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
         for (k, path) in layer.paths.iter().enumerate() {
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
-            s.go_to(p, start, layer.top, k == 0);
+            if path.travel_inside && k > 0 {
+                // Inside the part from the last bead: straight there, nothing pulled back.
+                s.deretract(p);
+                s.travel([start[0], start[1], layer.top], p.travel.speed);
+                s.bead.clear();
+                s.bead.push(s.at);
+            } else {
+                s.go_to(p, start, layer.top, k == 0);
+            }
             if s.feature != Some((path.role, path.width)) {
                 s.ops.push(Op::Feature { role: path.role, width: path.width });
                 s.feature = Some((path.role, path.width));

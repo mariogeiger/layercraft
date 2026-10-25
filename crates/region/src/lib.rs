@@ -5,7 +5,9 @@
 //! `A_i` is sparse infill when the solid continues for `top_layers` layers above it and
 //! `bottom_layers` below it; otherwise it is solid. The part of `A_i` not covered by layer
 //! `i + 1` is the top surface, the one exposed to the air. Solid or top that the layer below
-//! does not hold up — over its sparse infill or over air — is a bridge, laid as hanging strands.
+//! does not hold up is a bridge, laid as hanging strands: over air, wherever it is wider than a
+//! bead; over sparse infill, only where it is wide enough to span a gap between the sparse
+//! lines (`sparse_gap`) — a narrower band rests on them.
 //! The first layer's beads are wider, to grip the bed; a layer that is all top surface keeps
 //! only its outer wall when `one_wall_on_top`, and the top surface reaches it.
 #![deny(
@@ -38,6 +40,8 @@ pub struct RegionParams {
     pub first_layer_width: f64,
     /// A layer that is all top surface gets only its outer wall.
     pub one_wall_on_top: bool,
+    /// The distance between the sparse infill's lines: the gap a strand over it must span.
+    pub sparse_gap: f64,
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
@@ -94,6 +98,9 @@ fn check(params: &RegionParams) -> Result<(), RegionError> {
     {
         return Err(RegionError::BadParams("wall widths must be 0.05 to 3 mm".into()));
     }
+    if !params.sparse_gap.is_finite() || params.sparse_gap < 0.0 {
+        return Err(RegionError::BadParams("sparse gap must be finite and not negative".into()));
+    }
     if params.walls > 50 || params.top_layers > 200 || params.bottom_layers > 200 {
         return Err(RegionError::BadParams("too many walls or shell layers".into()));
     }
@@ -128,6 +135,15 @@ fn walls_depth(w: Widths, n: usize, h: f64) -> f64 {
         0 => 0.0,
         n => w.outer / 2.0 + outer / 2.0 + (n - 1) as f64 * inner,
     }
+}
+
+/// The region without its parts narrower than `2r`: shrunk by `r`, then grown back.
+fn opening(region: &Region, r: f64) -> Result<Region, GeomError> {
+    if r <= 0.0 || region.is_empty() {
+        return Ok(region.clone());
+    }
+    let core = offset(region, -r)?;
+    intersection(&offset(&core, r)?, region)
 }
 
 /// The intersection of the sections `from..from + count`, empty when one is missing.
@@ -180,19 +196,21 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         let deep = intersection(&intersection(&inside, &above)?, &below)?;
         let shells = difference(&inside, &deep)?;
         let solid = difference(&shells, &top_surface)?;
-        // What holds a layer up: the layer below, except where it is sparse (or the bed).
-        let support = match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
-            (Some(below), Some(previous)) => Some(difference(below, &previous.sparse)?),
-            _ => None,
+        // What is not held up from below: over air (the layer below is absent) and over
+        // its sparse infill. Only the parts wide enough to need hanging strands are bridges.
+        let filled = union(&solid, &top_surface)?;
+        let bridge = match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
+            (Some(below), Some(previous)) => {
+                let width = widths.inner.max(widths.outer);
+                let over_air = opening(&difference(&filled, below)?, width / 2.0)?;
+                let over_sparse =
+                    opening(&intersection(&filled, &previous.sparse)?, params.sparse_gap / 2.0)?;
+                union(&over_air, &over_sparse)?
+            }
+            _ => Vec::new(),
         };
-        let (bridge, solid, top_surface) = match support {
-            Some(support) => (
-                difference(&union(&solid, &top_surface)?, &support)?,
-                intersection(&solid, &support)?,
-                intersection(&top_surface, &support)?,
-            ),
-            None => (Vec::new(), union(&solid, &Vec::new())?, top_surface),
-        };
+        let solid = difference(&solid, &bridge)?;
+        let top_surface = difference(&top_surface, &bridge)?;
         layers.push(RegionLayer {
             index: layer.index,
             top: layer.top,

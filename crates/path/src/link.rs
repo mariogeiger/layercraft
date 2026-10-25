@@ -1,9 +1,10 @@
-//! Joining consecutive infill lines into one bead along the area's edge, so the nozzle draws a
-//! zigzag instead of lifting, travelling and landing between every pair of lines.
+//! Marking the moves between neighbouring infill lines that stay inside the part, so the nozzle
+//! goes from one line to the next without retracting or lifting. The move lays no plastic: the
+//! area's density stays what the spacing gives, with nothing doubled along its edge.
 //!
-//! Two lines join when the gap between the end of one and the start of the next is short (a
-//! few line spacings, as between neighbouring hatch lines) and the joining segment stays inside
-//! the area: it may run along its edge, never across a hole or out of a concave corner.
+//! A move qualifies when it is short (a few line spacings, as between neighbouring hatch lines)
+//! and stays inside the area: it may run along its edge, never across a hole or out of a
+//! concave corner.
 
 use crate::Path;
 use crate::Role;
@@ -67,31 +68,16 @@ fn inside(region: &Region, a: Point, b: Point) -> bool {
         && covers(region, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
 }
 
-/// Joins consecutive lines of `paths` (in printing order, all of `fill`'s role) where it can.
-pub fn link(paths: Vec<Path>, fill: &Fill) -> Vec<Path> {
-    let mut out: Vec<Path> = Vec::with_capacity(paths.len());
-    for path in paths {
-        let joined = match out.last_mut() {
-            Some(previous) if !previous.closed && !path.closed && previous.width == path.width => {
-                match (previous.points.last().copied(), path.points.first().copied()) {
-                    (Some(a), Some(b)) => {
-                        let gap = (b[0] - a[0]).hypot(b[1] - a[1]);
-                        if gap <= fill.max_link && (gap < EPS || inside(&fill.reach, a, b)) {
-                            let skip = usize::from(gap < EPS);
-                            previous.points.extend(path.points.iter().skip(skip).copied());
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }
-            }
-            _ => false,
-        };
-        if !joined {
-            out.push(path);
+/// Marks the lines of `paths` (in printing order, all of `fill`'s role) reached from the line
+/// before by a move inside the area.
+pub fn link(mut paths: Vec<Path>, fill: &Fill) -> Vec<Path> {
+    let mut end: Option<Point> = None;
+    for path in &mut paths {
+        if let (Some(a), Some(&b)) = (end, path.points.first()) {
+            let gap = (b[0] - a[0]).hypot(b[1] - a[1]);
+            path.travel_inside = gap <= fill.max_link && (gap < EPS || inside(&fill.reach, a, b));
         }
+        end = if path.closed { path.points.first().copied() } else { path.points.last().copied() };
     }
-    out
+    paths
 }

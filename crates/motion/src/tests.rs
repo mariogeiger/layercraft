@@ -46,6 +46,7 @@ fn line(len: f64) -> Paths {
         width: 0.4,
         closed: false,
         points: vec![[10.0, 10.0], [10.0 + len, 10.0]],
+        travel_inside: false,
     };
     Paths {
         layers: vec![
@@ -160,9 +161,15 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
         width: 0.4,
         closed: true,
         points: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
+        travel_inside: false,
     };
-    let bridge =
-        Path { role: Role::Bridge, width: 0.4, closed: false, points: vec![[10.0, 10.0], [20.0, 10.0]] };
+    let bridge = Path {
+        role: Role::Bridge,
+        width: 0.4,
+        closed: false,
+        points: vec![[10.0, 10.0], [20.0, 10.0]],
+        travel_inside: false,
+    };
     let paths = Paths {
         layers: vec![
             PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![square.clone()] },
@@ -188,4 +195,34 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
     let flat = (0.4 - 0.2) * 0.2 + std::f64::consts::PI * 0.01;
     let expected = 0.98 * (2.0 * flat * 39.94 + round * 10.0) / filament_area;
     assert!((program.summary.filament_mm - expected).abs() < 1e-9, "{}", program.summary.filament_mm);
+}
+
+#[test]
+fn a_move_inside_the_part_neither_retracts_nor_lifts() {
+    let line = |y: f64, inside: bool| Path {
+        role: Role::Solid,
+        width: 0.4,
+        closed: false,
+        points: vec![[10.0, y], [20.0, y]],
+        travel_inside: inside,
+    };
+    let paths = Paths {
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.2,
+            height: 0.2,
+            paths: vec![line(10.0, false), line(15.0, true)],
+        }],
+    };
+    let program = compile(&paths, &params(), &scope()).unwrap();
+    let after_first = program.ops.iter().position(|op| matches!(op, Op::Extrude { .. })).unwrap();
+    let between: Vec<&Op> = program.ops[after_first..]
+        .iter()
+        .skip_while(|op| matches!(op, Op::Extrude { .. }))
+        .take_while(|op| !matches!(op, Op::Extrude { .. }))
+        .collect();
+    assert!(
+        between.iter().all(|op| !matches!(op, Op::Retract { .. } | Op::Lift { .. } | Op::Wipe { .. })),
+        "{between:?}"
+    );
 }

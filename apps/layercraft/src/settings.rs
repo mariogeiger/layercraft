@@ -190,6 +190,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             first_layer_shrink: m.number(Process, "elefant_foot_compensation").unwrap_or(0.0),
             first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
             one_wall_on_top: m.number(Process, "only_one_wall_top").unwrap_or(0.0) > 0.0,
+            // The path stage lays sparse lines this far apart, one direction per layer.
+            sparse_gap: match fraction(m, Process, "sparse_infill_density")? {
+                d if d > 0.0 => layercraft_geom::bead_spacing(sparse_width, layer_height) / d,
+                _ => 0.0,
+            },
         },
         path: PathParams {
             outer_wall_width: outer,

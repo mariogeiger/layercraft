@@ -4,8 +4,8 @@
 //! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
 //! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
 //! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
-//! wide, side by side. Hatch lines lie on a fixed grid, so layers stack, and neighbouring lines
-//! join into zigzags along the area's edge. Each island is printed whole — inner walls, outer
+//! wide, side by side. Hatch lines lie on a fixed grid, so layers stack; the move between
+//! neighbouring lines is marked as staying inside the part, so it needs no retraction. Each island is printed whole — inner walls, outer
 //! wall, then its infill — and islands follow each other nearest first. The first layer's beads
 //! are all `first_layer_width` wide.
 #![deny(
@@ -45,6 +45,9 @@ pub struct Path {
     pub width: f64,
     pub closed: bool,
     pub points: Vec<Point>,
+    /// The move here from the previous bead stays inside the part: no need to retract or lift.
+    #[serde(default)]
+    pub travel_inside: bool,
 }
 
 /// The beads of one layer, in printing order.

@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.1
+
+### Fixed
+
+- Bridges only where a strand must span something: over air wider than a bead, over sparse
+  infill wider than the gap between its lines. The stamp's bridges fall from 74 to 28 mm.
+- Infill lines no longer lay plastic along the area's edge between them: the move from one
+  line to the next stays inside the part, without retracting or lifting, so the density is
+  what the spacing gives. The 20 mm square now takes 341 mm of filament, Bambu Studio 344.
+
 ## 0.2.0
 
 ### Added
