@@ -1,16 +1,51 @@
-//! Boolean operations, offsets and line clipping on regions, through `i_overlay`'s i64 engine.
+//! Boolean operations, offsets and line clipping on regions, in integer nanometres.
+//!
+//! Coordinates go onto one global lattice of `GRID_MM` (integers in nanometres, origin at
+//! zero) and `i_overlay`'s integer engine works there exactly. Every result lies on that lattice,
+//! so two results agree bit for bit where they meet, and two consecutive points of a contour are
+//! at least a lattice step apart.
 
 use crate::{GeomError, Point, Polyline, Region, check_points, check_value, signed_area};
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::clip::FloatClip;
-use i_overlay::float::single::SingleFloatOverlay;
-use i_overlay::mesh::float::outline::offset::OutlineOffset;
-use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
-use i_overlay::string::clip::ClipRule;
+use i_overlay::core::single::SingleIntOverlay;
+use i_overlay::i_float::int::angle::Angle;
+use i_overlay::i_float::int::point::IntPoint;
+use i_overlay::mesh::int::outline::offset::IntOutlineOffset;
+use i_overlay::mesh::int::style::{IntLineJoin, IntOutlineStyle};
+use i_overlay::string::clip::{ClipRule, IntClip};
+
+/// The lattice every result lies on, in mm: a nanometre, a thousandth of a printer's finest
+/// step, and the distance under which CAD programs such as SolidCraft weld points.
+pub const GRID_MM: f64 = 1e-6;
+/// Lattice steps per millimetre.
+const STEPS: f64 = 1e6;
 
 /// The smallest interior angle kept sharp by an offset; sharper corners are clipped (radians).
 const MITER_MIN_ANGLE: f64 = 0.1;
+
+type Lattice = IntPoint<i64>;
+
+fn to_lattice(p: &Point) -> Lattice {
+    // Checked inputs are within LIMIT_MM, so the steps fit an i64 with room to spare.
+    IntPoint::new((p[0] * STEPS).round() as i64, (p[1] * STEPS).round() as i64)
+}
+
+fn from_lattice(q: &Lattice) -> Point {
+    [q.x as f64 / STEPS, q.y as f64 / STEPS]
+}
+
+fn contours_to_lattice(contours: &[Vec<Point>]) -> Vec<Vec<Lattice>> {
+    contours.iter().map(|c| c.iter().map(to_lattice).collect()).collect()
+}
+
+fn region_to_lattice(region: &Region) -> Vec<Vec<Vec<Lattice>>> {
+    region.iter().map(|shape| contours_to_lattice(shape)).collect()
+}
+
+fn region_from_lattice(shapes: Vec<Vec<Vec<Lattice>>>) -> Region {
+    shapes.iter().map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect()).collect()
+}
 
 fn check_region(region: &Region) -> Result<(), GeomError> {
     check_points(region.iter().flatten())
@@ -30,8 +65,8 @@ pub fn winding_region(contours: &[Vec<Point>]) -> Result<Region, GeomError> {
 
 fn fill(contours: &[Vec<Point>], rule: FillRule) -> Result<Region, GeomError> {
     check_points(contours)?;
-    let empty: Vec<Vec<Point>> = Vec::new();
-    Ok(contours.to_vec().overlay_as::<i64>(&empty, OverlayRule::Subject, rule))
+    let empty: Vec<Vec<Lattice>> = Vec::new();
+    Ok(region_from_lattice(contours_to_lattice(contours).overlay(&empty, OverlayRule::Subject, rule)))
 }
 
 /// The union of two regions.
@@ -52,21 +87,26 @@ pub fn intersection(a: &Region, b: &Region) -> Result<Region, GeomError> {
 fn boolean(a: &Region, b: &Region, rule: OverlayRule) -> Result<Region, GeomError> {
     check_region(a)?;
     check_region(b)?;
-    Ok(a.overlay_as::<i64>(b, rule, FillRule::NonZero))
+    let (a, b) = (region_to_lattice(a), region_to_lattice(b));
+    Ok(region_from_lattice(a.overlay(&b, rule, FillRule::NonZero)))
 }
 
 /// The region grown by `distance` (shrunk when negative), with mitred corners.
 pub fn offset(region: &Region, distance: f64) -> Result<Region, GeomError> {
     check_region(region)?;
     check_value(distance)?;
+    let steps = (distance * STEPS).round() as i64;
     if region.is_empty() {
         return Ok(Vec::new());
     }
-    if distance == 0.0 {
+    if steps == 0 {
         return Ok(region.clone());
     }
-    let style = OutlineStyle::new(distance).line_join(LineJoin::Miter(MITER_MIN_ANGLE));
-    Ok(region.outline_as::<i64>(&style))
+    let angle = Angle::from_radians(MITER_MIN_ANGLE).ok_or(GeomError::Engine("miter angle".into()))?;
+    let style = IntOutlineStyle::new(steps).line_join(IntLineJoin::Miter(angle));
+    let shapes =
+        region_to_lattice(region).outline(&style).map_err(|e| GeomError::Engine(format!("{e:?}")))?;
+    Ok(region_from_lattice(shapes))
 }
 
 /// The pieces of `lines` that lie inside `region`.
@@ -77,7 +117,9 @@ pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, 
         return Ok(Vec::new());
     }
     let rule = ClipRule { invert: false, boundary_included: false };
-    Ok(lines.to_vec().clip_by_as::<i64>(region, FillRule::NonZero, rule))
+    let paths = contours_to_lattice(lines);
+    let pieces = region_to_lattice(region).clip_paths(&paths, FillRule::NonZero, rule);
+    Ok(pieces.iter().map(|p| p.iter().map(from_lattice).collect()).collect())
 }
 
 /// The area of a region: outer contours count positive, holes negative.

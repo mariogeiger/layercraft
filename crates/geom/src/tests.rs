@@ -56,3 +56,34 @@ fn hostile_coordinates_are_refused() {
     assert!(matches!(union_contours(&[far]), Err(GeomError::OutOfRange(_))));
     assert!(offset(&Vec::new(), f64::INFINITY).is_err());
 }
+
+#[test]
+fn results_lie_on_the_lattice_with_distinct_points() {
+    // A rotated, irregular star and its offsets make many intersection points.
+    let star: Vec<Point> = (0..40)
+        .map(|i| {
+            let a = i as f64 * std::f64::consts::TAU / 40.0 + 0.123;
+            let r = if i % 2 == 0 { 10.0 } else { 3.7 + 0.01 * i as f64 };
+            [128.3 + r * a.cos(), 127.9 + r * a.sin()]
+        })
+        .collect();
+    let region = union_contours(&[star]).unwrap();
+    let ring = difference(&offset(&region, 0.37).unwrap(), &offset(&region, -0.21).unwrap()).unwrap();
+    let lines = vec![vec![[100.0, 128.0], [160.0, 128.33333333]]];
+    let clipped = clip_lines(&lines, &ring).unwrap();
+    let contours = ring.iter().flatten().map(|c| (c, true));
+    for (points, closed) in contours.chain(clipped.iter().map(|l| (l, false))) {
+        for p in points {
+            for v in p {
+                let units = v / GRID_MM;
+                assert!((units - units.round()).abs() < 1e-3, "{v} is off the lattice");
+            }
+        }
+        let n = points.len();
+        let steps = if closed { n } else { n - 1 };
+        for i in 0..steps {
+            let (a, b) = (points[i], points[(i + 1) % n]);
+            assert!((a[0] - b[0]).hypot(a[1] - b[1]) >= GRID_MM * 0.999, "repeated point {a:?}");
+        }
+    }
+}

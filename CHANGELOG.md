@@ -2,7 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
-## Unreleased
+## 0.1.1
+
+### Fixed
+
+- Sections, regions and toolpaths no longer hold repeated points: every geometric operation
+  works in integer nanometres on one lattice anchored at the origin, so consecutive points are
+  at least a nanometre apart and results from different operations meet exactly.
+
+## 0.1.0
 
 ### Added
 

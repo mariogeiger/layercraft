@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{area, signed_area};
+use layercraft_geom::{GRID_MM, area, polyline_length, signed_area};
 use layercraft_mesh::solids::{cuboid, prism, rounded_rectangle};
 
 const LAYERING: Layering = Layering { first_layer_height: 0.2, layer_height: 0.2 };
@@ -53,8 +53,12 @@ fn the_stamp_block_has_its_rounded_area() {
     let exact = signed_area(&outline);
     let expected_limit = 288.0 - (4.0 - std::f64::consts::PI) * 9.0;
     assert!((exact - expected_limit).abs() < 0.01);
+    // Snapping to the nanometre lattice moves each vertex by at most half a step on each axis.
+    let mut closed = outline.clone();
+    closed.push(outline[0]);
+    let snap = polyline_length(&closed) * GRID_MM;
     for layer in &sections.layers {
-        assert!((area(&layer.region) - exact).abs() < 1e-9);
+        assert!((area(&layer.region) - exact).abs() < snap, "{}", area(&layer.region) - exact);
     }
 }
 

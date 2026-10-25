@@ -4,6 +4,7 @@
 //! its holes (clockwise). Every operation goes through `i_overlay`'s integer engine, so the
 //! results are topologically valid whatever the input. Inputs are checked first: coordinates
 //! must be finite and inside `LIMIT_MM`, which keeps the engine away from its panicking paths.
+//! Results lie on a nanometre lattice (`GRID_MM`).
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -15,7 +16,9 @@
 
 mod ops;
 
-pub use ops::{area, clip_lines, difference, intersection, offset, union, union_contours, winding_region};
+pub use ops::{
+    GRID_MM, area, clip_lines, difference, intersection, offset, union, union_contours, winding_region,
+};
 
 /// A point in the plane, in millimetres.
 pub type Point = [f64; 2];
@@ -38,6 +41,8 @@ pub enum GeomError {
     NonFinite,
     /// A coordinate or distance was beyond `LIMIT_MM`.
     OutOfRange(f64),
+    /// The overlay engine refused the input on its lattice.
+    Engine(String),
 }
 
 impl std::fmt::Display for GeomError {
@@ -45,6 +50,7 @@ impl std::fmt::Display for GeomError {
         match self {
             GeomError::NonFinite => write!(f, "a coordinate is not finite"),
             GeomError::OutOfRange(v) => write!(f, "coordinate {v} mm is beyond {LIMIT_MM} mm"),
+            GeomError::Engine(e) => write!(f, "the overlay engine refused the input: {e}"),
         }
     }
 }
