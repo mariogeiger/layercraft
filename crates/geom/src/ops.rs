@@ -3,7 +3,13 @@
 //! Coordinates go onto one global lattice of `GRID_MM` (integers in nanometres, origin at
 //! zero) and `i_overlay`'s integer engine works there exactly. Every result lies on that lattice,
 //! so two results agree bit for bit where they meet, and two consecutive points of a contour are
-//! at least a lattice step apart. No contour of a result is thinner than a lattice step.
+//! at least a lattice step apart.
+//!
+//! Rounding to the lattice moves a point by under half a step, so two roundings of one edge,
+//! such as the sections of a vertical wall at two heights, differ by strips a step thin, an
+//! offset leaves needles as thin where very short edges meet, and a chain of operations makes
+//! them a few steps thick. The exact results have none: no result keeps a contour thinner than
+//! `RESOLUTION_MM`, a thousand steps.
 
 use crate::{GeomError, Point, Polyline, Region, check_points, check_value, signed_area};
 use i_overlay::core::fill_rule::FillRule;
@@ -20,6 +26,9 @@ use i_overlay::string::clip::{ClipRule, IntClip};
 pub const GRID_MM: f64 = 1e-6;
 /// Lattice steps per millimetre.
 const STEPS: f64 = 1e6;
+/// The thinnest contour a result keeps, in mm: a micrometre, a printer's finest step, far above
+/// the few steps that rounding debris reaches and far below anything a bead can fill.
+pub const RESOLUTION_MM: f64 = 1e-3;
 
 /// The smallest interior angle kept sharp by an offset; sharper corners are clipped (radians).
 const MITER_MIN_ANGLE: f64 = 0.1;
@@ -44,7 +53,10 @@ fn region_to_lattice(region: &Region) -> Vec<Vec<Vec<Lattice>>> {
 }
 
 fn region_from_lattice(shapes: Vec<Vec<Vec<Lattice>>>) -> Region {
-    shapes.iter().map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect()).collect()
+    without_slivers(shapes)
+        .iter()
+        .map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect())
+        .collect()
 }
 
 fn check_region(region: &Region) -> Result<(), GeomError> {
@@ -106,12 +118,12 @@ pub fn offset(region: &Region, distance: f64) -> Result<Region, GeomError> {
     let style = IntOutlineStyle::new(steps).line_join(IntLineJoin::Miter(angle));
     let shapes =
         region_to_lattice(region).outline(&style).map_err(|e| GeomError::Engine(format!("{e:?}")))?;
-    Ok(region_from_lattice(without_slivers(shapes)))
+    Ok(region_from_lattice(shapes))
 }
 
-/// Whether a contour is at least a lattice step thick, its thickness being twice its area over
+/// Whether a contour is at least `RESOLUTION_MM` thick, its thickness being twice its area over
 /// its perimeter: the width of a strip, half the radius of a disc.
-fn thicker_than_a_step(contour: &[Lattice]) -> bool {
+fn resolved(contour: &[Lattice]) -> bool {
     let n = contour.len();
     let (mut doubled_area, mut perimeter) = (0i128, 0.0f64);
     for (i, a) in contour.iter().enumerate() {
@@ -119,20 +131,18 @@ fn thicker_than_a_step(contour: &[Lattice]) -> bool {
         doubled_area += a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128;
         perimeter += ((b.x - a.x) as f64).hypot((b.y - a.y) as f64);
     }
-    doubled_area.unsigned_abs() as f64 >= perimeter
+    doubled_area.unsigned_abs() as f64 >= perimeter * RESOLUTION_MM * STEPS
 }
 
-/// The shapes without the contours thinner than a lattice step. Rounding an offset to the
-/// lattice leaves such slivers where very short edges meet, reaching from the offset contour
-/// back to the original one; the exact offset has none.
+/// The shapes without the contours thinner than `RESOLUTION_MM`: rounding debris.
 fn without_slivers(shapes: Vec<Vec<Vec<Lattice>>>) -> Vec<Vec<Vec<Lattice>>> {
     shapes
         .into_iter()
-        .filter(|shape| shape.first().is_some_and(|outer| thicker_than_a_step(outer)))
+        .filter(|shape| shape.first().is_some_and(|outer| resolved(outer)))
         .map(|shape| {
             let mut contours = shape.into_iter();
             let outer = contours.next();
-            outer.into_iter().chain(contours.filter(|hole| thicker_than_a_step(hole))).collect()
+            outer.into_iter().chain(contours.filter(|hole| resolved(hole))).collect()
         })
         .collect()
 }

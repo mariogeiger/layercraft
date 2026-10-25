@@ -113,3 +113,18 @@ fn an_inset_leaves_no_slivers() {
     // Deeper than the corner is thick, nothing is left.
     assert_eq!(offset(&region, -0.21).unwrap(), Vec::<Shape>::new());
 }
+
+#[test]
+fn two_roundings_of_one_edge_leave_nothing_between_them() {
+    // The same 10 mm square cut twice, one edge rounded a step further out: what lies between
+    // the two is a strip one step wide, rounding debris, not a region.
+    let a = union_contours(&[square(0.0, 0.0, 10.0)]).unwrap();
+    let b = union_contours(&[vec![[0.0, 0.0], [10.0 + GRID_MM, 0.0], [10.0 + GRID_MM, 10.0], [0.0, 10.0]]])
+        .unwrap();
+    assert_eq!(difference(&b, &a).unwrap(), Vec::<Shape>::new());
+    // So is one a few steps wide, left by a chain of operations; one 10 µm wide is a region.
+    let b = union_contours(&[vec![[0.0, 0.0], [10.000004, 0.0], [10.000004, 10.0], [0.0, 10.0]]]).unwrap();
+    assert_eq!(difference(&b, &a).unwrap(), Vec::<Shape>::new());
+    let c = union_contours(&[vec![[0.0, 0.0], [10.01, 0.0], [10.01, 10.0], [0.0, 10.0]]]).unwrap();
+    assert!(close(area(&difference(&c, &a).unwrap()), 0.1));
+}

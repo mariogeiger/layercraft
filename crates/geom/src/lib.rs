@@ -4,7 +4,8 @@
 //! its holes (clockwise). Every operation goes through `i_overlay`'s integer engine, so the
 //! results are topologically valid whatever the input. Inputs are checked first: coordinates
 //! must be finite and inside `LIMIT_MM`, which keeps the engine away from its panicking paths.
-//! Results lie on a nanometre lattice (`GRID_MM`).
+//! Results lie on a nanometre lattice (`GRID_MM`) and keep no contour thinner than a
+//! micrometre (`RESOLUTION_MM`).
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -20,7 +21,8 @@ mod ops;
 pub use bead::{bead_area, bead_spacing};
 
 pub use ops::{
-    GRID_MM, area, clip_lines, difference, intersection, offset, union, union_contours, winding_region,
+    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, union, union_contours,
+    winding_region,
 };
 
 /// A point in the plane, in millimetres.
