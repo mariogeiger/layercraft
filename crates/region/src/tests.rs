@@ -53,7 +53,11 @@ fn shells_and_sparse_partition_the_inside() {
         let inner = if layer.index == 0 { 0.4 } else { 0.5 };
         let side = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(inner));
         let inside = side * side;
-        let total = area(&layer.top_surface) + area(&layer.solid) + area(&layer.bridge) + area(&layer.sparse);
+        let total = area(&layer.top_surface)
+            + area(&layer.solid)
+            + area(&layer.bridge)
+            + area(&layer.bridge_on_sparse)
+            + area(&layer.sparse);
         assert!(close(total, inside), "layer {}: {total}", layer.index);
     }
     // 10 layers: 2 bottom shells, 5 sparse, then 3 top shells: the first bridges the sparse
@@ -61,7 +65,14 @@ fn shells_and_sparse_partition_the_inside() {
     let kinds: Vec<(bool, bool, bool, bool)> = regions
         .layers
         .iter()
-        .map(|l| (!l.top_surface.is_empty(), !l.solid.is_empty(), !l.bridge.is_empty(), !l.sparse.is_empty()))
+        .map(|l| {
+            (
+                !l.top_surface.is_empty(),
+                !l.solid.is_empty(),
+                !l.bridge_on_sparse.is_empty(),
+                !l.sparse.is_empty(),
+            )
+        })
         .collect();
     let solid = (false, true, false, false);
     let sparse = (false, false, false, true);
@@ -93,7 +104,8 @@ fn an_overhang_over_air_is_a_bridge() {
     let first = &regions.layers[5];
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let inside = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
-    assert!(close(area(&first.bridge), 6.0 * inside), "{}", area(&first.bridge));
+    // The 6 mm gap, plus a 0.5 mm bead's width onto each post.
+    assert!(close(area(&first.bridge), 7.0 * inside), "{}", area(&first.bridge));
     assert!(regions.layers[6].bridge.is_empty());
 }
 
@@ -126,7 +138,7 @@ fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
     let regions = split(&sections, &PARAMS).unwrap();
     for layer in &regions.layers {
-        let a = area(&layer.bridge);
+        let a = area(&layer.bridge_on_sparse);
         assert!(a == 0.0 || a > 10.0, "layer {}: a {a} mm² sliver of bridge", layer.index);
     }
 }

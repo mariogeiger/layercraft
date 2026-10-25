@@ -1,9 +1,9 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
-use crate::hatch::hatch;
+use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
 use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{Contour, Point, bead_spacing, clip_lines, offset, signed_area};
+use layercraft_geom::{Contour, Point, bead_spacing, clip_lines, offset, signed_area, union};
 use layercraft_region::RegionLayer;
 
 /// The beads of one connected piece of a layer.
@@ -71,7 +71,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
                 Some(Island { outline, walls, infill: Vec::new() })
             })
             .collect(),
-        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.sparse]
+        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
             .into_iter()
             .flatten()
             .filter_map(|shape| {
@@ -128,6 +128,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
         (Role::TopSurface, &layer.top_surface, top, bead_spacing(top, h)),
         (Role::Solid, &layer.solid, solid, bead_spacing(solid, h)),
         (Role::Bridge, &layer.bridge, p.bridge_width, p.bridge_width),
+        (Role::Bridge, &layer.bridge_on_sparse, p.bridge_width, p.bridge_width),
         (Role::Sparse, &layer.sparse, w(p.sparse_width), sparse_spacing),
     ];
     let mut areas = Vec::new();
@@ -136,14 +137,31 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
             continue;
         }
         let reach = offset(region, p.infill_wall_overlap * width)?;
-        for line in hatch(&reach, spacing, solid_angle)? {
+        // Each bridge crosses its own gap the short way; every other fill follows the layer.
+        let mut lines = Vec::new();
+        // Over air, from edge to edge; over sparse infill, across its lines, which the layer's
+        // direction already crosses at right angles.
+        if role == Role::Bridge && std::ptr::eq(region, &layer.bridge) {
+            for shape in &reach {
+                let piece = vec![shape.clone()];
+                let angle = shortest_span_angle(&piece, spacing, solid_angle)?;
+                lines.extend(hatch(&piece, spacing, angle)?);
+            }
+        } else {
+            lines = hatch(&reach, spacing, solid_angle)?;
+        }
+        for line in lines {
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 island.infill.push(Path { role, width, closed: false, points: line, travel_inside: false });
             }
         }
-        areas.push(Fill { role, reach, max_link: 3.0 * spacing });
+        // Both kinds of bridge share one role: one area for joining their lines.
+        match areas.iter_mut().find(|f: &&mut Fill| f.role == role) {
+            Some(fill) => fill.reach = union(&fill.reach, &reach)?,
+            None => areas.push(Fill { role, reach, max_link: 3.0 * spacing }),
+        }
     }
     Ok((islands, areas))
 }

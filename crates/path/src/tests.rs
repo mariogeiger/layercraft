@@ -146,3 +146,26 @@ fn moves_between_neighbouring_lines_stay_inside() {
     let outside = solid.iter().skip(1).filter(|p| !p.travel_inside).count();
     assert!(outside <= 1, "{outside} of {} moves leave the part", solid.len());
 }
+
+#[test]
+fn a_bridge_crosses_its_gap_the_short_way() {
+    // A slab on two posts 8 mm apart: its strands run post to post, along x, 8 mm (plus what
+    // reaches into the walls), not 12 mm along y nor 11 mm at 45°.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("left", [0.0; 3], [4.0, 12.0, 1.0]),
+            cuboid("right", [12.0, 0.0, 0.0], [16.0, 12.0, 1.0]),
+            cuboid("slab", [0.0, 0.0, 1.0], [16.0, 12.0, 2.0]),
+        ],
+    };
+    let (_, paths) = paths_of(&mesh);
+    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::Bridge).collect();
+    assert!(!strands.is_empty());
+    for s in strands {
+        let (a, b) = (s.points[0], s.points[s.points.len() - 1]);
+        assert!((a[1] - b[1]).abs() < 1e-6, "a strand not along x: {a:?} → {b:?}");
+        // The 8 mm gap and a 0.4 mm bead's width onto each post, plus the infill overlap.
+        let length = polyline_length(&s.points);
+        assert!((8.7..=8.95).contains(&length), "{length}");
+    }
+}

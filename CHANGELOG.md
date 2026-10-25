@@ -2,6 +2,14 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.3
+
+### Fixed
+
+- A bridge over air crosses its gap the short way: its strands take the direction whose
+  longest strand is shortest, and reach a bead's width onto the support at both ends. A bridge
+  over sparse infill keeps the layer's direction, across the sparse lines below.
+
 ## 0.2.2
 
 ### Fixed

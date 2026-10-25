@@ -6,7 +6,7 @@
 //! `bottom_layers` below it; otherwise it is solid. The part of `A_i` not covered by layer
 //! `i + 1` is the top surface, the one exposed to the air. Solid or top that the layer below
 //! does not hold up is a bridge, laid as hanging strands: over air, wherever it is wider than a
-//! bead; over sparse infill, only where it is wide enough to span a gap between the sparse
+//! bead, reaching a bead's width onto the support at its ends; over sparse infill, only where it is wide enough to span a gap between the sparse
 //! lines (`sparse_gap`) — a narrower band rests on them.
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
@@ -65,8 +65,11 @@ pub struct RegionLayer {
     pub top_surface: Region,
     /// Inside the walls, within the top or bottom shells, not exposed.
     pub solid: Region,
-    /// Solid or top surface that nothing below holds up: over sparse infill or over air.
+    /// Solid or top surface over air: strands hang from the edges of the gap.
     pub bridge: Region,
+    /// Solid or top surface over sparse infill: strands hang from one sparse line to the next.
+    #[serde(default)]
+    pub bridge_on_sparse: Region,
     /// Inside the walls, deep in the solid.
     pub sparse: Region,
 }
@@ -216,18 +219,23 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         // What is not held up from below: over air (the layer below is absent) and over
         // its sparse infill. Only the parts wide enough to need hanging strands are bridges.
         let filled = union(&solid, &top_surface)?;
-        let bridge = match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
-            (Some(below), Some(previous)) => {
-                let width = widths.inner.max(widths.outer);
-                let over_air = opening(&difference(&filled, below)?, width / 2.0)?;
-                let over_sparse =
-                    opening(&intersection(&filled, &previous.sparse)?, params.sparse_gap / 2.0)?;
-                union(&over_air, &over_sparse)?
-            }
-            _ => Vec::new(),
-        };
-        let solid = difference(&solid, &bridge)?;
-        let top_surface = difference(&top_surface, &bridge)?;
+        let (bridge, bridge_on_sparse) =
+            match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
+                (Some(below), Some(previous)) => {
+                    let width = widths.inner.max(widths.outer);
+                    // Each strand rests a bead's width on the support at either end.
+                    let gap = opening(&difference(&filled, below)?, width / 2.0)?;
+                    let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;
+                    let over_sparse =
+                        opening(&intersection(&filled, &previous.sparse)?, params.sparse_gap / 2.0)?;
+                    (over_air.clone(), difference(&over_sparse, &over_air)?)
+                }
+                _ => (Vec::new(), Vec::new()),
+            };
+        let hanging = union(&bridge, &bridge_on_sparse)?;
+        let solid = difference(&solid, &hanging)?;
+        let top_surface = difference(&top_surface, &hanging)?;
+        let deep = difference(&deep, &hanging)?;
         layers.push(RegionLayer {
             index: layer.index,
             top: layer.top,
@@ -237,6 +245,7 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
             top_surface,
             solid,
             bridge,
+            bridge_on_sparse,
             sparse: deep,
         });
     }

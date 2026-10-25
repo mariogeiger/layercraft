@@ -32,3 +32,39 @@ pub fn hatch(region: &Region, spacing: f64, angle: f64) -> Result<Vec<Polyline>,
     }
     clip_lines(&lines, region)
 }
+
+/// The most candidate directions tried for one bridge.
+const MAX_CANDIDATES: usize = 72;
+
+/// The direction, in degrees, whose strands across `region` (`spacing` apart) are shortest at
+/// their longest: a bridge hangs from its two ends, so its weakest strand is its longest. The
+/// optimum of the longest chord lies across an edge of the region, so the directions tried are
+/// those perpendicular to its edges, plus every 15°; ties keep `preferred`.
+pub fn shortest_span_angle(region: &Region, spacing: f64, preferred: f64) -> Result<f64, GeomError> {
+    let mut candidates = vec![preferred];
+    for c in region.iter().flatten() {
+        let n = c.len();
+        for i in 0..n {
+            let (Some(a), Some(b)) = (c.get(i), c.get((i + 1) % n)) else { continue };
+            candidates.push((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0);
+        }
+    }
+    let normalize = |a: f64| a.rem_euclid(180.0);
+    let mut seen: Vec<f64> = Vec::new();
+    for a in candidates.into_iter().map(normalize).chain((0..12).map(|k| 15.0 * k as f64)) {
+        if seen.len() < MAX_CANDIDATES && !seen.iter().any(|s| (s - a).abs() < 0.5) {
+            seen.push(a);
+        }
+    }
+    let mut best = (f64::INFINITY, normalize(preferred));
+    for angle in seen {
+        let longest = hatch(region, spacing, angle)?
+            .iter()
+            .map(|line| layercraft_geom::polyline_length(line))
+            .fold(0.0, f64::max);
+        if longest < best.0 - 1e-6 {
+            best = (longest, angle);
+        }
+    }
+    Ok(best.1)
+}
