@@ -163,6 +163,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "layercraft-motion"
+version = "0.1.0"
+dependencies = [
+ "layercraft-geom",
+ "layercraft-machine",
+ "layercraft-path",
+ "serde",
+]
+
+[[package]]
 name = "layercraft-path"
 version = "0.1.0"
 dependencies = [

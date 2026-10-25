@@ -1,0 +1,15 @@
+[package]
+name = "layercraft-motion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+layercraft-geom = { path = "../geom" }
+layercraft-machine = { path = "../machine" }
+layercraft-path = { path = "../path" }
+serde.workspace = true
+
+[lints]
+workspace = true
