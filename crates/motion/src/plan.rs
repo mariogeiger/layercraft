@@ -164,15 +164,25 @@ impl State {
 }
 
 fn expand_named(which: &str, template: &str, scope: &Scope) -> Result<Op, MotionError> {
-    let text = expand(template, scope).map_err(|e| MotionError::Template(which.to_string(), e))?;
-    Ok(Op::Raw { text })
+    Ok(Op::Raw { text: expand_text(which, template, scope)? })
 }
 
+fn expand_text(which: &str, template: &str, scope: &Scope) -> Result<String, MotionError> {
+    expand(template, scope).map_err(|e| MotionError::Template(which.to_string(), e))
+}
+
+/// Where the first layer lays plastic: its beads' centre lines grown by their half widths.
 fn first_layer_bounds(paths: &Paths) -> [[f64; 2]; 2] {
-    let points = paths.layers.first().into_iter().flat_map(|l| l.paths.iter()).flat_map(|p| p.points.iter());
+    let beads = paths.layers.first().into_iter().flat_map(|l| l.paths.iter());
     let mut b = [[f64::MAX, f64::MAX], [f64::MIN, f64::MIN]];
-    for p in points {
-        b = [[b[0][0].min(p[0]), b[0][1].min(p[1])], [b[1][0].max(p[0]), b[1][1].max(p[1])]];
+    for bead in beads {
+        let r = bead.width / 2.0;
+        for p in &bead.points {
+            b = [
+                [b[0][0].min(p[0] - r), b[0][1].min(p[1] - r)],
+                [b[1][0].max(p[0] + r), b[1][1].max(p[1] + r)],
+            ];
+        }
     }
     if b[0][0] > b[1][0] { [[0.0, 0.0], [0.0, 0.0]] } else { b }
 }
@@ -196,8 +206,16 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
     scope.insert("max_layer_z".into(), num(0.0));
     let mut s =
         State { ops: Vec::new(), at: [0.0; 3], retracted: false, feature: None, accel: None, filament: 0.0 };
-    s.ops.push(expand_named("start", &p.templates.start, &scope)?);
+    // The markers bound the machine's own sequences, as the printer's firmware expects.
+    if !p.templates.limits.is_empty() {
+        s.ops.push(Op::Raw { text: p.templates.limits.clone() });
+    }
+    let start = expand_text("start", &p.templates.start, &scope)?;
+    s.ops.push(Op::Raw { text: format!("{start}\n; MACHINE_START_GCODE_END\n") });
     s.ops.push(expand_named("filament start", &p.templates.filament_start, &scope)?);
+    if !p.templates.prologue.is_empty() {
+        s.ops.push(expand_named("prologue", &p.templates.prologue, &scope)?);
+    }
     s.ops.push(Op::Raw { text: "G90\nG21\nM83 ; use relative distances for extrusion\n".into() });
     let mut volume_per_layer = Vec::with_capacity(paths.layers.len());
     for layer in &paths.layers {
@@ -244,8 +262,9 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
         volume_per_layer.push(volume);
     }
     s.retract(p);
-    s.ops.push(expand_named("filament end", &p.templates.filament_end, &scope)?);
-    s.ops.push(expand_named("end", &p.templates.end, &scope)?);
+    let filament_end = expand_text("filament end", &p.templates.filament_end, &scope)?;
+    let end = expand_text("end", &p.templates.end, &scope)?;
+    s.ops.push(Op::Raw { text: format!("; MACHINE_END_GCODE_START\n{filament_end}{end}") });
     let times = estimate(&s.ops, &p.limits, [0.0; 3]);
     let total = times.last().copied().unwrap_or(0.0);
     for (i, op) in s.ops.iter_mut().enumerate() {

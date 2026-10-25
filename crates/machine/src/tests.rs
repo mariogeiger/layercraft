@@ -36,6 +36,7 @@ fn precedence_is_arithmetic() {
     let s = Scope::new();
     assert_eq!(expand("{1 + 2 * 3 - 4 / 2}", &s).unwrap(), "5");
     assert_eq!(expand("{(1 + 2) * 3 % 4}", &s).unwrap(), "1");
+    assert_eq!(expand("G29.1 Z{+0.0} Z{-(-2)}", &s).unwrap(), "G29.1 Z0 Z2");
     assert_eq!(expand("{!(1 < 2) || 2 <= 2 && 3 != 4}", &s).unwrap(), "1");
 }
 

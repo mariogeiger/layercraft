@@ -83,10 +83,14 @@ pub struct RoleMotion {
 /// The machine's G-code templates around the moves.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Templates {
+    /// The machine's motion limits, set before anything else.
+    pub limits: String,
     pub start: String,
     pub end: String,
     pub layer_change: String,
     pub filament_start: String,
+    /// Printed after the filament's start, before the first layer.
+    pub prologue: String,
     pub filament_end: String,
 }
 

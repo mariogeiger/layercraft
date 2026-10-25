@@ -76,6 +76,18 @@ pub fn import(dir: &Path, selection: &Selection) -> Result<Machine, MachineError
         let after = plist.split("CFBundleShortVersionString").nth(1)?;
         Some(after.split("<string>").nth(1)?.split('<').next()?.to_string())
     });
+    let mut machine = flatten(&dir.join("machine"), &selection.machine)?;
+    // The printer model's own file (not in the inheritance chain) names its model code and plate.
+    if let Some(model) = machine.get("printer_model").map(Value::render) {
+        let path = dir.join("machine").join(format!("{model}.json"));
+        if let Ok(object) = read_object(&path) {
+            for key in ["model_id", "default_bed_type"] {
+                if let Some(v) = object.get(key) {
+                    machine.insert(key.to_string(), Value::from_json(v));
+                }
+            }
+        }
+    }
     Ok(Machine {
         source: format!(
             "Bambu Studio {} profiles: {} / {} / {}",
@@ -85,7 +97,7 @@ pub fn import(dir: &Path, selection: &Selection) -> Result<Machine, MachineError
             selection.filament
         ),
         variant: selection.variant.clone(),
-        machine: flatten(&dir.join("machine"), &selection.machine)?,
+        machine,
         process: flatten(&dir.join("process"), &selection.process)?,
         filament: flatten(&dir.join("filament"), &selection.filament)?,
     })

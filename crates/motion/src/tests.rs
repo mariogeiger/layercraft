@@ -63,7 +63,7 @@ fn filament_follows_the_bead_volume() {
     let expected = 2.0 * 0.98 * area * 10.0 / filament_area;
     assert!((program.summary.filament_mm - expected).abs() < 1e-12);
     assert!((program.summary.volume_per_layer[0] - area * 10.0).abs() < 1e-12);
-    assert!(matches!(&program.ops[0], Op::Raw { text } if text == "; start me\n"));
+    assert!(matches!(&program.ops[0], Op::Raw { text } if text.starts_with("; start me\n")));
 }
 
 #[test]

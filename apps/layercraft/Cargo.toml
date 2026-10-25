@@ -1,0 +1,27 @@
+[package]
+name = "layercraft"
+description = "Compile a solid down to a print on a Bambu Lab X2D, with every stage open"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+layercraft-geom = { path = "../../crates/geom" }
+layercraft-gcode = { path = "../../crates/gcode" }
+layercraft-machine = { path = "../../crates/machine" }
+layercraft-mesh = { path = "../../crates/mesh" }
+layercraft-motion = { path = "../../crates/motion" }
+layercraft-package = { path = "../../crates/package" }
+layercraft-path = { path = "../../crates/path" }
+layercraft-region = { path = "../../crates/region" }
+layercraft-section = { path = "../../crates/section" }
+layercraft-verify = { path = "../../crates/verify" }
+layercraft-view = { path = "../../crates/view" }
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

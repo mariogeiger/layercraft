@@ -50,7 +50,7 @@ impl Value {
     }
 
     /// The value as printed into G-code: integers without a decimal point, other numbers
-    /// with at most six decimals.
+    /// with six significant digits, as C's `%g` prints them.
     pub fn render(&self) -> String {
         match self {
             Value::Num(v) => render_number(*v),
@@ -63,9 +63,11 @@ impl Value {
 
 pub fn render_number(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        let text = format!("{v:.6}");
-        text.trim_end_matches('0').trim_end_matches('.').to_string()
+        return format!("{}", v as i64);
     }
+    let digits_before = if v == 0.0 || !v.is_finite() { 1 } else { v.abs().log10().floor() as i64 + 1 };
+    let decimals = (6 - digits_before).clamp(0, 12) as usize;
+    let text = format!("{v:.decimals$}");
+    let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.') } else { &text };
+    if text == "-0" { "0".to_string() } else { text.to_string() }
 }

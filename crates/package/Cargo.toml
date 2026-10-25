@@ -1,0 +1,14 @@
+[package]
+name = "layercraft-package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+md-5.workspace = true
+png.workspace = true
+zip.workspace = true
+
+[lints]
+workspace = true

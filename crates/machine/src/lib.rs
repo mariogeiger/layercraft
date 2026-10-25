@@ -124,6 +124,11 @@ impl Machine {
         list.get(index).or(list.first()).cloned().ok_or_else(|| MachineError::Missing(key.to_string()))
     }
 
+    /// A setting's whole value, lists included, such as the corners of the printable area.
+    pub fn get_all(&self, kind: Kind, key: &str) -> Result<Value, MachineError> {
+        self.table(kind).get(key).cloned().ok_or_else(|| MachineError::Missing(key.to_string()))
+    }
+
     /// A numeric setting; `15%` reads as 15.
     pub fn number(&self, kind: Kind, key: &str) -> Result<f64, MachineError> {
         let value = self.get(kind, key)?;

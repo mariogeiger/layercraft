@@ -173,7 +173,7 @@ impl Parser {
 
     fn unary(&mut self) -> Result<Node, TemplateError> {
         match self.peek().cloned() {
-            Some(Token::Op(op @ ("!" | "-"))) => {
+            Some(Token::Op(op @ ("!" | "-" | "+"))) => {
                 self.pos += 1;
                 Ok(Node::Unary(op, Box::new(self.unary()?)))
             }
@@ -267,6 +267,7 @@ fn evaluate(node: &Node, scope: &Scope) -> Result<Value, TemplateError> {
             })
         }
         Node::Unary("!", inner) => Value::Bool(!evaluate(inner, scope)?.truthy()),
+        Node::Unary("+", inner) => Value::Num(number(&evaluate(inner, scope)?, "an operand")?),
         Node::Unary(_, inner) => Value::Num(-number(&evaluate(inner, scope)?, "an operand")?),
         Node::Cond(c, yes, no) => {
             if evaluate(c, scope)?.truthy() {
