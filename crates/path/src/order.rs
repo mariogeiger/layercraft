@@ -2,7 +2,7 @@
 
 use crate::hatch::hatch;
 use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{Contour, Point, Polyline, Region, offset, signed_area};
+use layercraft_geom::{Contour, Point, Polyline, Region, bead_spacing, offset, signed_area};
 use layercraft_region::RegionLayer;
 
 /// The beads of one connected piece of a layer.
@@ -114,11 +114,22 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     }
     let odd = layer.index % 2 == 1;
     let solid_angle = p.infill_angle + if odd { 90.0 } else { 0.0 };
-    let sparse_spacing =
-        if p.sparse_density > 0.0 { 2.0 * p.sparse_width / p.sparse_density } else { f64::INFINITY };
+    let h = layer.height;
+    // Two directions of beads `s` apart in effect, every `S`, fill `2s/S` of the area.
+    let sparse_spacing = if p.sparse_density > 0.0 {
+        2.0 * bead_spacing(p.sparse_width, h) / p.sparse_density
+    } else {
+        f64::INFINITY
+    };
     let fills = [
-        (Role::TopSurface, &layer.top_surface, p.top_surface_width, p.top_surface_width, vec![solid_angle]),
-        (Role::Solid, &layer.solid, p.solid_width, p.solid_width, vec![solid_angle]),
+        (
+            Role::TopSurface,
+            &layer.top_surface,
+            p.top_surface_width,
+            bead_spacing(p.top_surface_width, h),
+            vec![solid_angle],
+        ),
+        (Role::Solid, &layer.solid, p.solid_width, bead_spacing(p.solid_width, h), vec![solid_angle]),
         (
             Role::Sparse,
             &layer.sparse,

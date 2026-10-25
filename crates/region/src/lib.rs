@@ -1,7 +1,7 @@
 //! Stage 2: what each part of a layer becomes — walls, solid surfaces or sparse infill.
 //!
 //! With `R_i` the section of layer `i`, the walls are the centre lines of successive insets of
-//! `R_i`, one bead width apart, and `A_i` is what lies inside the innermost wall. A point of
+//! `R_i`, one bead spacing apart, and `A_i` is what lies inside the innermost wall. A point of
 //! `A_i` is sparse infill when the solid continues for `top_layers` layers above it and
 //! `bottom_layers` below it; otherwise it is solid. The part of `A_i` not covered by layer
 //! `i + 1` is the top surface, the one exposed to the air.
@@ -14,7 +14,7 @@
     clippy::unreachable
 )]
 
-use layercraft_geom::{GeomError, Region, difference, intersection, offset, union};
+use layercraft_geom::{GeomError, Region, bead_spacing, difference, intersection, offset, union};
 use layercraft_section::Sections;
 use serde::{Deserialize, Serialize};
 
@@ -93,20 +93,23 @@ fn check(params: &RegionParams) -> Result<(), RegionError> {
     Ok(())
 }
 
-/// The distance from the solid's edge to the centre line of wall `k` (0 = outer).
-fn wall_centre(params: &RegionParams, k: usize) -> f64 {
-    if k == 0 {
-        params.outer_wall_width / 2.0
-    } else {
-        params.outer_wall_width + (k as f64 - 0.5) * params.inner_wall_width
+/// The distance from the solid's edge to the centre line of wall `k` (0 = outer), on a layer
+/// `h` high. The outer bead's side touches the edge; inward, beads sit their tiling spacing
+/// apart (`bead_spacing`), so the walls fill their band without voids.
+fn wall_centre(params: &RegionParams, k: usize, h: f64) -> f64 {
+    let (outer, inner) = (bead_spacing(params.outer_wall_width, h), bead_spacing(params.inner_wall_width, h));
+    match k {
+        0 => params.outer_wall_width / 2.0,
+        k => params.outer_wall_width / 2.0 + outer / 2.0 + (k as f64 - 0.5) * inner,
     }
 }
 
-/// The distance from the solid's edge to the inner edge of the innermost wall.
-fn walls_depth(params: &RegionParams) -> f64 {
+/// The distance from the solid's edge to where the walls' material ends, on a layer `h` high.
+fn walls_depth(params: &RegionParams, h: f64) -> f64 {
+    let (outer, inner) = (bead_spacing(params.outer_wall_width, h), bead_spacing(params.inner_wall_width, h));
     match params.walls {
         0 => 0.0,
-        n => params.outer_wall_width + (n - 1) as f64 * params.inner_wall_width,
+        n => params.outer_wall_width / 2.0 + outer / 2.0 + (n - 1) as f64 * inner,
     }
 }
 
@@ -136,13 +139,13 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
     for (i, (layer, region)) in sections.layers.iter().zip(&regions).enumerate() {
         let mut walls = Vec::new();
         for k in 0..params.walls {
-            let centre = offset(region, -wall_centre(params, k))?;
+            let centre = offset(region, -wall_centre(params, k, layer.height))?;
             if centre.is_empty() {
                 break;
             }
             walls.push(centre);
         }
-        let inside = offset(region, -walls_depth(params))?;
+        let inside = offset(region, -walls_depth(params, layer.height))?;
         let i = i as isize;
         let above = covered(&regions, i + 1, params.top_layers)?;
         let below = covered(&regions, i - params.bottom_layers as isize, params.bottom_layers)?;

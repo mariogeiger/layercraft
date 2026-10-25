@@ -1,11 +1,10 @@
 //! Stage 3: the lines the nozzle draws, in printing order.
 //!
 //! Walls become closed loops, starting at the vertex nearest the island's back right corner
-//! so seams line up from layer to layer. Solid areas are hatched at the bead width, at ±45°
-//! alternating by layer; sparse areas get a grid whose spacing gives the requested density
-//! (two directions of beads `w` wide every `s` cover `2w/s` of the area). Hatch lines lie on a
-//! fixed grid, so layers stack. Each island is printed whole — inner walls, outer wall, then
-//! its infill — and islands follow each other nearest first.
+//! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
+//! at ±45° alternating by layer; sparse areas get a grid whose spacing gives the requested
+//! density by volume. Hatch lines lie on a fixed grid, so layers stack. Each island is printed
+//! whole — inner walls, outer wall, then its infill — and islands follow each other nearest first.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,

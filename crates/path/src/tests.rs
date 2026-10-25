@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{area, polyline_length};
+use layercraft_geom::{area, bead_area, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, split};
@@ -34,7 +34,7 @@ fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
     (regions, paths)
 }
 
-fn bead_area(paths: &[Path], role: Role) -> f64 {
+fn filled_area(paths: &[Path], role: Role) -> f64 {
     paths
         .iter()
         .filter(|p| p.role == role)
@@ -43,7 +43,8 @@ fn bead_area(paths: &[Path], role: Role) -> f64 {
             if p.closed {
                 pts.push(pts[0]);
             }
-            polyline_length(&pts) * p.width
+            // The plastic laid, spread over the layer's height: the area it fills.
+            polyline_length(&pts) * bead_area(p.width, 0.2) / 0.2
         })
         .sum()
 }
@@ -53,7 +54,7 @@ fn solid_hatch_covers_its_area() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
     let layer = &paths.layers[0];
     let solid = area(&regions.layers[0].solid);
-    let covered = bead_area(&layer.paths, Role::Solid);
+    let covered = filled_area(&layer.paths, Role::Solid);
     assert!((covered / solid - 1.0).abs() < 0.03, "{covered} for {solid}");
 }
 
@@ -62,7 +63,7 @@ fn sparse_grid_has_its_density() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
     let i = 7;
     let sparse = area(&regions.layers[i].sparse);
-    let covered = bead_area(&paths.layers[i].paths, Role::Sparse);
+    let covered = filled_area(&paths.layers[i].paths, Role::Sparse);
     // The two directions cross: the bead area counts the crossings twice, as density says.
     assert!((covered / sparse - 0.2).abs() < 0.02, "{}", covered / sparse);
 }

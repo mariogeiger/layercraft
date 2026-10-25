@@ -2,6 +2,14 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.1.2
+
+### Fixed
+
+- Walls and solid infill no longer leave voids: beads sit their tiling spacing apart,
+  `w − h·(1 − π/4)`, the width their rounded cross-section fills, instead of their full width.
+  Solid layers had about 10 % too little plastic.
+
 ## 0.1.1
 
 ### Fixed

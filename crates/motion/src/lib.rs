@@ -21,6 +21,7 @@ mod time;
 pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};
 
+pub use layercraft_geom::bead_area;
 use layercraft_machine::{Scope, TemplateError};
 use layercraft_path::Role;
 use serde::{Deserialize, Serialize};
@@ -143,11 +144,6 @@ impl std::fmt::Display for MotionError {
 }
 
 impl std::error::Error for MotionError {}
-
-/// The cross-section of a bead `width` wide on a layer `height` high, in mm².
-pub fn bead_area(width: f64, height: f64) -> f64 {
-    (width - height) * height + std::f64::consts::PI * height * height / 4.0
-}
 
 /// The variables of the machine's templates that the slicer computes, added to its settings.
 pub type Placeholders = Scope;

@@ -16,8 +16,10 @@ const PARAMS: RegionParams = RegionParams {
     first_layer_shrink: 0.0,
 };
 
+/// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
+/// at most its perimeter times a step.
 fn close(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-6
+    (a - b).abs() < 40.0 * layercraft_geom::GRID_MM
 }
 
 fn cube_regions() -> Regions {
@@ -31,14 +33,19 @@ fn walls_sit_at_their_centre_lines() {
     let layer = &cube_regions().layers[4];
     assert_eq!(layer.walls.len(), 2);
     assert!(close(area(&layer.walls[0]), 9.6 * 9.6));
-    // Outer bead 0.4, then the centre of a 0.5 bead: 0.65 in from the edge.
-    assert!(close(area(&layer.walls[1]), 8.7 * 8.7));
+    // The outer bead's side on the edge, then beads at their tiling spacing s = w − h(1 − π/4).
+    let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    let inner = 0.2 + s(0.4) / 2.0 + s(0.5) / 2.0;
+    let side = 10.0 - 2.0 * inner;
+    assert!(close(area(&layer.walls[1]), side * side), "{}", area(&layer.walls[1]));
 }
 
 #[test]
 fn shells_and_sparse_partition_the_inside() {
     let regions = cube_regions();
-    let inside = 8.2 * 8.2; // 0.4 + 0.5 of walls on each side
+    let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    let side = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
+    let inside = side * side;
     for layer in &regions.layers {
         let total = area(&layer.top_surface) + area(&layer.solid) + area(&layer.sparse);
         assert!(close(total, inside), "layer {}: {total}", layer.index);
