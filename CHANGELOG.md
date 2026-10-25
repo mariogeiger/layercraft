@@ -2,6 +2,14 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.4
+
+### Fixed
+
+- Offsets drop the slivers, thinner than a nanometre, that rounding left where a mesh's very
+  short edges meet: no more zero-length wall loops, nor scraps of top surface and solid infill
+  next to thin features, each costing a travel and a retraction.
+
 ## 0.2.3
 
 ### Fixed

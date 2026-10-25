@@ -87,3 +87,29 @@ fn results_lie_on_the_lattice_with_distinct_points() {
         }
     }
 }
+
+#[test]
+fn an_inset_leaves_no_slivers() {
+    // A sliver of a rounded corner as a mesh cuts it: very short edges between long ones.
+    // Rounding its insets to the lattice once left needles from the inset back to the short
+    // edges' corner, two each time.
+    let corner = vec![
+        [2.989087, 0.0],
+        [0.10489, 9.825475],
+        [0.039171, 9.545889],
+        [0.001481, 9.27145],
+        [0.001222, 9.269564],
+        [0.001213, 9.26936],
+        [0.0, 9.242424],
+    ];
+    let region = union_contours(&[corner]).unwrap();
+    let inset = offset(&region, -0.08).unwrap();
+    assert_eq!(inset.len(), 1, "{inset:?}");
+    let contour = &inset[0][0];
+    let mut closed = contour.clone();
+    closed.push(contour[0]);
+    let thickness = 2.0 * signed_area(contour).abs() / polyline_length(&closed);
+    assert!(thickness > 0.01, "a sliver {thickness} mm thick: {contour:?}");
+    // Deeper than the corner is thick, nothing is left.
+    assert_eq!(offset(&region, -0.21).unwrap(), Vec::<Shape>::new());
+}

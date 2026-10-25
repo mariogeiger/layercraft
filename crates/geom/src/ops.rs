@@ -3,7 +3,7 @@
 //! Coordinates go onto one global lattice of `GRID_MM` (integers in nanometres, origin at
 //! zero) and `i_overlay`'s integer engine works there exactly. Every result lies on that lattice,
 //! so two results agree bit for bit where they meet, and two consecutive points of a contour are
-//! at least a lattice step apart.
+//! at least a lattice step apart. No contour of a result is thinner than a lattice step.
 
 use crate::{GeomError, Point, Polyline, Region, check_points, check_value, signed_area};
 use i_overlay::core::fill_rule::FillRule;
@@ -106,7 +106,35 @@ pub fn offset(region: &Region, distance: f64) -> Result<Region, GeomError> {
     let style = IntOutlineStyle::new(steps).line_join(IntLineJoin::Miter(angle));
     let shapes =
         region_to_lattice(region).outline(&style).map_err(|e| GeomError::Engine(format!("{e:?}")))?;
-    Ok(region_from_lattice(shapes))
+    Ok(region_from_lattice(without_slivers(shapes)))
+}
+
+/// Whether a contour is at least a lattice step thick, its thickness being twice its area over
+/// its perimeter: the width of a strip, half the radius of a disc.
+fn thicker_than_a_step(contour: &[Lattice]) -> bool {
+    let n = contour.len();
+    let (mut doubled_area, mut perimeter) = (0i128, 0.0f64);
+    for (i, a) in contour.iter().enumerate() {
+        let Some(b) = contour.get((i + 1) % n) else { continue };
+        doubled_area += a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128;
+        perimeter += ((b.x - a.x) as f64).hypot((b.y - a.y) as f64);
+    }
+    doubled_area.unsigned_abs() as f64 >= perimeter
+}
+
+/// The shapes without the contours thinner than a lattice step. Rounding an offset to the
+/// lattice leaves such slivers where very short edges meet, reaching from the offset contour
+/// back to the original one; the exact offset has none.
+fn without_slivers(shapes: Vec<Vec<Vec<Lattice>>>) -> Vec<Vec<Vec<Lattice>>> {
+    shapes
+        .into_iter()
+        .filter(|shape| shape.first().is_some_and(|outer| thicker_than_a_step(outer)))
+        .map(|shape| {
+            let mut contours = shape.into_iter();
+            let outer = contours.next();
+            outer.into_iter().chain(contours.filter(|hole| thicker_than_a_step(hole))).collect()
+        })
+        .collect()
 }
 
 /// The pieces of `lines` that lie inside `region`.
