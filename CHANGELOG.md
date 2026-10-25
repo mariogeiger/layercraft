@@ -2,6 +2,14 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.1.3
+
+### Fixed
+
+- The X2D refused to start layercraft's `.gcode.3mf` (error 0500-4046): the plate summary now
+  describes the extruders and nozzle, the filament order and the client version of the
+  imported profiles, as the firmware expects. Run `layercraft machine import` again.
+
 ## 0.1.2
 
 ### Fixed

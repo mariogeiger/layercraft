@@ -10,5 +10,9 @@ md-5.workspace = true
 png.workspace = true
 zip.workspace = true
 
+[dev-dependencies]
+md-5.workspace = true
+zip.workspace = true
+
 [lints]
 workspace = true

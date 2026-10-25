@@ -203,6 +203,20 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 thumbnail: layercraft_view::thumbnail(paths, 512),
                 small_thumbnail: layercraft_view::thumbnail(paths, 128),
                 generator: header.generator.clone(),
+                client_version: if machine.slicer_version.is_empty() {
+                    return Err("the machine description predates layercraft 0.1.3: run `layercraft machine import` again".into());
+                } else {
+                    machine.slicer_version.clone()
+                },
+                object_name: input
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .map(|s| s.to_string_lossy().trim_end_matches(".gcode").to_string())
+                    .unwrap_or_else(|| "part".into()),
+                layers: summary.layers,
+                layer_height: settings.layering.layer_height,
+                first_layer_seconds: summary.first_layer_seconds,
+                bounds: summary.first_layer_bounds,
             };
             let file = std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
             layercraft_package::write_package(&plate, std::io::BufWriter::new(file))

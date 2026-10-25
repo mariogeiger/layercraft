@@ -70,6 +70,8 @@ pub struct Summary {
     pub volume_per_layer: Vec<f64>,
     /// Time of the moves, in seconds (the machine's own start and end sequences not counted).
     pub motion_seconds: f64,
+    /// Time of the moves up to the end of the first layer, in seconds.
+    pub first_layer_seconds: f64,
     /// The first layer's extent `[min, max]`, for bed levelling.
     pub first_layer_bounds: [[f64; 2]; 2],
 }

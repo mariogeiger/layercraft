@@ -274,12 +274,16 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
             *minutes_left = ((total - t) / 60.0).ceil().max(0.0) as u32;
         }
     }
+    let second_layer =
+        s.ops.iter().enumerate().filter(|(_, op)| matches!(op, Op::Layer { .. })).nth(1).map(|(i, _)| i);
+    let first_layer_seconds = second_layer.and_then(|i| times.get(i).copied()).unwrap_or(total);
     let summary = Summary {
         layers: paths.layers.len(),
         max_z,
         filament_mm: s.filament,
         volume_per_layer,
         motion_seconds: total,
+        first_layer_seconds,
         first_layer_bounds: bounds,
     };
     Ok(Program { ops: s.ops, summary })

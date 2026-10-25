@@ -38,6 +38,10 @@ pub enum Kind {
 pub struct Machine {
     /// Where the settings came from (slicer version and profile names).
     pub source: String,
+    /// The version of the slicer whose profiles and file conventions these are, such as
+    /// `02.08.02.61`; the printer's firmware checks it in the files it prints.
+    #[serde(default)]
+    pub slicer_version: String,
     /// The extruder variant printed with, such as `Direct Drive Standard`.
     pub variant: String,
     pub machine: BTreeMap<String, Value>,

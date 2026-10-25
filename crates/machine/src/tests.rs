@@ -56,6 +56,7 @@ fn missing_or_broken_input_is_an_error() {
 fn settings_follow_the_variant() {
     let machine = Machine {
         source: String::new(),
+        slicer_version: String::new(),
         variant: "Bowden Standard".into(),
         machine: [
             (
