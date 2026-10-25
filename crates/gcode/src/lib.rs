@@ -149,6 +149,7 @@ pub fn write(program: &Program, header: &Header) -> String {
             }
             Op::Travel { to, speed } => w.mov(to.map(Some), None, *speed),
             Op::Extrude { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
+            Op::Wipe { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
             Op::Lift { z, speed } => w.mov([None, None, Some(*z)], None, *speed),
             Op::Retract { e, speed } => {
                 let mut words = format!("G1 E{}", number(*e, 5));

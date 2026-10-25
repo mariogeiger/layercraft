@@ -4,7 +4,8 @@
 //! Checked for every move layercraft generates: finite numbers; positions inside the plate's
 //! printable area and below its printable height; the nozzle never below the layer it prints
 //! (extrusions at the layer's height, travels at or above it); layers rising; speeds within the
-//! machine's limits; filament flowing no faster than the hot end melts it; fan between 0 and 1.
+//! machine's limits; filament flowing no faster than the hot end melts it; wipes that move along
+//! the layer; fan between 0 and 1.
 //! The machine's own G-code (start, end, layer change) is the maker's and is not interpreted.
 #![deny(
     clippy::unwrap_used,
@@ -116,6 +117,22 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                             );
                         }
                     }
+                }
+                at = Some(*to);
+            }
+            Op::Wipe { to, e, speed } => {
+                if !to.iter().all(|v| v.is_finite())
+                    || !(speed.is_finite() && *speed > 0.0)
+                    || !e.is_finite()
+                    || *e > 0.0
+                {
+                    note(i, format!("wipe to {to:?} pulling {e} mm at {speed} mm/s"));
+                } else if !inside(to) {
+                    note(i, format!("wipe to ({:.3}, {:.3}) leaves the printable area", to[0], to[1]));
+                } else if layer_z.is_none_or(|z| (to[2] - z).abs() > SLACK) {
+                    note(i, format!("wipe at z = {} off the layer", to[2]));
+                } else if at.is_none_or(|p| (to[0] - p[0]).hypot(to[1] - p[1]) < SLACK) {
+                    note(i, "a wipe that does not move pulls filament in place".into());
                 }
                 at = Some(*to);
             }

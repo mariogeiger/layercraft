@@ -64,7 +64,6 @@ fn sparse_grid_has_its_density() {
     let i = 7;
     let sparse = area(&regions.layers[i].sparse);
     let covered = filled_area(&paths.layers[i].paths, Role::Sparse);
-    // The two directions cross: the bead area counts the crossings twice, as density says.
     assert!((covered / sparse - 0.2).abs() < 0.02, "{}", covered / sparse);
 }
 
@@ -101,5 +100,26 @@ fn beads_have_no_zero_length_segments() {
             pts.push(pts[0]);
         }
         assert!(pts.windows(2).all(|w| w[0] != w[1]), "{path:?}");
+    }
+}
+
+#[test]
+fn sparse_beads_never_cross_on_a_layer() {
+    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
+    for layer in &paths.layers {
+        let directions: Vec<f64> = layer
+            .paths
+            .iter()
+            .filter(|p| p.role == Role::Sparse)
+            .map(|p| {
+                let (a, b) = (p.points[0], p.points[p.points.len() - 1]);
+                ((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 360.0) % 180.0
+            })
+            .collect();
+        assert!(
+            directions.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6),
+            "layer {}: {directions:?}",
+            layer.index
+        );
     }
 }

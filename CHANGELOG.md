@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.1.4
+
+### Fixed
+
+- No more string at the end of a print or after a travel: each retraction wipes back over the
+  bead just laid (the filament's wipe distance), pulling the filament at the retraction speed,
+  and the nozzle lifts off the part before the machine's end sequence.
+- Sparse infill no longer piles up where its lines crossed: one direction per layer, turning a
+  quarter turn each layer, at the spacing that keeps the density.
+
 ## 0.1.3
 
 ### Fixed

@@ -115,9 +115,11 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     let odd = layer.index % 2 == 1;
     let solid_angle = p.infill_angle + if odd { 90.0 } else { 0.0 };
     let h = layer.height;
-    // Two directions of beads `s` apart in effect, every `S`, fill `2s/S` of the area.
+    // Beads `s` apart in effect, every `S`, fill `s/S` of the area. One direction per layer,
+    // turning a quarter turn each layer: two beads never cross on one layer, where a crossing
+    // would lay plastic twice in one place.
     let sparse_spacing = if p.sparse_density > 0.0 {
-        2.0 * bead_spacing(p.sparse_width, h) / p.sparse_density
+        bead_spacing(p.sparse_width, h) / p.sparse_density
     } else {
         f64::INFINITY
     };
@@ -130,13 +132,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             vec![solid_angle],
         ),
         (Role::Solid, &layer.solid, p.solid_width, bead_spacing(p.solid_width, h), vec![solid_angle]),
-        (
-            Role::Sparse,
-            &layer.sparse,
-            p.sparse_width,
-            sparse_spacing,
-            vec![p.infill_angle, p.infill_angle + 90.0],
-        ),
+        (Role::Sparse, &layer.sparse, p.sparse_width, sparse_spacing, vec![solid_angle]),
     ];
     for (role, region, width, spacing, angles) in fills {
         for line in infill_lines(region, width, spacing, &angles, p.infill_wall_overlap)? {

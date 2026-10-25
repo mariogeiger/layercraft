@@ -38,6 +38,9 @@ pub enum Op {
     Feature { role: Role, width: f64 },
     /// A move without extrusion, at `speed` mm/s.
     Travel { to: [f64; 3], speed: f64 },
+    /// A move back over the bead just laid, pulling `e` (negative) mm of filament on the way, at
+    /// `speed` mm/s: the nozzle wipes its tip on the part instead of leaving a string.
+    Wipe { to: [f64; 3], e: f64, speed: f64 },
     /// A vertical move to `z` from wherever the nozzle is, at `speed` mm/s.
     Lift { z: f64, speed: f64 },
     /// A move pushing `e` mm of filament, at `speed` mm/s.
@@ -118,6 +121,10 @@ pub struct MotionParams {
     pub deretract_speed: f64,
     /// Travels shorter than this are made without retracting.
     pub retract_min_travel: f64,
+    /// How far back over the last bead the nozzle wipes while retracting, in mm (0: no wipe).
+    pub wipe_distance: f64,
+    /// The fraction of the retraction done in place before the wipe, from 0 to 1.
+    pub retract_before_wipe: f64,
     pub z_hop: f64,
     /// A layer printing faster than this is slowed down, in seconds.
     pub slow_down_layer_time: f64,

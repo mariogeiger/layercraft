@@ -26,6 +26,8 @@ fn params() -> MotionParams {
         retract_speed: 30.0,
         deretract_speed: 30.0,
         retract_min_travel: 1.0,
+        wipe_distance: 0.0,
+        retract_before_wipe: 0.0,
         z_hop: 0.4,
         slow_down_layer_time: 0.0,
         slow_down_min_speed: 10.0,
@@ -124,4 +126,27 @@ fn missing_template_variables_are_named() {
     p.templates.end = "M140 S[bed]".into();
     let err = compile(&line(1.0), &p, &scope()).unwrap_err().to_string();
     assert!(err.contains("bed"), "{err}");
+}
+
+#[test]
+fn retraction_wipes_back_over_the_bead() {
+    let mut p = params();
+    p.wipe_distance = 1.0;
+    let program = compile(&line(10.0), &p, &scope()).unwrap();
+    let ops = &program.ops;
+    let first_wipe = ops.iter().position(|op| matches!(op, Op::Wipe { .. })).unwrap();
+    let wipes: Vec<(&[f64; 3], f64, f64)> = ops[first_wipe..]
+        .iter()
+        .map_while(|op| if let Op::Wipe { to, e, speed } = op { Some((to, *e, *speed)) } else { None })
+        .collect();
+    // Back from the line's end at x = 20 towards its start, 1 mm, pulling the whole 0.4 mm.
+    let last = wipes.last().unwrap();
+    assert!((last.0[0] - 19.0).abs() < 1e-9, "{wipes:?}");
+    let pulled: f64 = wipes.iter().map(|w| w.1).sum();
+    assert!((pulled + 0.4).abs() < 1e-12);
+    // The filament never moves faster than the retraction speed: 0.4 mm over 1 mm at v ≤ 75 mm/s.
+    assert!(wipes.iter().all(|w| w.2 * 0.4 / 1.0 <= p.retract_speed + 1e-9));
+    // And the print ends lifted off the part before the machine's own end.
+    let end = ops.iter().rposition(|op| matches!(op, Op::Raw { .. })).unwrap();
+    assert!(matches!(ops[end - 1], Op::Lift { z, .. } if (z - 0.8).abs() < 1e-9), "{:?}", ops[end - 1]);
 }

@@ -216,6 +216,19 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             retract_speed: m.number(M, "retraction_speed")?,
             deretract_speed: m.number(M, "deretraction_speed")?,
             retract_min_travel: m.number(M, "retraction_minimum_travel")?,
+            // A filament's own wipe settings win over the printer's; `nil` leaves the printer's.
+            wipe_distance: if m.number(M, "wipe").unwrap_or(0.0) > 0.0 {
+                match m.get(Filament, "filament_wipe_distance").ok().and_then(|v| v.number()) {
+                    Some(d) => d,
+                    None => m.number(M, "wipe_distance")?,
+                }
+            } else {
+                0.0
+            },
+            retract_before_wipe: match m.get(Filament, "filament_retract_before_wipe").ok().and_then(|v| v.number()) {
+                Some(v) => v / 100.0,
+                None => m.number(M, "retract_before_wipe").unwrap_or(0.0) / 100.0,
+            },
             z_hop: m.number(M, "z_hop")?,
             slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,
             slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,

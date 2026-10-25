@@ -2,8 +2,8 @@
 //!
 //! Walls become closed loops, starting at the vertex nearest the island's back right corner
 //! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
-//! at ±45° alternating by layer; sparse areas get a grid whose spacing gives the requested
-//! density by volume. Hatch lines lie on a fixed grid, so layers stack. Each island is printed
+//! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
+//! volume, also alternating, so no two beads cross on a layer. Hatch lines lie on a fixed grid, so layers stack. Each island is printed
 //! whole — inner walls, outer wall, then its infill — and islands follow each other nearest first.
 #![deny(
     clippy::unwrap_used,

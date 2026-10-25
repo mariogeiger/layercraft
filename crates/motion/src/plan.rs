@@ -107,6 +107,9 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
 struct State {
     ops: Vec<Op>,
     at: [f64; 3],
+    /// The bead being laid or just laid, with its speed: what a retraction wipes over.
+    bead: Vec<[f64; 3]>,
+    bead_speed: f64,
     retracted: bool,
     feature: Option<(Role, f64)>,
     accel: Option<f64>,
@@ -121,10 +124,53 @@ impl State {
         }
     }
 
+    /// Pulls the filament back. After a bead, part of the pull happens while the nozzle moves
+    /// back over it for the wipe distance, at the speed that keeps the pull at the retraction
+    /// speed; what the wipe cannot take (a short bead) is pulled in place.
     fn retract(&mut self, p: &MotionParams) {
-        if !self.retracted && p.retract_length > 0.0 {
-            self.ops.push(Op::Retract { e: -p.retract_length, speed: p.retract_speed });
+        if self.retracted || p.retract_length <= 0.0 {
+            self.retracted = true;
+            return;
         }
+        let total = p.retract_length;
+        let before = total * p.retract_before_wipe.clamp(0.0, 1.0);
+        if before > 0.0 {
+            self.ops.push(Op::Retract { e: -before, speed: p.retract_speed });
+        }
+        let mut left = total - before;
+        let mut wiped = Vec::new();
+        let mut budget = p.wipe_distance;
+        let mut from = self.at;
+        for &to in self.bead.iter().rev().skip(1) {
+            // A nanometre of wipe left is rounding: stop rather than emit a move of nothing.
+            if budget <= 1e-6 {
+                break;
+            }
+            let d = (to[0] - from[0]).hypot(to[1] - from[1]);
+            if d <= 1e-6 {
+                continue;
+            }
+            let t = (budget / d).min(1.0);
+            let end = [from[0] + t * (to[0] - from[0]), from[1] + t * (to[1] - from[1]), from[2]];
+            wiped.push((end, d * t));
+            budget -= d * t;
+            from = end;
+        }
+        let length: f64 = wiped.iter().map(|(_, d)| d).sum();
+        if length > 0.0 {
+            let pull = left * (length / p.wipe_distance).min(1.0);
+            let speed = self.bead_speed.min(p.retract_speed * length / pull);
+            for (to, d) in wiped {
+                self.ops.push(Op::Wipe { to, e: -pull * d / length, speed });
+                self.at = to;
+            }
+            left -= pull;
+        }
+        // Below a nanometre of filament, what is left is rounding, not a pull.
+        if left > 1e-6 {
+            self.ops.push(Op::Retract { e: -left, speed: p.retract_speed });
+        }
+        self.bead.clear();
         self.retracted = true;
     }
 
@@ -160,6 +206,8 @@ impl State {
             self.travel([start[0], start[1], z], p.travel.speed);
         }
         self.deretract(p);
+        self.bead.clear();
+        self.bead.push(self.at);
     }
 }
 
@@ -204,8 +252,16 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
     );
     scope.insert("max_print_z".into(), num(max_z));
     scope.insert("max_layer_z".into(), num(0.0));
-    let mut s =
-        State { ops: Vec::new(), at: [0.0; 3], retracted: false, feature: None, accel: None, filament: 0.0 };
+    let mut s = State {
+        ops: Vec::new(),
+        at: [0.0; 3],
+        bead: Vec::new(),
+        bead_speed: p.travel.speed,
+        retracted: false,
+        feature: None,
+        accel: None,
+        filament: 0.0,
+    };
     // The markers bound the machine's own sequences, as the printer's firmware expects.
     if !p.templates.limits.is_empty() {
         s.ops.push(Op::Raw { text: p.templates.limits.clone() });
@@ -219,8 +275,9 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
     s.ops.push(Op::Raw { text: "G90\nG21\nM83 ; use relative distances for extrusion\n".into() });
     let mut volume_per_layer = Vec::with_capacity(paths.layers.len());
     for layer in &paths.layers {
-        s.ops.push(Op::Layer { index: layer.index, z: layer.top, height: layer.height });
+        // Pull back, wiping over the last bead, while still on the layer below.
         s.retract(p);
+        s.ops.push(Op::Layer { index: layer.index, z: layer.top, height: layer.height });
         scope.insert("layer_num".into(), num(layer.index as f64));
         scope.insert("layer_z".into(), num(layer.top));
         scope.insert("max_layer_z".into(), num(layer.top));
@@ -255,6 +312,8 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
                 let e = p.flow_ratio * area * l / filament_area;
                 s.ops.push(Op::Extrude { to: [b[0], b[1], layer.top], e, speed });
                 s.at = [b[0], b[1], layer.top];
+                s.bead.push(s.at);
+                s.bead_speed = speed;
                 s.filament += e;
                 volume += area * l;
             }
@@ -262,6 +321,8 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
         volume_per_layer.push(volume);
     }
     s.retract(p);
+    // Off the part at once, before the machine's own slow end sequence.
+    s.ops.push(Op::Lift { z: max_z + p.z_hop, speed: p.limits.max_speed_z });
     let filament_end = expand_text("filament end", &p.templates.filament_end, &scope)?;
     let end = expand_text("end", &p.templates.end, &scope)?;
     s.ops.push(Op::Raw { text: format!("; MACHINE_END_GCODE_START\n{filament_end}{end}") });

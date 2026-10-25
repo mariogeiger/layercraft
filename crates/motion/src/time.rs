@@ -105,10 +105,12 @@ pub fn estimate(ops: &[Op], limits: &Limits, start: [f64; 3]) -> Vec<f64> {
     times.push(0.0);
     for op in ops {
         match op {
-            Op::Travel { .. } | Op::Extrude { .. } | Op::Lift { .. } => {
+            Op::Travel { .. } | Op::Extrude { .. } | Op::Wipe { .. } | Op::Lift { .. } => {
                 let (to, speed) = match op {
                     Op::Lift { z, speed } => ([at[0], at[1], *z], *speed),
-                    Op::Travel { to, speed } | Op::Extrude { to, speed, .. } => (*to, *speed),
+                    Op::Travel { to, speed } | Op::Extrude { to, speed, .. } | Op::Wipe { to, speed, .. } => {
+                        (*to, *speed)
+                    }
                     _ => (at, 1.0),
                 };
                 let d = [to[0] - at[0], to[1] - at[1], to[2] - at[2]];
