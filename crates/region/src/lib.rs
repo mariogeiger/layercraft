@@ -8,8 +8,9 @@
 //! does not hold up is a bridge, laid as hanging strands: over air, wherever it is wider than a
 //! bead; over sparse infill, only where it is wide enough to span a gap between the sparse
 //! lines (`sparse_gap`) — a narrower band rests on them.
-//! The first layer's beads are wider, to grip the bed; a layer that is all top surface keeps
-//! only its outer wall when `one_wall_on_top`, and the top surface reaches it.
+//! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
+//! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
+//! layer above covers them, and the top surface reaches the outer wall.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -19,7 +20,9 @@
     clippy::unreachable
 )]
 
-use layercraft_geom::{GeomError, Region, bead_spacing, difference, intersection, offset, union};
+use layercraft_geom::{
+    GeomError, Region, bead_spacing, difference, intersection, offset, signed_area, union,
+};
 use layercraft_section::Sections;
 use serde::{Deserialize, Serialize};
 
@@ -42,6 +45,9 @@ pub struct RegionParams {
     pub one_wall_on_top: bool,
     /// The distance between the sparse infill's lines: the gap a strand over it must span.
     pub sparse_gap: f64,
+    /// Pieces of sparse infill smaller than this are solid, in mm².
+    #[serde(default)]
+    pub min_sparse_area: f64,
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
@@ -52,6 +58,9 @@ pub struct RegionLayer {
     pub height: f64,
     /// Wall centre lines, outermost first.
     pub walls: Vec<Region>,
+    /// Where inner walls are drawn, when not everywhere: under the layer above.
+    #[serde(default)]
+    pub inner_walls_within: Option<Region>,
     /// Inside the walls and exposed to the air above.
     pub top_surface: Region,
     /// Inside the walls, within the top or bottom shells, not exposed.
@@ -178,22 +187,30 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         };
         let i = i as isize;
         let next = covered(&regions, i + 1, 1)?;
-        // All of the layer is exposed: its inner walls would only show through the top.
-        let all_top = params.one_wall_on_top && next.is_empty();
-        let count = if all_top { params.walls.min(1) } else { params.walls };
         let mut walls = Vec::new();
-        for k in 0..count {
+        for k in 0..params.walls {
             let centre = offset(region, -wall_centre(widths, k, h))?;
             if centre.is_empty() {
                 break;
             }
             walls.push(centre);
         }
-        let inside = offset(region, -walls_depth(widths, count, h))?;
+        let inside = offset(region, -walls_depth(widths, params.walls, h))?;
+        // Inner walls under the air would only show through the top: there, the top surface
+        // runs out to the outer wall and the inner walls stop.
+        let (top_reach, inner_walls_within) = if params.one_wall_on_top && params.walls > 1 {
+            (offset(region, -walls_depth(widths, 1, h))?, Some(next.clone()))
+        } else {
+            (inside.clone(), None)
+        };
         let above = covered(&regions, i + 1, params.top_layers)?;
         let below = covered(&regions, i - params.bottom_layers as isize, params.bottom_layers)?;
-        let top_surface = difference(&inside, &next)?;
-        let deep = intersection(&intersection(&inside, &above)?, &below)?;
+        let top_surface = difference(&top_reach, &next)?;
+        // A small piece of sparse infill would be a line or two holding nothing up: solid.
+        let deep: Region = intersection(&intersection(&inside, &above)?, &below)?
+            .into_iter()
+            .filter(|shape| shape.iter().map(|c| signed_area(c)).sum::<f64>() >= params.min_sparse_area)
+            .collect();
         let shells = difference(&inside, &deep)?;
         let solid = difference(&shells, &top_surface)?;
         // What is not held up from below: over air (the layer below is absent) and over
@@ -216,6 +233,7 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
             top: layer.top,
             height: h,
             walls,
+            inner_walls_within,
             top_surface,
             solid,
             bridge,

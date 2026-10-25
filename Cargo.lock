@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "layercraft-gcode",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-gcode"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-motion",
  "layercraft-path",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-geom"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "i_overlay",
  "serde",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-machine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-mesh"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "quick-xml",
  "serde",
@@ -362,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-motion"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-geom",
  "layercraft-machine",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-package"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "md-5",
  "png",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-path"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -392,7 +392,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-region"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-section"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-verify"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-motion",
  "serde",
@@ -419,7 +419,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-view"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "layercraft-package",
  "layercraft-path",

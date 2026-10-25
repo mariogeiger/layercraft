@@ -3,7 +3,7 @@
 use crate::hatch::hatch;
 use crate::link::{Fill, link};
 use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{Contour, Point, bead_spacing, offset, signed_area};
+use layercraft_geom::{Contour, Point, bead_spacing, clip_lines, offset, signed_area};
 use layercraft_region::RegionLayer;
 
 /// The beads of one connected piece of a layer.
@@ -95,7 +95,19 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
             let Some(i) = home(&islands, first) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 let path = loop_path(Role::InnerWall, w(p.inner_wall_width), contour, &island.outline);
-                island.walls.push((k, path));
+                match &layer.inner_walls_within {
+                    None => island.walls.push((k, path)),
+                    // Only the stretches of the loop under the layer above.
+                    Some(within) => {
+                        let mut closed = path.points.clone();
+                        closed.extend(path.points.first().copied());
+                        for piece in clip_lines(&[closed], within)? {
+                            if piece.len() >= 2 {
+                                island.walls.push((k, Path { closed: false, points: piece, ..path.clone() }));
+                            }
+                        }
+                    }
+                }
             }
         }
     }

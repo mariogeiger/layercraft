@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.2
+
+### Fixed
+
+- A piece of sparse infill smaller than the process's `minimum_sparse_infill_area` (15 mm² on
+  the X2D) is solid: a thin tower's core no longer gets a stray line or two.
+- `only_one_wall_top` holds wherever a layer meets the air, not only on layers that are all top:
+  inner walls stay under the layer above and the top surface reaches the outer wall elsewhere.
+
 ## 0.2.1
 
 ### Fixed

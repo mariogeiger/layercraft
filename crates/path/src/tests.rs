@@ -33,6 +33,7 @@ fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
         first_layer_width: 0.4,
         one_wall_on_top: false,
         sparse_gap: 4.0,
+        min_sparse_area: 0.0,
     };
     let regions = split(&sections, &params).unwrap();
     let paths = trace(&regions, &PATHS).unwrap();

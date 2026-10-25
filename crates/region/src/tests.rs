@@ -17,6 +17,7 @@ const PARAMS: RegionParams = RegionParams {
     first_layer_width: 0.4,
     one_wall_on_top: false,
     sparse_gap: 2.0,
+    min_sparse_area: 15.0,
 };
 
 /// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
@@ -104,11 +105,12 @@ fn the_first_layer_is_wider_and_the_top_has_one_wall() {
     let regions = split(&sections, &params).unwrap();
     assert!(close(area(&regions.layers[0].walls[0]), 9.5 * 9.5));
     let top = regions.layers.last().unwrap();
-    assert_eq!(top.walls.len(), 1);
+    // Nothing covers the top layer: its inner walls are drawn nowhere.
+    assert!(top.inner_walls_within.as_ref().is_some_and(|r| r.is_empty()));
     let s = 0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let side = 10.0 - 2.0 * (0.2 + s / 2.0);
     assert!(close(area(&top.top_surface), side * side), "{}", area(&top.top_surface));
-    assert_eq!(regions.layers[8].walls.len(), 2);
+    assert!(regions.layers[8].inner_walls_within.as_ref().is_some_and(|r| !r.is_empty()));
 }
 
 #[test]
@@ -126,5 +128,19 @@ fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
     for layer in &regions.layers {
         let a = area(&layer.bridge);
         assert!(a == 0.0 || a > 10.0, "layer {}: a {a} mm² sliver of bridge", layer.index);
+    }
+}
+
+#[test]
+fn small_pieces_of_sparse_are_solid() {
+    // Inside its walls a 5 × 5 mm post leaves 3.3² = 11 mm² (under 15: solid); a 10 × 10 mm
+    // post leaves 69 mm² (sparse).
+    for (side, sparse) in [(5.0, false), (10.0, true)] {
+        let mesh = Mesh { bodies: vec![cuboid("post", [0.0; 3], [side, side, 3.0])] };
+        let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+        let regions = split(&sections, &PARAMS).unwrap();
+        let middle = &regions.layers[7];
+        assert_eq!(!middle.sparse.is_empty(), sparse, "{side} mm post");
+        assert!(!middle.solid.is_empty() || sparse);
     }
 }
