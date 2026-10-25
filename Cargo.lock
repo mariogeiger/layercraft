@@ -149,6 +149,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "layercraft-path"
+version = "0.1.0"
+dependencies = [
+ "layercraft-geom",
+ "layercraft-mesh",
+ "layercraft-region",
+ "layercraft-section",
+ "serde",
+]
+
+[[package]]
+name = "layercraft-region"
+version = "0.1.0"
+dependencies = [
+ "layercraft-geom",
+ "layercraft-mesh",
+ "layercraft-section",
+ "serde",
+]
+
+[[package]]
 name = "layercraft-section"
 version = "0.1.0"
 dependencies = [

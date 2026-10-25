@@ -1,0 +1,17 @@
+[package]
+name = "layercraft-region"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+layercraft-geom = { path = "../geom" }
+layercraft-section = { path = "../section" }
+serde.workspace = true
+
+[dev-dependencies]
+layercraft-mesh = { path = "../mesh" }
+
+[lints]
+workspace = true
