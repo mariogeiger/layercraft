@@ -2,12 +2,16 @@
 //!
 //! With `R_i` the section of layer `i`, the walls are the centre lines of successive insets of
 //! `R_i`, one bead spacing apart, and `A_i` is what lies inside the innermost wall. A point of
-//! `A_i` is sparse infill when the solid continues for `top_layers` layers above it and
-//! `bottom_layers` below it; otherwise it is solid. The part of `A_i` not covered by layer
-//! `i + 1` is the top surface, the one exposed to the air. Solid or top that the layer below
-//! does not hold up is a bridge, laid as hanging strands: over air, wherever it is wider than a
-//! bead, reaching a bead's width onto the support at its ends; over sparse infill, only where it is wide enough to span a gap between the sparse
-//! lines (`sparse_gap`) — a narrower band rests on them.
+//! `A_i` is sparse infill when the inside continues, in `A_j`, for `top_layers` layers above it,
+//! and the solid, in `R_j`, for `bottom_layers` below it; otherwise it is solid. What is laid
+//! above stands on solid unless it is infill itself: under a thin rib or the strokes of raised
+//! letters, all walls and no inside, the top shells run on underneath. Below, only the air
+//! needs a skin over it: what rests on walls is held up.
+//! The part of `A_i` not covered by layer `i + 1` is the top surface, the one exposed to the air.
+//! Solid or top that the layer below does not hold up is a bridge, laid as hanging strands: over
+//! air, wherever it is wider than a bead, reaching a bead's width onto the support at its ends;
+//! over sparse infill, only where it is wide enough to span a gap between the sparse lines
+//! (`sparse_gap`) — a narrower band rests on them.
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
 //! layer above covers them, and the top surface reaches the outer wall.
@@ -180,14 +184,22 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         let shrink = if layer.index == 0 { params.first_layer_shrink } else { 0.0 };
         regions.push(offset(&layer.region, -shrink)?);
     }
-    let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
-    for (i, (layer, region)) in sections.layers.iter().zip(&regions).enumerate() {
-        let h = layer.height;
-        let widths = if i == 0 {
+    let widths = |i: usize| {
+        if i == 0 {
             Widths { outer: params.first_layer_width, inner: params.first_layer_width }
         } else {
             Widths { outer: params.outer_wall_width, inner: params.inner_wall_width }
-        };
+        }
+    };
+    // What lies inside each layer's walls.
+    let mut insides: Vec<Region> = Vec::with_capacity(regions.len());
+    for (i, (layer, region)) in sections.layers.iter().zip(&regions).enumerate() {
+        insides.push(offset(region, -walls_depth(widths(i), params.walls, layer.height))?);
+    }
+    let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
+    for (i, ((layer, region), inside)) in sections.layers.iter().zip(&regions).zip(&insides).enumerate() {
+        let h = layer.height;
+        let widths = widths(i);
         let i = i as isize;
         let next = covered(&regions, i + 1, 1)?;
         let mut walls = Vec::new();
@@ -198,7 +210,6 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
             }
             walls.push(centre);
         }
-        let inside = offset(region, -walls_depth(widths, params.walls, h))?;
         // Inner walls under the air would only show through the top: there, the top surface
         // runs out to the outer wall and the inner walls stop.
         let (top_reach, inner_walls_within) = if params.one_wall_on_top && params.walls > 1 {
@@ -206,15 +217,15 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         } else {
             (inside.clone(), None)
         };
-        let above = covered(&regions, i + 1, params.top_layers)?;
+        let above = covered(&insides, i + 1, params.top_layers)?;
         let below = covered(&regions, i - params.bottom_layers as isize, params.bottom_layers)?;
         let top_surface = difference(&top_reach, &next)?;
         // A small piece of sparse infill would be a line or two holding nothing up: solid.
-        let deep: Region = intersection(&intersection(&inside, &above)?, &below)?
+        let deep: Region = intersection(&intersection(inside, &above)?, &below)?
             .into_iter()
             .filter(|shape| shape.iter().map(|c| signed_area(c)).sum::<f64>() >= params.min_sparse_area)
             .collect();
-        let shells = difference(&inside, &deep)?;
+        let shells = difference(inside, &deep)?;
         let solid = difference(&shells, &top_surface)?;
         // What is not held up from below: over air (the layer below is absent) and over
         // its sparse infill. Only the parts wide enough to need hanging strands are bridges.

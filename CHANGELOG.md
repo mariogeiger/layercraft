@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.5
+
+### Fixed
+
+- No region keeps a contour thinner than a micrometre: booleans no longer leave rounding
+  debris, such as hundreds of fill scraps on the layer under raised letters.
+- What stands on a layer decides its top shells, not only the air: under a thin rib or raised
+  letters, all walls and no inside, the layers below are solid for the top shells' depth, as
+  under a top surface, instead of a few sparse lines.
+
 ## 0.2.4
 
 ### Fixed

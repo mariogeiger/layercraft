@@ -156,3 +156,25 @@ fn small_pieces_of_sparse_are_solid() {
         assert!(!middle.solid.is_empty() || sparse);
     }
 }
+
+#[test]
+fn a_thin_rib_stands_on_solid() {
+    // A 1 mm rib along a 20 mm block: its two walls fill it, it has no inside. The three layers
+    // under it are top shells, under the rib as elsewhere: the rib stands on solid.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("block", [0.0; 3], [20.0, 20.0, 3.0]),
+            cuboid("rib", [2.0, 9.5, 3.0], [18.0, 10.5, 4.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &PARAMS).unwrap();
+    // Layers 12 to 14 (z 2.4 to 3) have the rib among their three layers above. Taken by its
+    // section, the rib once left them a 16 mm² strip of sparse under it, over the 15 mm² minimum.
+    for layer in &regions.layers[12..15] {
+        assert!(layer.sparse.is_empty(), "layer {}: sparse {}", layer.index, area(&layer.sparse));
+        assert!(!layer.solid.is_empty() || !layer.bridge_on_sparse.is_empty(), "layer {}", layer.index);
+    }
+    // Deeper, the whole inside is sparse again.
+    assert!(area(&regions.layers[8].sparse) > 200.0);
+}
