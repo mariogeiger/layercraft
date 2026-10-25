@@ -90,3 +90,15 @@ fn separate_islands_are_printed_whole() {
     let switches = side.windows(2).filter(|w| w[0] != w[1]).count();
     assert_eq!(switches, 1, "{side:?}");
 }
+
+#[test]
+fn beads_have_no_zero_length_segments() {
+    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] });
+    for path in paths.layers.iter().flat_map(|l| l.paths.iter()) {
+        let mut pts = path.points.clone();
+        if path.closed {
+            pts.push(pts[0]);
+        }
+        assert!(pts.windows(2).all(|w| w[0] != w[1]), "{path:?}");
+    }
+}

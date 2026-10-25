@@ -17,5 +17,21 @@ the motion the printer runs, is a file you can read, change and compile on from.
 - **Our own code.** MIT OR Apache-2.0, written from public specifications;
   other slicers serve only as references to compare against.
 
+## Use
+
+```bash
+cargo install --path apps/layercraft
+layercraft machine import                     # once: the X2D, 0.20 mm Standard, Bambu PLA Basic
+layercraft compile part.3mf --out part.gcode.3mf
+layercraft compile part.3mf --out part.gcode.3mf --emit paths=paths.json   # write a stage
+layercraft compile --from paths=paths.json --out part.gcode.3mf            # resume from it
+layercraft view paths.json --out view.json    # a SolidCraft script: one sketch per layer and role
+layercraft compare part.gcode.3mf other.gcode # side by side with another slicer's output
+```
+
+`machine import` reads the printer maker's profiles from an installed Bambu Studio, once, into
+`~/.config/layercraft/`; nothing from them enters this repository. The stages are `mesh`,
+`sections`, `regions`, `paths` and `program`.
+
 Read the [project soul](SOUL.md) for the mission and [AGENTS.md](AGENTS.md)
 for how to work on it.

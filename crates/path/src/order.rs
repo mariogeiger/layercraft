@@ -25,6 +25,27 @@ fn contains(contour: &[Point], p: Point) -> bool {
     inside
 }
 
+/// Points closer than this are one point, in mm (a hundredth of a micrometre).
+const SAME_POINT: f64 = 1e-5;
+
+/// The points without consecutive repeats (nor, on a loop, the start repeated at the end).
+fn distinct(points: Vec<Point>, closed: bool) -> Vec<Point> {
+    let mut out: Vec<Point> = Vec::with_capacity(points.len());
+    for p in points {
+        if out.last().is_none_or(|q| distance2(*q, p) > SAME_POINT * SAME_POINT) {
+            out.push(p);
+        }
+    }
+    if closed
+        && out.len() > 1
+        && let (Some(first), Some(last)) = (out.first(), out.last())
+        && distance2(*first, *last) <= SAME_POINT * SAME_POINT
+    {
+        out.pop();
+    }
+    out
+}
+
 fn distance2(a: Point, b: Point) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
@@ -69,7 +90,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         role,
         width,
         closed: true,
-        points: start_near(contour.clone(), back_right(outline)),
+        points: start_near(distinct(contour.clone(), true), back_right(outline)),
     };
     // The outer wall's shapes are the islands; without walls, the infill's shapes are.
     let mut islands: Vec<Island> = match layer.walls.first() {
@@ -80,6 +101,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 let walls = shape
                     .iter()
                     .map(|c| (0, loop_path(Role::OuterWall, p.outer_wall_width, c, &outline)))
+                    .filter(|(_, path)| path.points.len() >= 3)
                     .collect();
                 Some(Island { outline, walls, infill: Vec::new() })
             })
@@ -108,7 +130,9 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             let Some(i) = home(&islands, first) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 let path = loop_path(Role::InnerWall, p.inner_wall_width, contour, &island.outline);
-                island.walls.push((k, path));
+                if path.points.len() >= 3 {
+                    island.walls.push((k, path));
+                }
             }
         }
     }
@@ -131,8 +155,9 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         for line in infill_lines(region, width, spacing, &angles, p.infill_wall_overlap)? {
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
-            if let Some(island) = islands.get_mut(i) {
-                island.infill.push(Path { role, width, closed: false, points: line });
+            let points = distinct(line, false);
+            if let (Some(island), true) = (islands.get_mut(i), points.len() >= 2) {
+                island.infill.push(Path { role, width, closed: false, points });
             }
         }
     }
