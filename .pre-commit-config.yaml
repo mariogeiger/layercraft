@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-file-length-and-header
+        name: check file length and header
+        entry: scripts/check-file-length-and-header
+        language: script
+        types: [text]
+        exclude: ^(LICENSE-.*|Cargo\.lock)$
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        files: (\.rs|Cargo\.toml)$
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
+        language: system
+        files: (\.rs|Cargo\.toml|Cargo\.lock)$
+        pass_filenames: false
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --workspace --locked
+        language: system
+        files: (\.rs|Cargo\.toml|Cargo\.lock)$
+        pass_filenames: false

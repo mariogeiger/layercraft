@@ -1,0 +1,4 @@
+/target/
+*.gcode
+*.gcode.3mf
+/out/
