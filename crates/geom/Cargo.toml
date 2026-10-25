@@ -1,0 +1,13 @@
+[package]
+name = "layercraft-geom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+i_overlay.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true
