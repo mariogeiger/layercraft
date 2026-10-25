@@ -188,6 +188,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             top_layers: shell("top_shell_layers", "top_shell_thickness")?,
             bottom_layers: shell("bottom_shell_layers", "bottom_shell_thickness")?,
             first_layer_shrink: m.number(Process, "elefant_foot_compensation").unwrap_or(0.0),
+            first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
+            one_wall_on_top: m.number(Process, "only_one_wall_top").unwrap_or(0.0) > 0.0,
         },
         path: PathParams {
             outer_wall_width: outer,
@@ -198,6 +200,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             sparse_density: fraction(m, Process, "sparse_infill_density")?,
             infill_wall_overlap: fraction(m, Process, "infill_wall_overlap")?,
             infill_angle: m.number(Process, "infill_direction")?,
+            first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
+            bridge_width: nozzle,
         },
         motion: MotionParams {
             filament_diameter,
@@ -208,6 +212,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             top_surface: role(m, "top_surface_speed", "top_surface_acceleration")?,
             solid: role(m, "internal_solid_infill_speed", "internal_solid_infill_acceleration")?,
             sparse: role(m, "sparse_infill_speed", "sparse_infill_acceleration")?,
+            bridge: role(m, "bridge_speed", "bridge_acceleration")?,
             first_layer_wall_speed: m.number(Process, "initial_layer_speed")?,
             first_layer_infill_speed: m.number(Process, "initial_layer_infill_speed")?,
             first_layer_accel: accel(m, "initial_layer_acceleration")?,
@@ -216,6 +221,15 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             retract_speed: m.number(M, "retraction_speed")?,
             deretract_speed: m.number(M, "deretraction_speed")?,
             retract_min_travel: m.number(M, "retraction_minimum_travel")?,
+            // The process's seam gap, a percentage of the nozzle; 15 % when the profile is silent,
+            // the gap Bambu Studio leaves on the X2D.
+            seam_gap: match m.get(Process, "seam_gap").map(|v| v.render()) {
+                Ok(text) if text.trim().ends_with('%') => {
+                    text.trim().trim_end_matches('%').trim().parse::<f64>().unwrap_or(15.0) / 100.0 * nozzle
+                }
+                Ok(text) => text.trim().parse::<f64>().unwrap_or(0.15 * nozzle),
+                Err(_) => 0.15 * nozzle,
+            },
             // A filament's own wipe settings win over the printer's; `nil` leaves the printer's.
             wipe_distance: if m.number(M, "wipe").unwrap_or(0.0) > 0.0 {
                 match m.get(Filament, "filament_wipe_distance").ok().and_then(|v| v.number()) {

@@ -24,11 +24,13 @@ fn role_name(role: Role) -> &'static str {
         Role::InnerWall => "inner wall",
         Role::TopSurface => "top surface",
         Role::Solid => "solid infill",
+        Role::Bridge => "bridge",
         Role::Sparse => "sparse infill",
     }
 }
 
-const ROLES: [Role; 5] = [Role::OuterWall, Role::InnerWall, Role::TopSurface, Role::Solid, Role::Sparse];
+const ROLES: [Role; 6] =
+    [Role::OuterWall, Role::InnerWall, Role::TopSurface, Role::Solid, Role::Bridge, Role::Sparse];
 
 /// A SolidCraft script drawing every bead's centre line, layers `from..to`.
 pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value {
@@ -62,6 +64,7 @@ fn colour(role: Role) -> [f64; 3] {
         Role::InnerWall => [0.95, 0.80, 0.25],
         Role::TopSurface => [0.90, 0.25, 0.25],
         Role::Solid => [0.65, 0.30, 0.75],
+        Role::Bridge => [0.25, 0.75, 0.45],
         Role::Sparse => [0.30, 0.60, 0.85],
     }
 }

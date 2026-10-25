@@ -4,7 +4,10 @@
 //! `R_i`, one bead spacing apart, and `A_i` is what lies inside the innermost wall. A point of
 //! `A_i` is sparse infill when the solid continues for `top_layers` layers above it and
 //! `bottom_layers` below it; otherwise it is solid. The part of `A_i` not covered by layer
-//! `i + 1` is the top surface, the one exposed to the air.
+//! `i + 1` is the top surface, the one exposed to the air. Solid or top that the layer below
+//! does not hold up — over its sparse infill or over air — is a bridge, laid as hanging strands.
+//! The first layer's beads are wider, to grip the bed; a layer that is all top surface keeps
+//! only its outer wall when `one_wall_on_top`, and the top surface reaches it.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -31,6 +34,10 @@ pub struct RegionParams {
     pub bottom_layers: usize,
     /// How much the first layer shrinks, against the squash of the first layer on the bed.
     pub first_layer_shrink: f64,
+    /// The width of every bead of the first layer.
+    pub first_layer_width: f64,
+    /// A layer that is all top surface gets only its outer wall.
+    pub one_wall_on_top: bool,
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
@@ -45,6 +52,8 @@ pub struct RegionLayer {
     pub top_surface: Region,
     /// Inside the walls, within the top or bottom shells, not exposed.
     pub solid: Region,
+    /// Solid or top surface that nothing below holds up: over sparse infill or over air.
+    pub bridge: Region,
     /// Inside the walls, deep in the solid.
     pub sparse: Region,
 }
@@ -81,7 +90,8 @@ impl From<GeomError> for RegionError {
 
 fn check(params: &RegionParams) -> Result<(), RegionError> {
     let width = |w: f64| w.is_finite() && (0.05..=3.0).contains(&w);
-    if !width(params.outer_wall_width) || !width(params.inner_wall_width) {
+    if !width(params.outer_wall_width) || !width(params.inner_wall_width) || !width(params.first_layer_width)
+    {
         return Err(RegionError::BadParams("wall widths must be 0.05 to 3 mm".into()));
     }
     if params.walls > 50 || params.top_layers > 200 || params.bottom_layers > 200 {
@@ -93,23 +103,30 @@ fn check(params: &RegionParams) -> Result<(), RegionError> {
     Ok(())
 }
 
+/// The widths of a layer's outer and inner wall beads.
+#[derive(Clone, Copy)]
+struct Widths {
+    outer: f64,
+    inner: f64,
+}
+
 /// The distance from the solid's edge to the centre line of wall `k` (0 = outer), on a layer
 /// `h` high. The outer bead's side touches the edge; inward, beads sit their tiling spacing
 /// apart (`bead_spacing`), so the walls fill their band without voids.
-fn wall_centre(params: &RegionParams, k: usize, h: f64) -> f64 {
-    let (outer, inner) = (bead_spacing(params.outer_wall_width, h), bead_spacing(params.inner_wall_width, h));
+fn wall_centre(w: Widths, k: usize, h: f64) -> f64 {
+    let (outer, inner) = (bead_spacing(w.outer, h), bead_spacing(w.inner, h));
     match k {
-        0 => params.outer_wall_width / 2.0,
-        k => params.outer_wall_width / 2.0 + outer / 2.0 + (k as f64 - 0.5) * inner,
+        0 => w.outer / 2.0,
+        k => w.outer / 2.0 + outer / 2.0 + (k as f64 - 0.5) * inner,
     }
 }
 
-/// The distance from the solid's edge to where the walls' material ends, on a layer `h` high.
-fn walls_depth(params: &RegionParams, h: f64) -> f64 {
-    let (outer, inner) = (bead_spacing(params.outer_wall_width, h), bead_spacing(params.inner_wall_width, h));
-    match params.walls {
+/// The distance from the solid's edge to where `n` walls' material ends, on a layer `h` high.
+fn walls_depth(w: Widths, n: usize, h: f64) -> f64 {
+    let (outer, inner) = (bead_spacing(w.outer, h), bead_spacing(w.inner, h));
+    match n {
         0 => 0.0,
-        n => params.outer_wall_width / 2.0 + outer / 2.0 + (n - 1) as f64 * inner,
+        n => w.outer / 2.0 + outer / 2.0 + (n - 1) as f64 * inner,
     }
 }
 
@@ -135,32 +152,55 @@ pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, Regi
         let shrink = if layer.index == 0 { params.first_layer_shrink } else { 0.0 };
         regions.push(offset(&layer.region, -shrink)?);
     }
-    let mut layers = Vec::with_capacity(regions.len());
+    let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
     for (i, (layer, region)) in sections.layers.iter().zip(&regions).enumerate() {
+        let h = layer.height;
+        let widths = if i == 0 {
+            Widths { outer: params.first_layer_width, inner: params.first_layer_width }
+        } else {
+            Widths { outer: params.outer_wall_width, inner: params.inner_wall_width }
+        };
+        let i = i as isize;
+        let next = covered(&regions, i + 1, 1)?;
+        // All of the layer is exposed: its inner walls would only show through the top.
+        let all_top = params.one_wall_on_top && next.is_empty();
+        let count = if all_top { params.walls.min(1) } else { params.walls };
         let mut walls = Vec::new();
-        for k in 0..params.walls {
-            let centre = offset(region, -wall_centre(params, k, layer.height))?;
+        for k in 0..count {
+            let centre = offset(region, -wall_centre(widths, k, h))?;
             if centre.is_empty() {
                 break;
             }
             walls.push(centre);
         }
-        let inside = offset(region, -walls_depth(params, layer.height))?;
-        let i = i as isize;
+        let inside = offset(region, -walls_depth(widths, count, h))?;
         let above = covered(&regions, i + 1, params.top_layers)?;
         let below = covered(&regions, i - params.bottom_layers as isize, params.bottom_layers)?;
-        let next = covered(&regions, i + 1, 1)?;
         let top_surface = difference(&inside, &next)?;
         let deep = intersection(&intersection(&inside, &above)?, &below)?;
         let shells = difference(&inside, &deep)?;
         let solid = difference(&shells, &top_surface)?;
+        // What holds a layer up: the layer below, except where it is sparse (or the bed).
+        let support = match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
+            (Some(below), Some(previous)) => Some(difference(below, &previous.sparse)?),
+            _ => None,
+        };
+        let (bridge, solid, top_surface) = match support {
+            Some(support) => (
+                difference(&union(&solid, &top_surface)?, &support)?,
+                intersection(&solid, &support)?,
+                intersection(&top_surface, &support)?,
+            ),
+            None => (Vec::new(), union(&solid, &Vec::new())?, top_surface),
+        };
         layers.push(RegionLayer {
             index: layer.index,
             top: layer.top,
-            height: layer.height,
+            height: h,
             walls,
             top_surface,
-            solid: union(&solid, &Vec::new())?,
+            solid,
+            bridge,
             sparse: deep,
         });
     }

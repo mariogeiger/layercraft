@@ -1,8 +1,9 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
 use crate::hatch::hatch;
+use crate::link::{Fill, link};
 use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{Contour, Point, Polyline, Region, bead_spacing, offset, signed_area};
+use layercraft_geom::{Contour, Point, bead_spacing, offset, signed_area};
 use layercraft_region::RegionLayer;
 
 /// The beads of one connected piece of a layer.
@@ -45,26 +46,11 @@ fn back_right(contour: &[Point]) -> Point {
     contour.iter().fold([f64::MIN, f64::MIN], |m, p| [m[0].max(p[0]), m[1].max(p[1])])
 }
 
-fn infill_lines(
-    region: &Region,
-    width: f64,
-    spacing: f64,
-    angles: &[f64],
-    overlap: f64,
-) -> Result<Vec<Polyline>, PathError> {
-    if region.is_empty() {
-        return Ok(Vec::new());
-    }
-    let reach = offset(region, overlap * width)?;
-    let mut lines = Vec::new();
-    for &angle in angles {
-        lines.extend(hatch(&reach, spacing, angle)?);
-    }
-    Ok(lines)
-}
-
-/// Splits a layer into islands, each holding its walls and the infill inside them.
-pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathError> {
+/// Splits a layer into islands, each holding its walls and the infill inside them, and lists
+/// the layer's infill areas for joining their lines.
+pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<Fill>), PathError> {
+    let first = layer.index == 0;
+    let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| Path {
         role,
         width,
@@ -79,12 +65,12 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 let outline = shape.first()?.clone();
                 let walls = shape
                     .iter()
-                    .map(|c| (0, loop_path(Role::OuterWall, p.outer_wall_width, c, &outline)))
+                    .map(|c| (0, loop_path(Role::OuterWall, w(p.outer_wall_width), c, &outline)))
                     .collect();
                 Some(Island { outline, walls, infill: Vec::new() })
             })
             .collect(),
-        None => [&layer.top_surface, &layer.solid, &layer.sparse]
+        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.sparse]
             .into_iter()
             .flatten()
             .filter_map(|shape| {
@@ -107,7 +93,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             let Some(&first) = contour.first() else { continue };
             let Some(i) = home(&islands, first) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                let path = loop_path(Role::InnerWall, p.inner_wall_width, contour, &island.outline);
+                let path = loop_path(Role::InnerWall, w(p.inner_wall_width), contour, &island.outline);
                 island.walls.push((k, path));
             }
         }
@@ -119,31 +105,34 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     // turning a quarter turn each layer: two beads never cross on one layer, where a crossing
     // would lay plastic twice in one place.
     let sparse_spacing = if p.sparse_density > 0.0 {
-        bead_spacing(p.sparse_width, h) / p.sparse_density
+        bead_spacing(w(p.sparse_width), h) / p.sparse_density
     } else {
         f64::INFINITY
     };
+    let (top, solid) = (w(p.top_surface_width), w(p.solid_width));
+    // Bridge strands hang round, a nozzle wide: they touch side by side.
     let fills = [
-        (
-            Role::TopSurface,
-            &layer.top_surface,
-            p.top_surface_width,
-            bead_spacing(p.top_surface_width, h),
-            vec![solid_angle],
-        ),
-        (Role::Solid, &layer.solid, p.solid_width, bead_spacing(p.solid_width, h), vec![solid_angle]),
-        (Role::Sparse, &layer.sparse, p.sparse_width, sparse_spacing, vec![solid_angle]),
+        (Role::TopSurface, &layer.top_surface, top, bead_spacing(top, h)),
+        (Role::Solid, &layer.solid, solid, bead_spacing(solid, h)),
+        (Role::Bridge, &layer.bridge, p.bridge_width, p.bridge_width),
+        (Role::Sparse, &layer.sparse, w(p.sparse_width), sparse_spacing),
     ];
-    for (role, region, width, spacing, angles) in fills {
-        for line in infill_lines(region, width, spacing, &angles, p.infill_wall_overlap)? {
+    let mut areas = Vec::new();
+    for (role, region, width, spacing) in fills {
+        if region.is_empty() {
+            continue;
+        }
+        let reach = offset(region, p.infill_wall_overlap * width)?;
+        for line in hatch(&reach, spacing, solid_angle)? {
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 island.infill.push(Path { role, width, closed: false, points: line });
             }
         }
+        areas.push(Fill { role, reach, max_link: 3.0 * spacing });
     }
-    Ok(islands)
+    Ok((islands, areas))
 }
 
 fn end_of(path: &Path) -> Option<Point> {
@@ -175,8 +164,9 @@ fn chain(mut paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>) {
     }
 }
 
-/// The layer's beads in printing order: island by island, nearest first.
-pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
+/// The layer's beads in printing order: island by island, nearest first; within an island the
+/// walls, then each infill area's lines, joined where they can be.
+pub fn sequence(mut islands: Vec<Island>, fills: &[Fill], at: &mut Point) -> Vec<Path> {
     let mut out = Vec::new();
     while !islands.is_empty() {
         let near = islands
@@ -198,7 +188,15 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
             walls.push(path);
         }
         chain(walls, at, &mut out);
-        chain(island.infill, at, &mut out);
+        let mut infill = island.infill;
+        for fill in fills {
+            let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);
+            infill = rest;
+            let mut ordered = Vec::new();
+            chain(mine, at, &mut ordered);
+            out.extend(link(ordered, fill));
+        }
+        chain(infill, at, &mut out);
     }
     out
 }

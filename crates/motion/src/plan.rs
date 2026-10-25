@@ -73,17 +73,41 @@ fn role_motion(p: &MotionParams, role: Role) -> &RoleMotion {
         Role::TopSurface => &p.top_surface,
         Role::Solid => &p.solid,
         Role::Sparse => &p.sparse,
+        Role::Bridge => &p.bridge,
     }
 }
 
-fn path_points(path: &Path) -> Vec<Point> {
+/// The points a bead runs through: a loop back to its start, less `gap` at its end.
+fn path_points(path: &Path, gap: f64) -> Vec<Point> {
     let mut points = path.points.clone();
-    if path.closed
-        && let Some(&first) = points.first()
-    {
-        points.push(first);
+    let Some(&first) = points.first() else { return points };
+    if !path.closed {
+        return points;
+    }
+    points.push(first);
+    let mut left = gap;
+    while left > 0.0 && points.len() > 2 {
+        let (Some(&b), Some(&a)) = (points.last(), points.get(points.len() - 2)) else { break };
+        let d = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if d > left {
+            let t = (d - left) / d;
+            if let Some(last) = points.last_mut() {
+                *last = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+            }
+            break;
+        }
+        points.pop();
+        left -= d;
     }
     points
+}
+
+/// The cross-section a bead lays: flattened on the layer below, or round when it bridges.
+fn section_area(path: &Path, height: f64) -> f64 {
+    match path.role {
+        Role::Bridge => std::f64::consts::PI * path.width * path.width / 4.0,
+        _ => bead_area(path.width, height),
+    }
 }
 
 fn length(points: &[Point]) -> f64 {
@@ -100,7 +124,7 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
     } else {
         role_motion(p, path.role).speed
     };
-    let melt = p.max_volumetric_speed / bead_area(path.width, layer.height).max(1e-6);
+    let melt = p.max_volumetric_speed / section_area(path, layer.height).max(1e-6);
     base.min(melt)
 }
 
@@ -285,13 +309,16 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
         s.ops.push(Op::Progress { percent: 0, minutes_left: 0 });
         s.ops.push(Op::Fan { speed: if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed } });
         // Slow the whole layer down when it would print faster than it can cool.
-        let busy: f64 =
-            layer.paths.iter().map(|path| length(&path_points(path)) / bead_speed(p, path, layer)).sum();
+        let busy: f64 = layer
+            .paths
+            .iter()
+            .map(|path| length(&path_points(path, p.seam_gap)) / bead_speed(p, path, layer))
+            .sum();
         let slow =
             if busy > 0.0 && busy < p.slow_down_layer_time { busy / p.slow_down_layer_time } else { 1.0 };
         let mut volume = 0.0;
         for (k, path) in layer.paths.iter().enumerate() {
-            let points = path_points(path);
+            let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
             s.go_to(p, start, layer.top, k == 0);
             if s.feature != Some((path.role, path.width)) {
@@ -302,7 +329,7 @@ pub fn compile(paths: &Paths, p: &MotionParams, scope: &Scope) -> Result<Program
             s.accel(accel);
             let base = bead_speed(p, path, layer);
             let speed = (base * slow).max(p.slow_down_min_speed.min(base));
-            let area = bead_area(path.width, layer.height);
+            let area = section_area(path, layer.height);
             for w in points.windows(2) {
                 let [a, b] = [w.first().copied().unwrap_or(start), w.get(1).copied().unwrap_or(start)];
                 let l = (b[0] - a[0]).hypot(b[1] - a[1]);

@@ -44,6 +44,7 @@ pub fn feature_name(role: Role) -> &'static str {
         Role::InnerWall => "Inner wall",
         Role::TopSurface => "Top surface",
         Role::Solid => "Internal solid infill",
+        Role::Bridge => "Bridge",
         Role::Sparse => "Sparse infill",
     }
 }

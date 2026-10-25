@@ -2,8 +2,9 @@
 //! own G-code around them.
 //!
 //! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
-//! its sides, `(w − h)·h + π·h²/4`; a move of length `L` fills that times `L`, and pushes
-//! `flow · area · L / filament_area` of filament. Speeds come by role, capped by the hot end's
+//! its sides, `(w − h)·h + π·h²/4`, and a bridge strand, hanging free, the disc `π·w²/4`; a
+//! move of length `L` fills that times `L`, and pushes `flow · area · L / filament_area` of
+//! filament. A wall loop stops `seam_gap` short of its start, so the seam does not pile up. Speeds come by role, capped by the hot end's
 //! volumetric limit, and slowed down on layers too short to cool. Print time comes from a
 //! look-ahead planner of the machine's accelerations and corner speeds.
 #![deny(
@@ -112,6 +113,7 @@ pub struct MotionParams {
     pub top_surface: RoleMotion,
     pub solid: RoleMotion,
     pub sparse: RoleMotion,
+    pub bridge: RoleMotion,
     pub first_layer_wall_speed: f64,
     pub first_layer_infill_speed: f64,
     pub first_layer_accel: f64,
@@ -121,6 +123,8 @@ pub struct MotionParams {
     pub deretract_speed: f64,
     /// Travels shorter than this are made without retracting.
     pub retract_min_travel: f64,
+    /// How far short of its start a loop stops, in mm.
+    pub seam_gap: f64,
     /// How far back over the last bead the nozzle wipes while retracting, in mm (0: no wipe).
     pub wipe_distance: f64,
     /// The fraction of the retraction done in place before the wipe, from 0 to 1.

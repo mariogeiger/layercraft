@@ -3,8 +3,11 @@
 //! Walls become closed loops, starting at the vertex nearest the island's back right corner
 //! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
 //! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
-//! volume, also alternating, so no two beads cross on a layer. Hatch lines lie on a fixed grid, so layers stack. Each island is printed
-//! whole — inner walls, outer wall, then its infill — and islands follow each other nearest first.
+//! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
+//! wide, side by side. Hatch lines lie on a fixed grid, so layers stack, and neighbouring lines
+//! join into zigzags along the area's edge. Each island is printed whole — inner walls, outer
+//! wall, then its infill — and islands follow each other nearest first. The first layer's beads
+//! are all `first_layer_width` wide.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -15,6 +18,7 @@
 )]
 
 mod hatch;
+mod link;
 mod order;
 
 use layercraft_geom::{GeomError, Point};
@@ -29,6 +33,8 @@ pub enum Role {
     InnerWall,
     TopSurface,
     Solid,
+    /// Strands hanging over sparse infill or air, round in section.
+    Bridge,
     Sparse,
 }
 
@@ -70,6 +76,10 @@ pub struct PathParams {
     pub infill_wall_overlap: f64,
     /// Direction of the solid hatch on even layers, in degrees.
     pub infill_angle: f64,
+    /// The width of every bead of the first layer.
+    pub first_layer_width: f64,
+    /// The width of a bridge strand: the nozzle's, as it hangs round from it.
+    pub bridge_width: f64,
 }
 
 /// Why the path stage failed.
@@ -97,7 +107,15 @@ impl From<GeomError> for PathError {
 }
 
 fn check(p: &PathParams) -> Result<(), PathError> {
-    let widths = [p.outer_wall_width, p.inner_wall_width, p.top_surface_width, p.solid_width, p.sparse_width];
+    let widths = [
+        p.outer_wall_width,
+        p.inner_wall_width,
+        p.top_surface_width,
+        p.solid_width,
+        p.sparse_width,
+        p.first_layer_width,
+        p.bridge_width,
+    ];
     if !widths.iter().all(|w| w.is_finite() && (0.05..=3.0).contains(w)) {
         return Err(PathError::BadParams("line widths must be 0.05 to 3 mm".into()));
     }
@@ -119,8 +137,8 @@ pub fn trace(regions: &Regions, params: &PathParams) -> Result<Paths, PathError>
     let mut layers = Vec::with_capacity(regions.layers.len());
     let mut at: Point = [0.0, 0.0];
     for layer in &regions.layers {
-        let islands = order::islands(layer, params)?;
-        let paths = order::sequence(islands, &mut at);
+        let (islands, fills) = order::islands(layer, params)?;
+        let paths = order::sequence(islands, &fills, &mut at);
         layers.push(PathLayer { index: layer.index, top: layer.top, height: layer.height, paths });
     }
     Ok(Paths { layers })

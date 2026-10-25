@@ -17,6 +17,8 @@ const PATHS: PathParams = PathParams {
     sparse_density: 0.2,
     infill_wall_overlap: 0.0,
     infill_angle: 45.0,
+    first_layer_width: 0.4,
+    bridge_width: 0.4,
 };
 
 fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
@@ -28,25 +30,35 @@ fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
         top_layers: 3,
         bottom_layers: 3,
         first_layer_shrink: 0.0,
+        first_layer_width: 0.4,
+        one_wall_on_top: false,
     };
     let regions = split(&sections, &params).unwrap();
     let paths = trace(&regions, &PATHS).unwrap();
     (regions, paths)
 }
 
-fn filled_area(paths: &[Path], role: Role) -> f64 {
+/// The segments of a role's beads that run in the hatch direction, `angle` degrees.
+fn hatch_segments(paths: &[Path], role: Role, angle: f64) -> Vec<([f64; 2], [f64; 2])> {
+    let (s, c) = angle.to_radians().sin_cos();
     paths
         .iter()
         .filter(|p| p.role == role)
-        .map(|p| {
-            let mut pts = p.points.clone();
-            if p.closed {
-                pts.push(pts[0]);
-            }
-            // The plastic laid, spread over the layer's height: the area it fills.
-            polyline_length(&pts) * bead_area(p.width, 0.2) / 0.2
+        .flat_map(|p| p.points.windows(2).map(|w| (w[0], w[1])).collect::<Vec<_>>())
+        .filter(|(a, b)| {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            (d[0] * s - d[1] * c).abs() < 1e-6 * d[0].hypot(d[1]).max(1.0)
         })
-        .sum()
+        .collect()
+}
+
+/// The plastic the hatch lines lay, spread over the layer's height: the area they fill. The
+/// joins along the edge lie in the walls' overlap and are left out.
+fn filled_area(paths: &[Path], role: Role, angle: f64) -> f64 {
+    let width = paths.iter().find(|p| p.role == role).map(|p| p.width).unwrap_or(0.0);
+    let length: f64 =
+        hatch_segments(paths, role, angle).iter().map(|(a, b)| polyline_length(&[*a, *b])).sum();
+    length * bead_area(width, 0.2) / 0.2
 }
 
 #[test]
@@ -54,7 +66,7 @@ fn solid_hatch_covers_its_area() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
     let layer = &paths.layers[0];
     let solid = area(&regions.layers[0].solid);
-    let covered = filled_area(&layer.paths, Role::Solid);
+    let covered = filled_area(&layer.paths, Role::Solid, 45.0);
     assert!((covered / solid - 1.0).abs() < 0.03, "{covered} for {solid}");
 }
 
@@ -63,7 +75,7 @@ fn sparse_grid_has_its_density() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
     let i = 7;
     let sparse = area(&regions.layers[i].sparse);
-    let covered = filled_area(&paths.layers[i].paths, Role::Sparse);
+    let covered = filled_area(&paths.layers[i].paths, Role::Sparse, 135.0);
     assert!((covered / sparse - 0.2).abs() < 0.02, "{}", covered / sparse);
 }
 
@@ -107,19 +119,27 @@ fn beads_have_no_zero_length_segments() {
 fn sparse_beads_never_cross_on_a_layer() {
     let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
     for layer in &paths.layers {
-        let directions: Vec<f64> = layer
-            .paths
-            .iter()
-            .filter(|p| p.role == Role::Sparse)
-            .map(|p| {
-                let (a, b) = (p.points[0], p.points[p.points.len() - 1]);
-                ((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 360.0) % 180.0
-            })
-            .collect();
-        assert!(
-            directions.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6),
-            "layer {}: {directions:?}",
-            layer.index
-        );
+        let angle = 45.0 + if layer.index % 2 == 1 { 90.0 } else { 0.0 };
+        let sparse: Vec<&Path> = layer.paths.iter().filter(|p| p.role == Role::Sparse).collect();
+        // Every long segment runs in the layer's one direction; the rest are short joins.
+        let along = hatch_segments(&layer.paths, Role::Sparse, angle).len();
+        let all: usize = sparse.iter().map(|p| p.points.len() - 1).sum();
+        let joins = all - along;
+        assert!(joins <= along + sparse.len(), "layer {}: {joins} joins for {along} lines", layer.index);
+        for p in &sparse {
+            for w in p.points.windows(2) {
+                let l = polyline_length(&[w[0], w[1]]);
+                let is_line =
+                    hatch_segments(std::slice::from_ref(*p), Role::Sparse, angle).contains(&(w[0], w[1]));
+                assert!(is_line || l <= 3.0 * 2.0 * 0.4 / 0.2 + 1e-9, "layer {}: a {l} mm join", layer.index);
+            }
+        }
     }
+}
+
+#[test]
+fn neighbouring_lines_join_into_one_bead() {
+    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
+    let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::Solid).collect();
+    assert!(solid.len() <= 2, "{} separate solid beads", solid.len());
 }

@@ -14,6 +14,8 @@ const PARAMS: RegionParams = RegionParams {
     top_layers: 3,
     bottom_layers: 2,
     first_layer_shrink: 0.0,
+    first_layer_width: 0.4,
+    one_wall_on_top: false,
 };
 
 /// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
@@ -44,22 +46,26 @@ fn walls_sit_at_their_centre_lines() {
 fn shells_and_sparse_partition_the_inside() {
     let regions = cube_regions();
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
-    let side = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
-    let inside = side * side;
     for layer in &regions.layers {
-        let total = area(&layer.top_surface) + area(&layer.solid) + area(&layer.sparse);
+        // The first layer's beads are all `first_layer_width` (0.4 here).
+        let inner = if layer.index == 0 { 0.4 } else { 0.5 };
+        let side = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(inner));
+        let inside = side * side;
+        let total = area(&layer.top_surface) + area(&layer.solid) + area(&layer.bridge) + area(&layer.sparse);
         assert!(close(total, inside), "layer {}: {total}", layer.index);
     }
-    // 10 layers: 2 bottom shells, 3 top shells (the last one exposed), 5 sparse in between.
-    let kinds: Vec<(bool, bool, bool)> = regions
+    // 10 layers: 2 bottom shells, 5 sparse, then 3 top shells: the first bridges the sparse
+    // infill, the last is exposed.
+    let kinds: Vec<(bool, bool, bool, bool)> = regions
         .layers
         .iter()
-        .map(|l| (!l.top_surface.is_empty(), !l.solid.is_empty(), !l.sparse.is_empty()))
+        .map(|l| (!l.top_surface.is_empty(), !l.solid.is_empty(), !l.bridge.is_empty(), !l.sparse.is_empty()))
         .collect();
-    let solid = (false, true, false);
-    let sparse = (false, false, true);
-    let top = (true, false, false);
-    assert_eq!(kinds, vec![solid, solid, sparse, sparse, sparse, sparse, sparse, solid, solid, top]);
+    let solid = (false, true, false, false);
+    let sparse = (false, false, false, true);
+    let bridge = (false, false, true, false);
+    let top = (true, false, false, false);
+    assert_eq!(kinds, vec![solid, solid, sparse, sparse, sparse, sparse, sparse, bridge, solid, top]);
 }
 
 #[test]
@@ -68,4 +74,38 @@ fn bad_params_are_refused() {
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
     assert!(split(&sections, &RegionParams { outer_wall_width: f64::NAN, ..PARAMS }).is_err());
     assert!(split(&sections, &RegionParams { walls: 1_000_000, ..PARAMS }).is_err());
+}
+
+#[test]
+fn an_overhang_over_air_is_a_bridge() {
+    // A 10 mm slab on two 2 mm posts: its first layer spans the 6 mm between them.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("left", [0.0; 3], [2.0, 10.0, 1.0]),
+            cuboid("right", [8.0, 0.0, 0.0], [10.0, 10.0, 1.0]),
+            cuboid("slab", [0.0, 0.0, 1.0], [10.0, 10.0, 2.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &PARAMS).unwrap();
+    let first = &regions.layers[5];
+    let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    let inside = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
+    assert!(close(area(&first.bridge), 6.0 * inside), "{}", area(&first.bridge));
+    assert!(regions.layers[6].bridge.is_empty());
+}
+
+#[test]
+fn the_first_layer_is_wider_and_the_top_has_one_wall() {
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let params = RegionParams { first_layer_width: 0.5, one_wall_on_top: true, ..PARAMS };
+    let regions = split(&sections, &params).unwrap();
+    assert!(close(area(&regions.layers[0].walls[0]), 9.5 * 9.5));
+    let top = regions.layers.last().unwrap();
+    assert_eq!(top.walls.len(), 1);
+    let s = 0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    let side = 10.0 - 2.0 * (0.2 + s / 2.0);
+    assert!(close(area(&top.top_surface), side * side), "{}", area(&top.top_surface));
+    assert_eq!(regions.layers[8].walls.len(), 2);
 }

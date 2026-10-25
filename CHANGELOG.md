@@ -2,6 +2,22 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.0
+
+### Added
+
+- Bridges: solid areas over sparse infill or over air are laid as round strands a nozzle wide,
+  at the bridge speed.
+- Infill lines join into zigzags along the area's edge, so the nozzle no longer lifts and
+  travels between neighbouring lines (63 lifts instead of 177 on the 20 mm test square).
+- The first layer's beads take the first-layer width (0.5 mm on the X2D), to grip the bed.
+- A layer that is all top surface keeps only its outer wall (`only_one_wall_top`).
+
+### Changed
+
+- Wall loops stop the seam gap (15 % of the nozzle) short of their start, so seams do not pile
+  up into a dot. Stage files gain a `bridge` region and role: older stage files do not load.
+
 ## 0.1.4
 
 ### Fixed

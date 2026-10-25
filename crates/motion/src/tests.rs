@@ -18,6 +18,7 @@ fn params() -> MotionParams {
         top_surface: role(100.0),
         solid: role(100.0),
         sparse: role(100.0),
+        bridge: role(50.0),
         first_layer_wall_speed: 50.0,
         first_layer_infill_speed: 50.0,
         first_layer_accel: 500.0,
@@ -26,6 +27,7 @@ fn params() -> MotionParams {
         retract_speed: 30.0,
         deretract_speed: 30.0,
         retract_min_travel: 1.0,
+        seam_gap: 0.0,
         wipe_distance: 0.0,
         retract_before_wipe: 0.0,
         z_hop: 0.4,
@@ -149,4 +151,41 @@ fn retraction_wipes_back_over_the_bead() {
     // And the print ends lifted off the part before the machine's own end.
     let end = ops.iter().rposition(|op| matches!(op, Op::Raw { .. })).unwrap();
     assert!(matches!(ops[end - 1], Op::Lift { z, .. } if (z - 0.8).abs() < 1e-9), "{:?}", ops[end - 1]);
+}
+
+#[test]
+fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
+    let square = Path {
+        role: Role::OuterWall,
+        width: 0.4,
+        closed: true,
+        points: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
+    };
+    let bridge =
+        Path { role: Role::Bridge, width: 0.4, closed: false, points: vec![[10.0, 10.0], [20.0, 10.0]] };
+    let paths = Paths {
+        layers: vec![
+            PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![square.clone()] },
+            PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![square, bridge] },
+        ],
+    };
+    let mut p = params();
+    p.seam_gap = 0.06;
+    let program = compile(&paths, &p, &scope()).unwrap();
+    let extrusions: Vec<[f64; 3]> = program
+        .ops
+        .iter()
+        .filter_map(|op| if let Op::Extrude { to, .. } = op { Some(*to) } else { None })
+        .collect();
+    // The loop's last move ends 0.06 mm before its start, on the closing side.
+    assert!(
+        (extrusions[3][0] - 10.0).abs() < 1e-12 && (extrusions[3][1] - 10.06).abs() < 1e-12,
+        "{:?}",
+        extrusions[3]
+    );
+    let filament_area = std::f64::consts::PI * 0.875 * 0.875;
+    let round = std::f64::consts::PI * 0.04;
+    let flat = (0.4 - 0.2) * 0.2 + std::f64::consts::PI * 0.01;
+    let expected = 0.98 * (2.0 * flat * 39.94 + round * 10.0) / filament_area;
+    assert!((program.summary.filament_mm - expected).abs() < 1e-9, "{}", program.summary.filament_mm);
 }
