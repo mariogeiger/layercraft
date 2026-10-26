@@ -2,6 +2,34 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.3.0
+
+### Added
+
+- Settings by place: `--tune FILE.json` takes a list of overrides, each a box of the build
+  volume and part of the settings (`{"within": {"z": [0, 5]}, "set": {"motion": {"lift_radius":
+  0.6}}}`). Every region, path and motion setting can vary by height band, by object or by any
+  box: each shape, island and bead takes the settings at its centre, merged in order. Several
+  variants of a test print on one plate need no editing of stage files. A misspelt setting or
+  stage is an error.
+- A flow per role, read from the profile for bridges (`bridge_flow`) and top surfaces
+  (`top_solid_infill_flow_ratio`).
+- Monotone surfaces: the top surface is laid in sweeps, each line against the one before and
+  all the same way, as the profile's `top_surface_pattern` asks, instead of nearest first.
+
+### Changed
+
+- The stages take a `layercraft_tune::Field` of parameters instead of one set.
+- A program's summary and the printer's progress are read from its moves (`finish`), so a
+  program edited by hand and resumed with `--from` reports its own time and filament. The
+  plastic per layer is what the extrusions push, the flow ratio included.
+
+### Fixed
+
+- The hot end's melt limit caps a bead's speed by the plastic it pushes, flow included, as
+  `verify` checks it, not by its nominal section.
+- A retraction is pushed back by exactly what was pulled, whatever the next bead's settings.
+
 ## 0.2.10
 
 ### Documentation

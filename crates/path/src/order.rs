@@ -2,9 +2,11 @@
 
 use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
-use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{Contour, Point, bead_spacing, clip_lines, offset, signed_area, union};
+use crate::{Path, PathError, PathParams, Role, check};
+use layercraft_geom::{Contour, Point, Region, bead_spacing, clip_lines, offset, signed_area, union};
 use layercraft_region::RegionLayer;
+use layercraft_tune::{Field, centre};
+use std::rc::Rc;
 
 /// The beads of one connected piece of a layer.
 pub struct Island {
@@ -12,6 +14,8 @@ pub struct Island {
     outline: Contour,
     walls: Vec<(usize, Path)>,
     infill: Vec<Path>,
+    /// The infill areas of the part of the layer the island belongs to, for joining its lines.
+    fills: Rc<Vec<Fill>>,
 }
 
 fn contains(contour: &[Point], p: Point) -> bool {
@@ -24,6 +28,99 @@ fn contains(contour: &[Point], p: Point) -> bool {
         }
     }
     inside
+}
+
+/// The innermost of `outlines` holding `p`: an island may sit in another's hole.
+fn holder<'a>(outlines: impl IntoIterator<Item = &'a Contour>, p: Point) -> Option<usize> {
+    outlines
+        .into_iter()
+        .enumerate()
+        .filter(|(_, o)| contains(o, p))
+        .min_by(|(_, a), (_, b)| signed_area(a).abs().total_cmp(&signed_area(b).abs()))
+        .map(|(i, _)| i)
+}
+
+fn infill_regions(layer: &RegionLayer) -> [&Region; 5] {
+    [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
+}
+
+/// The layer's islands grouped by the parameters at their centres, each group with the part of
+/// the layer in its islands. An island is a shape of the outer wall, or of the infill where
+/// there is no wall; every other shape belongs to the island holding it.
+pub fn parts(
+    layer: &RegionLayer,
+    field: &Field<PathParams>,
+) -> Result<Vec<(Rc<PathParams>, RegionLayer)>, PathError> {
+    let outlines: Vec<&Contour> = match layer.walls.first() {
+        Some(outer) => outer.iter().filter_map(|shape| shape.first()).collect(),
+        None => infill_regions(layer).into_iter().flatten().filter_map(|shape| shape.first()).collect(),
+    };
+    let mut groups: Vec<Rc<PathParams>> = Vec::new();
+    let mut group_of = Vec::with_capacity(outlines.len());
+    for outline in &outlines {
+        let p = field.at(centre(outline.iter(), layer.top), check)?;
+        group_of.push(match groups.iter().position(|q| Rc::ptr_eq(q, &p)) {
+            Some(g) => g,
+            None => {
+                groups.push(p);
+                groups.len() - 1
+            }
+        });
+    }
+    if groups.len() <= 1 {
+        return Ok(groups.into_iter().map(|p| (p, layer.clone())).collect());
+    }
+    let empty = |layer: &RegionLayer| RegionLayer {
+        walls: vec![Vec::new(); layer.walls.len()],
+        top_surface: Vec::new(),
+        solid: Vec::new(),
+        bridge: Vec::new(),
+        bridge_on_sparse: Vec::new(),
+        sparse: Vec::new(),
+        ..layer.clone()
+    };
+    let mut parts: Vec<RegionLayer> = groups.iter().map(|_| empty(layer)).collect();
+    // An outline's own shape is its island's; any other lies strictly inside the one holding it.
+    let held = |shape: &[Contour]| {
+        let p = shape.first().and_then(|c| c.first()).copied().unwrap_or([0.0, 0.0]);
+        holder(outlines.iter().copied(), p).and_then(|i| group_of.get(i).copied()).unwrap_or(0)
+    };
+    let walled = !layer.walls.is_empty();
+    let mut outline = 0;
+    let mut group = |shape: &[Contour], is_outline: bool| {
+        if shape.is_empty() {
+            None
+        } else if is_outline {
+            outline += 1;
+            Some(group_of.get(outline - 1).copied().unwrap_or(0))
+        } else {
+            Some(held(shape))
+        }
+    };
+    for (k, wall) in layer.walls.iter().enumerate() {
+        for shape in wall {
+            let slot =
+                group(shape, k == 0).and_then(|g| parts.get_mut(g)).and_then(|part| part.walls.get_mut(k));
+            if let Some(slot) = slot {
+                slot.push(shape.clone());
+            }
+        }
+    }
+    let pick: [fn(&mut RegionLayer) -> &mut Region; 5] = [
+        |l| &mut l.top_surface,
+        |l| &mut l.solid,
+        |l| &mut l.bridge,
+        |l| &mut l.bridge_on_sparse,
+        |l| &mut l.sparse,
+    ];
+    for (region, pick) in infill_regions(layer).into_iter().zip(pick) {
+        for shape in region {
+            if let Some(part) = group(shape, !walled).and_then(|g| parts.get_mut(g)) {
+                pick(part).push(shape.clone());
+            }
+        }
+    }
+    Ok(groups.into_iter().zip(parts).collect())
 }
 
 fn distance2(a: Point, b: Point) -> f64 {
@@ -46,9 +143,9 @@ fn back_right(contour: &[Point]) -> Point {
     contour.iter().fold([f64::MIN, f64::MIN], |m, p| [m[0].max(p[0]), m[1].max(p[1])])
 }
 
-/// Splits a layer into islands, each holding its walls and the infill inside them, and lists
-/// the layer's infill areas for joining their lines.
-pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<Fill>), PathError> {
+/// Splits a layer, or a part of one, into islands, each holding its walls, the infill inside
+/// them and the part's infill areas for joining their lines.
+pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| Path {
@@ -68,26 +165,24 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
                     .iter()
                     .map(|c| (0, loop_path(Role::OuterWall, w(p.outer_wall_width), c, &outline)))
                     .collect();
-                Some(Island { outline, walls, infill: Vec::new() })
+                Some(Island { outline, walls, infill: Vec::new(), fills: Rc::default() })
             })
             .collect(),
         None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
             .into_iter()
             .flatten()
             .filter_map(|shape| {
-                Some(Island { outline: shape.first()?.clone(), walls: Vec::new(), infill: Vec::new() })
+                Some(Island {
+                    outline: shape.first()?.clone(),
+                    walls: Vec::new(),
+                    infill: Vec::new(),
+                    fills: Rc::default(),
+                })
             })
             .collect(),
     };
     let home = |islands: &[Island], p: Point| -> Option<usize> {
-        // The innermost outline holding the point: an island may sit in another's hole.
-        let holder = islands
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| contains(&i.outline, p))
-            .min_by(|(_, a), (_, b)| signed_area(&a.outline).abs().total_cmp(&signed_area(&b.outline).abs()))
-            .map(|(i, _)| i);
-        holder.or(if islands.is_empty() { None } else { Some(0) })
+        holder(islands.iter().map(|i| &i.outline), p).or(if islands.is_empty() { None } else { Some(0) })
     };
     for (k, wall) in layer.walls.iter().enumerate().skip(1) {
         for contour in wall.iter().flatten() {
@@ -160,10 +255,19 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<(Vec<Island>, Vec<
         // Both kinds of bridge share one role: one area for joining their lines.
         match areas.iter_mut().find(|f: &&mut Fill| f.role == role) {
             Some(fill) => fill.reach = union(&fill.reach, &reach)?,
-            None => areas.push(Fill { role, reach, max_link: 3.0 * spacing }),
+            None => areas.push(Fill {
+                role,
+                reach,
+                max_link: 3.0 * spacing,
+                monotone: p.monotone.contains(&role),
+            }),
         }
     }
-    Ok((islands, areas))
+    let fills = Rc::new(areas);
+    for island in &mut islands {
+        island.fills = fills.clone();
+    }
+    Ok(islands)
 }
 
 fn end_of(path: &Path) -> Option<Point> {
@@ -195,9 +299,66 @@ fn chain(mut paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>) {
     }
 }
 
+/// Lays parallel lines in sweeps across their area, each line against the one before and all
+/// sweeps the same way: from the side nearer the nozzle, each sweep takes the next line across
+/// that overlaps the last one along their direction and lies within `reach`, and a new sweep
+/// starts at the first line left. Each line starts where the last one ended.
+fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) {
+    let Some((a, b)) = lines.first().and_then(|l| Some((*l.points.first()?, *l.points.last()?))) else {
+        return chain(lines, at, out);
+    };
+    let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+    if length <= 0.0 {
+        return chain(lines, at, out);
+    }
+    let along = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+    let mut across = [-along[1], along[0]];
+    let project = |d: [f64; 2], p: &Point| p[0] * d[0] + p[1] * d[1];
+    let offset_of = |d: [f64; 2], l: &Path| {
+        l.points.iter().map(|p| project(d, p)).sum::<f64>() / l.points.len().max(1) as f64
+    };
+    let nearest = |l: &Path| l.points.iter().map(|p| distance2(*at, *p)).fold(f64::MAX, f64::min);
+    let first = lines.iter().min_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
+    let last = lines.iter().max_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
+    if let (Some(first), Some(last)) = (first, last)
+        && nearest(last) < nearest(first)
+    {
+        across = [-across[0], -across[1]];
+    }
+    let span = |l: &Path| {
+        l.points
+            .iter()
+            .map(|p| project(along, p))
+            .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
+    };
+    lines.sort_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
+    let mut left: Vec<Option<Path>> = lines.into_iter().map(Some).collect();
+    while let Some(start) = left.iter().position(Option::is_some) {
+        let mut next = Some(start);
+        while let Some((current, mut line)) = next.and_then(|i| Some((i, left.get_mut(i)?.take()?))) {
+            if let (Some(&s), Some(&e)) = (line.points.first(), line.points.last())
+                && distance2(*at, e) < distance2(*at, s)
+            {
+                line.points.reverse();
+            }
+            let (offset, (lo, hi)) = (offset_of(across, &line), span(&line));
+            if let Some(end) = end_of(&line) {
+                *at = end;
+            }
+            out.push(line);
+            next = left.iter().enumerate().skip(current + 1).find_map(|(i, l)| {
+                let l = l.as_ref()?;
+                let (o, (a, b)) = (offset_of(across, l), span(l));
+                (o - offset > 1e-9 && o - offset <= reach && a <= hi && lo <= b).then_some(i)
+            });
+        }
+    }
+}
+
 /// The layer's beads in printing order: island by island, nearest first; within an island the
-/// walls, then each infill area's lines, joined where they can be.
-pub fn sequence(mut islands: Vec<Island>, fills: &[Fill], at: &mut Point) -> Vec<Path> {
+/// walls, then each infill area's lines, in sweeps for a monotone area and nearest first
+/// otherwise, joined where they can be.
+pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
     let mut out = Vec::new();
     while !islands.is_empty() {
         let near = islands
@@ -220,11 +381,15 @@ pub fn sequence(mut islands: Vec<Island>, fills: &[Fill], at: &mut Point) -> Vec
         }
         chain(walls, at, &mut out);
         let mut infill = island.infill;
-        for fill in fills {
+        for fill in island.fills.iter() {
             let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);
             infill = rest;
             let mut ordered = Vec::new();
-            chain(mine, at, &mut ordered);
+            if fill.monotone {
+                sweep(mine, fill.max_link, at, &mut ordered);
+            } else {
+                chain(mine, at, &mut ordered);
+            }
             out.extend(link(ordered, fill));
         }
         chain(infill, at, &mut out);

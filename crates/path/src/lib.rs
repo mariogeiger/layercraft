@@ -6,8 +6,9 @@
 //! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
 //! wide, side by side. Hatch lines lie on a fixed grid, so layers stack; the move between
 //! neighbouring lines is marked as staying inside the part, so it needs no retraction. Each island is printed whole — inner walls, outer
-//! wall, then its infill — and islands follow each other nearest first. The first layer's beads
-//! are all `first_layer_width` wide.
+//! wall, then its infill — and islands follow each other nearest first. The lines of a
+//! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
+//! are all `first_layer_width` wide. Each island is traced by the parameters at its centre.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -23,6 +24,7 @@ mod order;
 
 use layercraft_geom::{GeomError, Point};
 use layercraft_region::Regions;
+use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
 
 /// What a path is for; speeds, accelerations and cooling are chosen by role.
@@ -83,6 +85,11 @@ pub struct PathParams {
     pub first_layer_width: f64,
     /// The width of a bridge strand: the nozzle's, as it hangs round from it.
     pub bridge_width: f64,
+    /// The roles whose lines are laid in sweeps across their area, each against the one before
+    /// and all the same way, so the surface they make looks the same everywhere; the others go
+    /// nearest first.
+    #[serde(default)]
+    pub monotone: Vec<Role>,
 }
 
 /// Why the path stage failed.
@@ -103,13 +110,19 @@ impl std::fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
+impl From<TuneError> for PathError {
+    fn from(e: TuneError) -> Self {
+        PathError::BadParams(e.to_string())
+    }
+}
+
 impl From<GeomError> for PathError {
     fn from(e: GeomError) -> Self {
         PathError::Geometry(e)
     }
 }
 
-fn check(p: &PathParams) -> Result<(), PathError> {
+pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     let widths = [
         p.outer_wall_width,
         p.inner_wall_width,
@@ -134,14 +147,17 @@ fn check(p: &PathParams) -> Result<(), PathError> {
     Ok(())
 }
 
-/// Turns every layer's regions into ordered beads.
-pub fn trace(regions: &Regions, params: &PathParams) -> Result<Paths, PathError> {
-    check(params)?;
+/// Turns every layer's regions into ordered beads, each island by the parameters at its centre.
+pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, PathError> {
+    check(field.base())?;
     let mut layers = Vec::with_capacity(regions.layers.len());
     let mut at: Point = [0.0, 0.0];
     for layer in &regions.layers {
-        let (islands, fills) = order::islands(layer, params)?;
-        let paths = order::sequence(islands, &fills, &mut at);
+        let mut islands = Vec::new();
+        for (params, part) in order::parts(layer, field)? {
+            islands.extend(order::islands(&part, &params)?);
+        }
+        let paths = order::sequence(islands, &mut at);
         layers.push(PathLayer { index: layer.index, top: layer.top, height: layer.height, paths });
     }
     Ok(Paths { layers })

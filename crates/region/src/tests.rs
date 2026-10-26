@@ -6,6 +6,7 @@ use layercraft_geom::area;
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_section::{Layering, section};
+use layercraft_tune::Field;
 
 const PARAMS: RegionParams = RegionParams {
     walls: 2,
@@ -29,7 +30,7 @@ fn close(a: f64, b: f64) -> bool {
 fn cube_regions() -> Regions {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    split(&sections, &PARAMS).unwrap()
+    split(&sections, &Field::uniform(PARAMS.clone())).unwrap()
 }
 
 #[test]
@@ -85,8 +86,10 @@ fn shells_and_sparse_partition_the_inside() {
 fn bad_params_are_refused() {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])] };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    assert!(split(&sections, &RegionParams { outer_wall_width: f64::NAN, ..PARAMS }).is_err());
-    assert!(split(&sections, &RegionParams { walls: 1_000_000, ..PARAMS }).is_err());
+    assert!(
+        split(&sections, &Field::uniform(RegionParams { outer_wall_width: f64::NAN, ..PARAMS })).is_err()
+    );
+    assert!(split(&sections, &Field::uniform(RegionParams { walls: 1_000_000, ..PARAMS })).is_err());
 }
 
 #[test]
@@ -100,7 +103,7 @@ fn an_overhang_over_air_is_a_bridge() {
         ],
     };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    let regions = split(&sections, &PARAMS).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
     let first = &regions.layers[5];
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let inside = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
@@ -114,7 +117,7 @@ fn the_first_layer_is_wider_and_the_top_has_one_wall() {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
     let params = RegionParams { first_layer_width: 0.5, one_wall_on_top: true, ..PARAMS };
-    let regions = split(&sections, &params).unwrap();
+    let regions = split(&sections, &Field::uniform(params.clone())).unwrap();
     assert!(close(area(&regions.layers[0].walls[0]), 9.5 * 9.5));
     let top = regions.layers.last().unwrap();
     // Nothing covers the top layer: its inner walls are drawn nowhere.
@@ -136,7 +139,7 @@ fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
         ],
     };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    let regions = split(&sections, &PARAMS).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
     for layer in &regions.layers {
         let a = area(&layer.bridge_on_sparse);
         assert!(a == 0.0 || a > 10.0, "layer {}: a {a} mm² sliver of bridge", layer.index);
@@ -150,7 +153,7 @@ fn small_pieces_of_sparse_are_solid() {
     for (side, sparse) in [(5.0, false), (10.0, true)] {
         let mesh = Mesh { bodies: vec![cuboid("post", [0.0; 3], [side, side, 3.0])] };
         let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-        let regions = split(&sections, &PARAMS).unwrap();
+        let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
         let middle = &regions.layers[7];
         assert_eq!(!middle.sparse.is_empty(), sparse, "{side} mm post");
         assert!(!middle.solid.is_empty() || sparse);
@@ -168,7 +171,7 @@ fn a_thin_rib_stands_on_solid() {
         ],
     };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    let regions = split(&sections, &PARAMS).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
     // Layers 12 to 14 (z 2.4 to 3) have the rib among their three layers above. Taken by its
     // section, the rib once left them a 16 mm² strip of sparse under it, over the 15 mm² minimum.
     for layer in &regions.layers[12..15] {
@@ -177,4 +180,28 @@ fn a_thin_rib_stands_on_solid() {
     }
     // Deeper, the whole inside is sparse again.
     assert!(area(&regions.layers[8].sparse) > 200.0);
+}
+
+#[test]
+fn each_shape_splits_by_the_parameters_at_its_centre() {
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("a", [0.0; 3], [10.0, 10.0, 2.0]),
+            cuboid("b", [20.0, 0.0, 0.0], [30.0, 10.0, 2.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let tuning: layercraft_tune::Tuning =
+        serde_json::from_str(r#"[{"within": {"x": [15, 40]}, "set": {"region": {"walls": 1}}}]"#).unwrap();
+    let field = Field::new(PARAMS.clone(), &tuning, "region").unwrap();
+    let layer = &split(&sections, &field).unwrap().layers[4];
+    // Both cubes have their outer wall; only the left one, untouched, an inner wall.
+    assert_eq!(layer.walls[0].len(), 2);
+    assert_eq!(layer.walls[1].len(), 1);
+    assert!(layer.walls[1][0][0].iter().all(|p| p[0] < 10.0));
+    // The right cube's inside starts one wall in: more sparse infill than the left one's.
+    let sparse_x = |lo: f64, hi: f64| -> f64 {
+        layer.sparse.iter().filter(|s| (lo..hi).contains(&s[0][0][0])).map(|s| area(&vec![s.clone()])).sum()
+    };
+    assert!(sparse_x(15.0, 40.0) > sparse_x(-1.0, 15.0) + 1.0);
 }

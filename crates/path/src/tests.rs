@@ -7,6 +7,7 @@ use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, split};
 use layercraft_section::{Layering, section};
+use layercraft_tune::Field;
 
 const PATHS: PathParams = PathParams {
     outer_wall_width: 0.4,
@@ -19,11 +20,11 @@ const PATHS: PathParams = PathParams {
     infill_angle: 45.0,
     first_layer_width: 0.4,
     bridge_width: 0.4,
+    monotone: Vec::new(),
 };
 
-fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
-    let sections = section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
-    let params = RegionParams {
+fn region_params() -> RegionParams {
+    RegionParams {
         walls: 2,
         outer_wall_width: 0.4,
         inner_wall_width: 0.4,
@@ -34,9 +35,13 @@ fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
         one_wall_on_top: false,
         sparse_gap: 4.0,
         min_sparse_area: 0.0,
-    };
-    let regions = split(&sections, &params).unwrap();
-    let paths = trace(&regions, &PATHS).unwrap();
+    }
+}
+
+fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
+    let sections = section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &Field::uniform(region_params())).unwrap();
+    let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
     (regions, paths)
 }
 
@@ -168,4 +173,59 @@ fn a_bridge_crosses_its_gap_the_short_way() {
         let length = polyline_length(&s.points);
         assert!((8.7..=8.95).contains(&length), "{length}");
     }
+}
+
+/// The offset across `angle` degrees of each `role` line of `paths`, with its direction along.
+fn sweep_of(paths: &[Path], role: Role, angle: f64) -> Vec<(f64, f64)> {
+    let (s, c) = angle.to_radians().sin_cos();
+    paths
+        .iter()
+        .filter(|p| p.role == role)
+        .filter_map(|p| Some((*p.points.first()?, *p.points.last()?)))
+        .map(|(a, b)| (((a[0] + b[0]) * -s + (a[1] + b[1]) * c) / 2.0, (b[0] - a[0]) * c + (b[1] - a[1]) * s))
+        .collect()
+}
+
+#[test]
+fn a_monotone_surface_is_laid_in_one_sweep() {
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &Field::uniform(region_params())).unwrap();
+    let monotone = PathParams { monotone: vec![Role::TopSurface], ..PATHS };
+    let top = regions.layers.len() - 1;
+    let angle = if top % 2 == 1 { 135.0 } else { 45.0 };
+    let paths = trace(&regions, &Field::uniform(monotone)).unwrap();
+    let lines = sweep_of(&paths.layers[top].paths, Role::TopSurface, angle);
+    assert!(lines.len() > 10);
+    // Across the surface one way, each line running back the way the last one came.
+    let one_way = |s: f64| lines.windows(2).all(|w| s * (w[1].0 - w[0].0) > 0.0);
+    assert!(one_way(1.0) || one_way(-1.0), "{lines:?}");
+    assert!(lines.windows(2).all(|w| w[0].1 * w[1].1 < 0.0), "{lines:?}");
+}
+
+#[test]
+fn each_island_is_traced_by_the_parameters_at_its_centre() {
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("a", [0.0; 3], [10.0, 10.0, 2.0]),
+            cuboid("b", [20.0, 0.0, 0.0], [30.0, 10.0, 2.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &Field::uniform(region_params())).unwrap();
+    let tuning: layercraft_tune::Tuning =
+        serde_json::from_str(r#"[{"within": {"x": [15, 40]}, "set": {"path": {"sparse_density": 0.4}}}]"#)
+            .unwrap();
+    let paths = trace(&regions, &Field::new(PATHS, &tuning, "path").unwrap()).unwrap();
+    let sparse = |lo: f64, hi: f64| -> f64 {
+        paths.layers[5]
+            .paths
+            .iter()
+            .filter(|p| p.role == Role::Sparse && (lo..hi).contains(&p.points[0][0]))
+            .map(|p| p.points.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum::<f64>())
+            .sum()
+    };
+    // Twice the density, twice the lines, in the same area.
+    let ratio = sparse(15.0, 40.0) / sparse(-1.0, 15.0);
+    assert!((ratio - 2.0).abs() < 0.25, "{ratio}");
 }

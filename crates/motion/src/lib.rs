@@ -9,7 +9,8 @@
 //! wipes back over it while it pulls the filament, then climbs one turn of a helix that comes
 //! back over where it started: moving sideways as it rises, it breaks the string it draws
 //! instead of stretching it upward. Print time comes from a look-ahead planner of the
-//! machine's accelerations and corner speeds.
+//! machine's accelerations and corner speeds. Each bead takes the parameters at its centre;
+//! `finish` reads a program's summary and progress from its moves, after any edit.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -22,12 +23,13 @@
 mod plan;
 mod time;
 
-pub use plan::{compile, placeholders};
+pub use plan::{compile, finish, placeholders};
 pub use time::{Limits, estimate};
 
 pub use layercraft_geom::bead_area;
 use layercraft_machine::{Scope, TemplateError};
 use layercraft_path::Role;
+use layercraft_tune::TuneError;
 use serde::{Deserialize, Serialize};
 
 /// One instruction of the program.
@@ -80,7 +82,7 @@ pub struct Summary {
     pub max_z: f64,
     /// Filament pushed, in mm.
     pub filament_mm: f64,
-    /// Plastic laid per layer, in mm³.
+    /// Plastic pushed per layer, in mm³.
     pub volume_per_layer: Vec<f64>,
     /// Time of the moves, in seconds (the machine's own start and end sequences not counted).
     pub motion_seconds: f64,
@@ -90,11 +92,19 @@ pub struct Summary {
     pub first_layer_bounds: [[f64; 2]; 2],
 }
 
-/// Speed and acceleration for one role.
+/// Speed, acceleration and flow for one role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleMotion {
     pub speed: f64,
     pub accel: f64,
+    /// The role's share of the filament's flow ratio: a bead pushes `flow_ratio · flow` of its
+    /// volume.
+    #[serde(default = "one")]
+    pub flow: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 /// The machine's G-code templates around the moves.
@@ -169,6 +179,12 @@ impl std::fmt::Display for MotionError {
 }
 
 impl std::error::Error for MotionError {}
+
+impl From<TuneError> for MotionError {
+    fn from(e: TuneError) -> Self {
+        MotionError::BadParams(e.to_string())
+    }
+}
 
 /// The variables of the machine's templates that the slicer computes, added to its settings.
 pub type Placeholders = Scope;

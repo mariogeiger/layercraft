@@ -7,7 +7,7 @@
 
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::PathParams;
+use layercraft_path::{PathParams, Role};
 use layercraft_region::RegionParams;
 use layercraft_section::Layering;
 use layercraft_verify::Envelope;
@@ -55,7 +55,7 @@ fn accel(m: &Machine, key: &str) -> Result<f64, MachineError> {
 }
 
 fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, MachineError> {
-    Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)? })
+    Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)?, flow: 1.0 })
 }
 
 /// The radius of a spiral lift's helix, in mm: the smallest that broke the string at the end of
@@ -235,6 +235,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             infill_angle: m.number(Process, "infill_direction")?,
             first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
             bridge_width: nozzle,
+            // Bambu's monotonic patterns; its bottom surface shares the solid role here.
+            monotone: match m.text(Process, "top_surface_pattern") {
+                Ok(pattern) if pattern.starts_with("monotonic") => vec![Role::TopSurface],
+                _ => Vec::new(),
+            },
         },
         motion: MotionParams {
             filament_diameter,
@@ -242,10 +247,16 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             max_volumetric_speed,
             outer_wall: role(m, "outer_wall_speed", "outer_wall_acceleration")?,
             inner_wall: role(m, "inner_wall_speed", "inner_wall_acceleration")?,
-            top_surface: role(m, "top_surface_speed", "top_surface_acceleration")?,
+            top_surface: RoleMotion {
+                flow: m.number(Process, "top_solid_infill_flow_ratio").unwrap_or(1.0),
+                ..role(m, "top_surface_speed", "top_surface_acceleration")?
+            },
             solid: role(m, "internal_solid_infill_speed", "internal_solid_infill_acceleration")?,
             sparse: role(m, "sparse_infill_speed", "sparse_infill_acceleration")?,
-            bridge: role(m, "bridge_speed", "bridge_acceleration")?,
+            bridge: RoleMotion {
+                flow: m.number(Process, "bridge_flow").unwrap_or(1.0),
+                ..role(m, "bridge_speed", "bridge_acceleration")?
+            },
             first_layer_wall_speed: m.number(Process, "initial_layer_speed")?,
             first_layer_infill_speed: m.number(Process, "initial_layer_infill_speed")?,
             first_layer_accel: accel(m, "initial_layer_acceleration")?,

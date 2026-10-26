@@ -1,7 +1,9 @@
 //! The chain of stages, with any stage written out (`--emit`) or read back in (`--from`).
 //!
 //! A stage is written as JSON, which reads back, or as PLY when the file name ends in `.ply`:
-//! a picture of the stage to look at (`layercraft_view`), which does not.
+//! a picture of the stage to look at (`layercraft_view`), which does not. A tuning varies the
+//! region, path and motion parameters by place (`--tune`); a program read back has its summary
+//! and progress read from its moves again, so hand edits stay consistent.
 
 use crate::settings::Settings;
 use layercraft_mesh::{Mesh, read_3mf};
@@ -9,6 +11,7 @@ use layercraft_motion::Program;
 use layercraft_path::Paths;
 use layercraft_region::Regions;
 use layercraft_section::Sections;
+use layercraft_tune::{Field, TuneError, Tuning};
 use layercraft_view::{Complex, ViewError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -44,6 +47,25 @@ impl std::str::FromStr for Stage {
 pub fn stage_file(text: &str) -> Result<(Stage, PathBuf), String> {
     let (stage, file) = text.split_once('=').ok_or_else(|| format!("expected STAGE=FILE, got `{text}`"))?;
     Ok((stage.parse()?, PathBuf::from(file)))
+}
+
+/// The stages whose parameters a tuning may vary by place; the layering is the whole plate's.
+pub const TUNED: [&str; 3] = ["region", "path", "motion"];
+
+/// The largest tuning file read, in bytes.
+const MAX_TUNING_BYTES: u64 = 16 << 20;
+
+/// Reads a tuning: a JSON list of overrides, each `{"within": {"x": [from, to], ...}, "set":
+/// {"motion": {...}, ...}}`.
+pub fn read_tuning(path: &Path) -> Result<Tuning, String> {
+    let len = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
+    if len > MAX_TUNING_BYTES {
+        return Err(format!("{} is larger than {MAX_TUNING_BYTES} bytes", path.display()));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let tuning: Tuning = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    tuning.check().map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(tuning)
 }
 
 /// What the chain produced.
@@ -106,9 +128,15 @@ pub fn run(
     input: Option<&Path>,
     at: [f64; 2],
     settings: &Settings,
+    tuning: &Tuning,
     from: Option<&(Stage, PathBuf)>,
     emits: &[(Stage, PathBuf)],
 ) -> Result<Output, String> {
+    tuning.check_stages(&TUNED).map_err(|e| e.to_string())?;
+    let field = |e: TuneError| e.to_string();
+    let region = Field::new(settings.region.clone(), tuning, "region").map_err(field)?;
+    let path = Field::new(settings.path.clone(), tuning, "path").map_err(field)?;
+    let motion = Field::new(settings.motion.clone(), tuning, "motion").map_err(field)?;
     let start = from.map(|(s, _)| *s);
     let mesh: Option<Mesh> = match start {
         Some(Stage::Mesh) => from.map(|(_, p)| read_json(p)).transpose()?,
@@ -133,7 +161,7 @@ pub fn run(
     }
     let regions: Option<Regions> = match (start, &sections) {
         (Some(Stage::Regions), _) => from.map(|(_, p)| read_json(p)).transpose()?,
-        (_, Some(s)) => Some(layercraft_region::split(s, &settings.region).map_err(|e| e.to_string())?),
+        (_, Some(s)) => Some(layercraft_region::split(s, &region).map_err(|e| e.to_string())?),
         _ => None,
     };
     if let Some(r) = &regions {
@@ -141,17 +169,21 @@ pub fn run(
     }
     let paths: Option<Paths> = match (start, &regions) {
         (Some(Stage::Paths), _) => from.map(|(_, p)| read_json(p)).transpose()?,
-        (_, Some(r)) => Some(layercraft_path::trace(r, &settings.path).map_err(|e| e.to_string())?),
+        (_, Some(r)) => Some(layercraft_path::trace(r, &path).map_err(|e| e.to_string())?),
         _ => None,
     };
     if let Some(p) = &paths {
         emit(Stage::Paths, p, || layercraft_view::paths(p), emits)?;
     }
     let program: Program = match (start, &paths) {
-        (Some(Stage::Program), _) => from.map(|(_, p)| read_json(p)).transpose()?.ok_or("no program")?,
-        (_, Some(p)) => {
-            layercraft_motion::compile(p, &settings.motion, &settings.scope).map_err(|e| e.to_string())?
+        (Some(Stage::Program), _) => {
+            // Moves edited by hand: the summary and progress are read from them again.
+            let mut program: Program = from.map(|(_, p)| read_json(p)).transpose()?.ok_or("no program")?;
+            let m = &settings.motion;
+            program.summary = layercraft_motion::finish(&mut program.ops, &m.limits, m.filament_diameter);
+            program
         }
+        (_, Some(p)) => layercraft_motion::compile(p, &motion, &settings.scope).map_err(|e| e.to_string())?,
         _ => return Err("nothing to compile".into()),
     };
     emit(Stage::Program, &program, || layercraft_view::program(&program, &settings.motion.limits), emits)?;

@@ -15,6 +15,7 @@
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
 //! layer above covers them, and the top surface reaches the outer wall.
+//! Each shape of a layer is split by the parameters at its centre (`layercraft_tune`).
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -27,8 +28,10 @@
 use layercraft_geom::{
     GeomError, Region, bead_spacing, difference, intersection, offset, signed_area, union,
 };
-use layercraft_section::Sections;
+use layercraft_section::{Layer, Sections};
+use layercraft_tune::{Field, TuneError, centre};
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 /// The rules that split a layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +104,12 @@ impl std::fmt::Display for RegionError {
 }
 
 impl std::error::Error for RegionError {}
+
+impl From<TuneError> for RegionError {
+    fn from(e: TuneError) -> Self {
+        RegionError::BadParams(e.to_string())
+    }
+}
 
 impl From<GeomError> for RegionError {
     fn from(e: GeomError) -> Self {
@@ -176,91 +185,181 @@ fn covered(sections: &[Region], from: isize, count: usize) -> Result<Region, Geo
     Ok(acc.unwrap_or_default())
 }
 
-/// Splits every layer of the sections by role.
-pub fn split(sections: &Sections, params: &RegionParams) -> Result<Regions, RegionError> {
-    check(params)?;
-    let mut regions: Vec<Region> = Vec::with_capacity(sections.layers.len());
+/// The shapes of a layer grouped by the parameters at their centres, in order of first use.
+type Parts = Vec<(Rc<RegionParams>, Region)>;
+
+fn parts(region: &Region, z: f64, field: &Field<RegionParams>) -> Result<Parts, RegionError> {
+    let mut parts: Parts = Vec::new();
+    for shape in region {
+        let p = field.at(centre(shape.first().into_iter().flatten(), z), check)?;
+        match parts.iter_mut().find(|(q, _)| Rc::ptr_eq(q, &p)) {
+            Some((_, shapes)) => shapes.push(shape.clone()),
+            None => parts.push((p, vec![shape.clone()])),
+        }
+    }
+    Ok(parts)
+}
+
+fn widths(p: &RegionParams, layer: usize) -> Widths {
+    if layer == 0 {
+        Widths { outer: p.first_layer_width, inner: p.first_layer_width }
+    } else {
+        Widths { outer: p.outer_wall_width, inner: p.inner_wall_width }
+    }
+}
+
+/// Splits every layer of the sections by role, each shape by the parameters at its centre.
+/// Shapes that share their parameters are split together; the layer is their union.
+pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions, RegionError> {
+    check(field.base())?;
+    // Each layer's shapes, first-layer shrink applied, grouped by parameters.
+    let mut layer_parts: Vec<Parts> = Vec::with_capacity(sections.layers.len());
     for layer in &sections.layers {
-        let shrink = if layer.index == 0 { params.first_layer_shrink } else { 0.0 };
-        regions.push(offset(&layer.region, -shrink)?);
-    }
-    let widths = |i: usize| {
-        if i == 0 {
-            Widths { outer: params.first_layer_width, inner: params.first_layer_width }
-        } else {
-            Widths { outer: params.outer_wall_width, inner: params.inner_wall_width }
+        let mut shrunk = Vec::new();
+        for (p, shapes) in parts(&layer.region, layer.top, field)? {
+            let shrink = if layer.index == 0 { p.first_layer_shrink } else { 0.0 };
+            shrunk.push((p, offset(&shapes, -shrink)?));
         }
-    };
-    // What lies inside each layer's walls.
-    let mut insides: Vec<Region> = Vec::with_capacity(regions.len());
-    for (i, (layer, region)) in sections.layers.iter().zip(&regions).enumerate() {
-        insides.push(offset(region, -walls_depth(widths(i), params.walls, layer.height))?);
+        layer_parts.push(shrunk);
     }
+    let regions: Vec<Region> =
+        layer_parts.iter().map(|parts| parts.iter().flat_map(|(_, r)| r.clone()).collect()).collect();
+    // What lies inside each part's walls.
+    let mut inside_parts: Vec<Vec<Region>> = Vec::with_capacity(regions.len());
+    for (i, (layer, parts)) in sections.layers.iter().zip(&layer_parts).enumerate() {
+        let mut insides = Vec::with_capacity(parts.len());
+        for (p, region) in parts {
+            insides.push(offset(region, -walls_depth(widths(p, i), p.walls, layer.height))?);
+        }
+        inside_parts.push(insides);
+    }
+    let insides: Vec<Region> =
+        inside_parts.iter().map(|parts| parts.iter().flatten().cloned().collect()).collect();
     let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
-    for (i, ((layer, region), inside)) in sections.layers.iter().zip(&regions).zip(&insides).enumerate() {
-        let h = layer.height;
-        let widths = widths(i);
-        let i = i as isize;
-        let next = covered(&regions, i + 1, 1)?;
-        let mut walls = Vec::new();
-        for k in 0..params.walls {
-            let centre = offset(region, -wall_centre(widths, k, h))?;
-            if centre.is_empty() {
-                break;
-            }
-            walls.push(centre);
-        }
-        // Inner walls under the air would only show through the top: there, the top surface
-        // runs out to the outer wall and the inner walls stop.
-        let (top_reach, inner_walls_within) = if params.one_wall_on_top && params.walls > 1 {
-            (offset(region, -walls_depth(widths, 1, h))?, Some(next.clone()))
-        } else {
-            (inside.clone(), None)
-        };
-        let above = covered(&insides, i + 1, params.top_layers)?;
-        let below = covered(&regions, i - params.bottom_layers as isize, params.bottom_layers)?;
-        let top_surface = difference(&top_reach, &next)?;
-        // A small piece of sparse infill would be a line or two holding nothing up: solid.
-        let deep: Region = intersection(&intersection(inside, &above)?, &below)?
-            .into_iter()
-            .filter(|shape| shape.iter().map(|c| signed_area(c)).sum::<f64>() >= params.min_sparse_area)
-            .collect();
-        let shells = difference(inside, &deep)?;
-        let solid = difference(&shells, &top_surface)?;
-        // What is not held up from below: over air (the layer below is absent) and over
-        // its sparse infill. Only the parts wide enough to need hanging strands are bridges.
-        let filled = union(&solid, &top_surface)?;
-        let (bridge, bridge_on_sparse) =
-            match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), layers.last()) {
-                (Some(below), Some(previous)) => {
-                    let width = widths.inner.max(widths.outer);
-                    // Each strand rests a bead's width on the support at either end.
-                    let gap = opening(&difference(&filled, below)?, width / 2.0)?;
-                    let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;
-                    let over_sparse =
-                        opening(&intersection(&filled, &previous.sparse)?, params.sparse_gap / 2.0)?;
-                    (over_air.clone(), difference(&over_sparse, &over_air)?)
-                }
-                _ => (Vec::new(), Vec::new()),
-            };
-        let hanging = union(&bridge, &bridge_on_sparse)?;
-        let solid = difference(&solid, &hanging)?;
-        let top_surface = difference(&top_surface, &hanging)?;
-        let deep = difference(&deep, &hanging)?;
-        layers.push(RegionLayer {
+    for (i, ((layer, parts), part_insides)) in
+        sections.layers.iter().zip(&layer_parts).zip(&inside_parts).enumerate()
+    {
+        let next = covered(&regions, i as isize + 1, 1)?;
+        let mut out = RegionLayer {
             index: layer.index,
             top: layer.top,
-            height: h,
-            walls,
-            inner_walls_within,
-            top_surface,
-            solid,
-            bridge,
-            bridge_on_sparse,
-            sparse: deep,
-        });
+            height: layer.height,
+            walls: Vec::new(),
+            inner_walls_within: None,
+            top_surface: Vec::new(),
+            solid: Vec::new(),
+            bridge: Vec::new(),
+            bridge_on_sparse: Vec::new(),
+            sparse: Vec::new(),
+        };
+        // Parts whose inner walls run everywhere, when others' stop under the air.
+        let mut walls_everywhere: Region = Vec::new();
+        let mut walls_clipped = false;
+        for ((p, region), inside) in parts.iter().zip(part_insides) {
+            let around = Around { next: &next, regions: &regions, insides: &insides, below: layers.last() };
+            let piece = split_part(i, layer, p, region, inside, &around)?;
+            for (k, wall) in piece.walls.into_iter().enumerate() {
+                match out.walls.get_mut(k) {
+                    Some(walls) => walls.extend(wall),
+                    None => out.walls.push(wall),
+                }
+            }
+            match piece.inner_walls_within {
+                Some(_) => walls_clipped = true,
+                None => walls_everywhere.extend(region.iter().cloned()),
+            }
+            out.top_surface.extend(piece.top_surface);
+            out.solid.extend(piece.solid);
+            out.bridge.extend(piece.bridge);
+            out.bridge_on_sparse.extend(piece.bridge_on_sparse);
+            out.sparse.extend(piece.sparse);
+        }
+        if walls_clipped {
+            out.inner_walls_within =
+                Some(if walls_everywhere.is_empty() { next } else { union(&next, &walls_everywhere)? });
+        }
+        layers.push(out);
     }
     Ok(Regions { layers })
+}
+
+/// The layers around the one being split, whole.
+struct Around<'a> {
+    /// The section of the layer above.
+    next: &'a Region,
+    /// Every layer's section and what lies inside its walls.
+    regions: &'a [Region],
+    insides: &'a [Region],
+    /// The layer below, split.
+    below: Option<&'a RegionLayer>,
+}
+
+/// Splits one part of layer `i`, `region` with `inside` inside its walls, by its parameters `p`.
+fn split_part(
+    i: usize,
+    layer: &Layer,
+    p: &RegionParams,
+    region: &Region,
+    inside: &Region,
+    around: &Around,
+) -> Result<RegionLayer, RegionError> {
+    let Around { next, regions, insides, below: previous } = *around;
+    let h = layer.height;
+    let widths = widths(p, i);
+    let i = i as isize;
+    let mut walls = Vec::new();
+    for k in 0..p.walls {
+        let centre = offset(region, -wall_centre(widths, k, h))?;
+        if centre.is_empty() {
+            break;
+        }
+        walls.push(centre);
+    }
+    // Inner walls under the air would only show through the top: there, the top surface
+    // runs out to the outer wall and the inner walls stop.
+    let (top_reach, inner_walls_within) = if p.one_wall_on_top && p.walls > 1 {
+        (offset(region, -walls_depth(widths, 1, h))?, Some(next.clone()))
+    } else {
+        (inside.clone(), None)
+    };
+    let above = covered(insides, i + 1, p.top_layers)?;
+    let below = covered(regions, i - p.bottom_layers as isize, p.bottom_layers)?;
+    let top_surface = difference(&top_reach, next)?;
+    // A small piece of sparse infill would be a line or two holding nothing up: solid.
+    let deep: Region = intersection(&intersection(inside, &above)?, &below)?
+        .into_iter()
+        .filter(|shape| shape.iter().map(|c| signed_area(c)).sum::<f64>() >= p.min_sparse_area)
+        .collect();
+    let shells = difference(inside, &deep)?;
+    let solid = difference(&shells, &top_surface)?;
+    // What is not held up from below: over air (the layer below is absent) and over
+    // its sparse infill. Only the parts wide enough to need hanging strands are bridges.
+    let filled = union(&solid, &top_surface)?;
+    let (bridge, bridge_on_sparse) =
+        match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), previous) {
+            (Some(below), Some(previous)) => {
+                let width = widths.inner.max(widths.outer);
+                // Each strand rests a bead's width on the support at either end.
+                let gap = opening(&difference(&filled, below)?, width / 2.0)?;
+                let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;
+                let over_sparse = opening(&intersection(&filled, &previous.sparse)?, p.sparse_gap / 2.0)?;
+                (over_air.clone(), difference(&over_sparse, &over_air)?)
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+    let hanging = union(&bridge, &bridge_on_sparse)?;
+    Ok(RegionLayer {
+        index: layer.index,
+        top: layer.top,
+        height: h,
+        walls,
+        inner_walls_within,
+        top_surface: difference(&top_surface, &hanging)?,
+        solid: difference(&solid, &hanging)?,
+        bridge,
+        bridge_on_sparse,
+        sparse: difference(&deep, &hanging)?,
+    })
 }
 
 #[cfg(test)]

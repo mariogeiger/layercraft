@@ -45,6 +45,10 @@ enum Command {
         /// Also write the G-code as plain text.
         #[arg(long)]
         gcode: Option<PathBuf>,
+        /// Vary settings by place: a JSON list of overrides, each `{"within": {"z": [0, 5]},
+        /// "set": {"motion": {"lift_radius": 0.6}}}`; boxes are in plate millimetres.
+        #[arg(long)]
+        tune: Option<PathBuf>,
     },
     /// Compare two G-code files (.gcode or .gcode.3mf), layer by layer and feature by feature.
     Compare { ours: PathBuf, theirs: PathBuf },
@@ -59,6 +63,9 @@ enum Command {
         /// Only layers FROM..TO (end excluded).
         #[arg(long)]
         layers: Option<String>,
+        /// Vary settings by place, as for `compile`.
+        #[arg(long)]
+        tune: Option<PathBuf>,
     },
 }
 
@@ -136,7 +143,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}\nvariant: {}", machine.source, machine.variant);
             Ok(())
         }
-        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode } => {
+        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune } => {
+            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
             let machine = load_machine(&machine)?;
             let settings = settings::read(&machine, bed.as_deref()).map_err(|e| e.to_string())?;
             let area = settings.envelope.area;
@@ -144,7 +152,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 Some(text) => parse_pair(&text)?,
                 None => [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0],
             };
-            let output = pipeline::run(input.as_deref(), at, &settings, from.as_ref(), &emit)?;
+            let output = pipeline::run(input.as_deref(), at, &settings, &tuning, from.as_ref(), &emit)?;
             let violations = layercraft_verify::verify(&output.program, &settings.envelope);
             if let Some(first) = violations.first() {
                 for v in &violations {
@@ -240,7 +248,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, machine, layers } => {
+        Command::View { input, out, machine, layers, tune } => {
+            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 let text =
                     std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
@@ -250,7 +259,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 let settings = settings::read(&machine, None).map_err(|e| e.to_string())?;
                 let area = settings.envelope.area;
                 let at = [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0];
-                let output = pipeline::run(Some(&input), at, &settings, None, &[])?;
+                let output = pipeline::run(Some(&input), at, &settings, &tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?
             };
             let range = match layers {

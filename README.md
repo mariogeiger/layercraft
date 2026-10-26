@@ -89,13 +89,16 @@ And layercraft writes files. It never starts a print: that takes a person, every
 cargo install --path apps/layercraft
 layercraft machine import                       # once: the X2D, 0.20 mm Standard, Bambu PLA Basic
 layercraft compile part.3mf --out part.gcode.3mf
+layercraft compile part.3mf --out part.gcode.3mf --tune tune.json   # vary settings by place
 layercraft compare part.gcode.3mf other.gcode   # side by side with another slicer's output
 ```
 
 `machine import` reads the printer maker's profiles from an installed Bambu Studio, once, into
 `~/.config/layercraft/`; nothing from them enters this repository. `compare` lines up two
 G-code files layer by layer and feature by feature: another slicer is a reference to compare
-against, not an oracle.
+against, not an oracle. `--tune` varies any setting by height or by object: a JSON list of
+boxes, each with the settings it changes, such as `{"within": {"z": [0, 5]}, "set": {"motion":
+{"lift_radius": 0.6}}}`; so several variants of a test can share one plate.
 
 ## What it does not do yet
 

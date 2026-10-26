@@ -15,6 +15,8 @@ pub struct Fill {
     pub role: Role,
     pub reach: Region,
     pub max_link: f64,
+    /// Whether its lines are laid in sweeps, each against the one before.
+    pub monotone: bool,
 }
 
 /// Lengths below this are a point, in mm.

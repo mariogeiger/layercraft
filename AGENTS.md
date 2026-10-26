@@ -71,6 +71,9 @@ outranks feature work.**
 ## Running and looking
 - `layercraft compile part.3mf --out part.gcode.3mf` compiles; `--emit <stage>` writes a stage
   file, `--from <file>` resumes from one.
+- **Experiment by place, not by script.** To compare settings, print several copies on one plate
+  and vary them with `--tune` (boxes by object or height band, any region, path or motion key)
+  rather than editing stage files by hand; edit a stage file only for what no setting reaches.
 - **Look at any stage.** `--emit <stage>=FILE.ply` writes it as a PLY picture: points,
   segments and triangles with properties to colour and filter by (`layercraft_view`).
 - **Look at the toolpaths in SolidCraft.** `layercraft view` writes a SolidCraft script (one sketch per layer,

@@ -3,9 +3,10 @@
 
 use super::*;
 use layercraft_path::{Path, PathLayer, Paths};
+use layercraft_tune::Field;
 
 fn role(speed: f64) -> RoleMotion {
-    RoleMotion { speed, accel: 1000.0 }
+    RoleMotion { speed, accel: 1000.0, flow: 1.0 }
 }
 
 fn params() -> MotionParams {
@@ -63,12 +64,13 @@ fn scope() -> layercraft_machine::Scope {
 
 #[test]
 fn filament_follows_the_bead_volume() {
-    let program = compile(&line(10.0), &params(), &scope()).unwrap();
+    let program = compile(&line(10.0), &Field::uniform(params()), &scope()).unwrap();
     let area = (0.4 - 0.2) * 0.2 + std::f64::consts::PI * 0.01;
     let filament_area = std::f64::consts::PI * 0.875 * 0.875;
     let expected = 2.0 * 0.98 * area * 10.0 / filament_area;
     assert!((program.summary.filament_mm - expected).abs() < 1e-12);
-    assert!((program.summary.volume_per_layer[0] - area * 10.0).abs() < 1e-12);
+    // The plastic pushed: the flow ratio's share of the bead's volume.
+    assert!((program.summary.volume_per_layer[0] - 0.98 * area * 10.0).abs() < 1e-12);
     assert!(matches!(&program.ops[0], Op::Raw { text } if text.starts_with("; start me\n")));
 }
 
@@ -96,7 +98,7 @@ fn straight_runs_keep_their_speed_through_joints() {
 
 #[test]
 fn travels_lift_straight_up_then_cross_then_land() {
-    let program = compile(&line(10.0), &params(), &scope()).unwrap();
+    let program = compile(&line(10.0), &Field::uniform(params()), &scope()).unwrap();
     let moves: Vec<&Op> = program
         .ops
         .iter()
@@ -114,7 +116,7 @@ fn travels_lift_straight_up_then_cross_then_land() {
 fn short_layers_slow_down_to_cool() {
     let mut p = params();
     p.slow_down_layer_time = 4.0;
-    let program = compile(&line(10.0), &p, &scope()).unwrap();
+    let program = compile(&line(10.0), &Field::uniform(p.clone()), &scope()).unwrap();
     let speeds: Vec<f64> = program
         .ops
         .iter()
@@ -128,7 +130,7 @@ fn short_layers_slow_down_to_cool() {
 fn missing_template_variables_are_named() {
     let mut p = params();
     p.templates.end = "M140 S[bed]".into();
-    let err = compile(&line(1.0), &p, &scope()).unwrap_err().to_string();
+    let err = compile(&line(1.0), &Field::uniform(p.clone()), &scope()).unwrap_err().to_string();
     assert!(err.contains("bed"), "{err}");
 }
 
@@ -136,7 +138,7 @@ fn missing_template_variables_are_named() {
 fn retraction_wipes_back_over_the_bead() {
     let mut p = params();
     p.wipe_distance = 1.0;
-    let program = compile(&line(10.0), &p, &scope()).unwrap();
+    let program = compile(&line(10.0), &Field::uniform(p.clone()), &scope()).unwrap();
     let ops = &program.ops;
     let first_wipe = ops.iter().position(|op| matches!(op, Op::Wipe { .. })).unwrap();
     let wipes: Vec<(&[f64; 3], f64, f64)> = ops[first_wipe..]
@@ -179,7 +181,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
     };
     let mut p = params();
     p.seam_gap = 0.06;
-    let program = compile(&paths, &p, &scope()).unwrap();
+    let program = compile(&paths, &Field::uniform(p.clone()), &scope()).unwrap();
     let extrusions: Vec<[f64; 3]> = program
         .ops
         .iter()
@@ -215,7 +217,7 @@ fn a_move_inside_the_part_neither_retracts_nor_lifts() {
             paths: vec![line(10.0, false), line(15.0, true)],
         }],
     };
-    let program = compile(&paths, &params(), &scope()).unwrap();
+    let program = compile(&paths, &Field::uniform(params()), &scope()).unwrap();
     let after_first = program.ops.iter().position(|op| matches!(op, Op::Extrude { .. })).unwrap();
     let between: Vec<&Op> = program.ops[after_first..]
         .iter()
@@ -243,7 +245,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
     let mut p = params();
     p.lift_radius = 1.0;
     p.wipe_distance = 1.0;
-    let program = compile(&paths, &p, &scope()).unwrap();
+    let program = compile(&paths, &Field::uniform(p.clone()), &scope()).unwrap();
     let lifts: Vec<(f64, Option<[f64; 2]>, f64)> = program
         .ops
         .iter()
@@ -280,4 +282,69 @@ fn a_helix_runs_at_its_centripetal_limit() {
     let v = 1000f64.sqrt();
     let expected = 2.0 * v / 1000.0 + (length - v * v / 1000.0) / v;
     assert!((t[1] - expected).abs() < 1e-9, "{t:?} against {expected}");
+}
+
+fn tuned(text: &str) -> Field<MotionParams> {
+    let tuning: layercraft_tune::Tuning = serde_json::from_str(text).unwrap();
+    Field::new(params(), &tuning, "motion").unwrap()
+}
+
+#[test]
+fn each_bead_takes_the_parameters_at_its_place() {
+    // Above z = 0.3, a lift turns a 1 mm helix; below, it goes straight up.
+    let field = tuned(r#"[{"within": {"z": [0.3, 1]}, "set": {"motion": {"lift_radius": 1.0}}}]"#);
+    let program = compile(&line(10.0), &field, &scope()).unwrap();
+    let lifts: Vec<&Option<[f64; 2]>> = program
+        .ops
+        .iter()
+        .filter_map(|op| if let Op::Lift { around, .. } = op { Some(around) } else { None })
+        .collect();
+    // Into the first layer (from nowhere known), off it (its bead below 0.3), off the last one.
+    assert_eq!(lifts.len(), 4, "{lifts:?}");
+    assert!(lifts[..3].iter().all(|a| a.is_none()));
+    assert!(lifts[3].is_some());
+}
+
+#[test]
+fn what_is_pulled_back_is_pushed_again() {
+    // The second layer's bead pulls 1.5 mm, the first's 0.4: each push matches its pull.
+    let field = tuned(r#"[{"within": {"z": [0.3, 1]}, "set": {"motion": {"retract_length": 1.5}}}]"#);
+    let program = compile(&line(10.0), &field, &scope()).unwrap();
+    let mut pulled = 0.0;
+    let mut pushes = Vec::new();
+    for op in &program.ops {
+        match op {
+            Op::Retract { e, .. } if *e > 0.0 => {
+                pushes.push(*e);
+                assert!((pulled - e).abs() < 1e-12, "pushed {e} after pulling {pulled}");
+                pulled = 0.0;
+            }
+            Op::Retract { e, .. } | Op::Wipe { e, .. } => pulled -= e,
+            _ => {}
+        }
+    }
+    assert_eq!(pushes.len(), 2);
+    // The print ends with the last bead's pull, never pushed.
+    assert!((pulled - 1.5).abs() < 1e-12);
+}
+
+#[test]
+fn an_edited_program_is_summarised_from_its_moves() {
+    let mut program = compile(&line(10.0), &Field::uniform(params()), &scope()).unwrap();
+    let before = program.summary.clone();
+    assert_eq!(finish(&mut program.ops, &params().limits, 1.75), before);
+    for op in &mut program.ops {
+        if let Op::Extrude { e, speed, .. } = op {
+            *e *= 2.0;
+            *speed /= 2.0;
+        }
+    }
+    let after = finish(&mut program.ops, &params().limits, 1.75);
+    assert!((after.filament_mm - 2.0 * before.filament_mm).abs() < 1e-12);
+    assert!(after.motion_seconds > before.motion_seconds);
+    let progress = program.ops.iter().find_map(|op| match op {
+        Op::Progress { minutes_left, .. } => Some(*minutes_left),
+        _ => None,
+    });
+    assert_eq!(progress, Some((after.motion_seconds / 60.0).ceil() as u32));
 }

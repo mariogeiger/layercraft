@@ -9,7 +9,11 @@ repository.workspace = true
 layercraft-geom = { path = "../geom" }
 layercraft-machine = { path = "../machine" }
 layercraft-path = { path = "../path" }
+layercraft-tune = { path = "../tune" }
 serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

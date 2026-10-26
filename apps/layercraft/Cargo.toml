@@ -17,6 +17,7 @@ layercraft-package = { path = "../../crates/package" }
 layercraft-path = { path = "../../crates/path" }
 layercraft-region = { path = "../../crates/region" }
 layercraft-section = { path = "../../crates/section" }
+layercraft-tune = { path = "../../crates/tune" }
 layercraft-verify = { path = "../../crates/verify" }
 layercraft-view = { path = "../../crates/view" }
 serde.workspace = true
