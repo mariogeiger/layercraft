@@ -58,12 +58,16 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
     Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)? })
 }
 
+/// The radius of a spiral lift's helix, in mm: the smallest that broke the string at the end of
+/// a print. Measured on the X2D with Bambu PLA Basic, one 10 mm cube per radius, the print ending
+/// on its lift: at 0 the nozzle pulled up a 3 mm string, at 0.6 a 10 mm one, at 1.2 and 2.4 none.
+/// A larger turn only costs time, about `2π·√(r/a)` per lift at its centripetal limit.
+const SPIRAL_LIFT_RADIUS: f64 = 1.2;
+
 /// The hop and the radius of the helix a lift turns; a filament's own lift wins over the
-/// printer's. A spiral lift climbs the hop on the slope where the Z axis at its top speed keeps
-/// pace with the travel speed: its turn `2πr` is to the hop as the travel speed is to Z's, so
-/// the helix is flown at the travel speed. Bambu's automatic lift is taken as the spiral one.
+/// printer's. Bambu's automatic lift is taken as the spiral one.
 fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
-    use Kind::{Filament, Machine as M, Process};
+    use Kind::{Filament, Machine as M};
     let z_hop = match m.get(Filament, "filament_z_hop").ok().and_then(|v| v.number()) {
         Some(h) => h,
         None => m.number(M, "z_hop")?,
@@ -74,10 +78,7 @@ fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
     };
     let radius = match kind.as_str() {
         "Normal Lift" => 0.0,
-        "Spiral Lift" | "Auto Lift" => {
-            z_hop * m.number(Process, "travel_speed")?
-                / (std::f64::consts::TAU * m.number(M, "machine_max_speed_z")?)
-        }
+        "Spiral Lift" | "Auto Lift" => SPIRAL_LIFT_RADIUS,
         other => return Err(MachineError::Unsupported(format!("the lift `{other}`"))),
     };
     Ok((z_hop, radius))

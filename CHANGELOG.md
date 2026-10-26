@@ -2,6 +2,14 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.9
+
+### Fixed
+
+- A spiral lift turns a helix of 1.2 mm, the smallest radius that broke the end-of-print string
+  in a series of test cubes on the X2D (0, 0.6, 1.2 and 2.4 mm), instead of 3.18 mm derived
+  from the axes' speeds: as clean, faster, and gentler on top surfaces.
+
 ## 0.2.8
 
 ### Fixed
