@@ -2,6 +2,13 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.10
+
+### Documentation
+
+- The README shows what layercraft does: the five stages on the 3DBenchy, the bead's
+  cross-section and the formulas behind the filament, and the stages seen in SolidCraft.
+
 ## 0.2.9
 
 ### Fixed
