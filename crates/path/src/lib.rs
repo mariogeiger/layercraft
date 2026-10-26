@@ -4,8 +4,10 @@
 //! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
 //! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
 //! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
-//! wide, side by side. Hatch lines lie on a fixed grid, so layers stack; the move between
-//! neighbouring lines is marked as staying inside the part, so it needs no retraction. Each island is printed whole — inner walls, outer
+//! wide: side by side over air, where they hang; over sparse infill, where they rest, spaced to
+//! fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the move between
+//! neighbouring lines is marked as staying inside the part, so it needs no retraction. Each
+//! island is printed whole — inner walls, outer
 //! wall, then its infill — and islands follow each other nearest first. The lines of a
 //! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
 //! are all `first_layer_width` wide. Each island is traced by the parameters at its centre.

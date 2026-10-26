@@ -229,3 +229,21 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
     let ratio = sparse(15.0, 40.0) / sparse(-1.0, 15.0);
     assert!((ratio - 2.0).abs() < 0.25, "{ratio}");
 }
+
+#[test]
+fn strands_resting_on_sparse_infill_fill_their_layer_exactly() {
+    // Under the top shells of a wide slab, the first solid layer rests on sparse infill.
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [30.0, 30.0, 2.0])] };
+    let (regions, paths) = paths_of(&mesh);
+    let i = regions.layers.iter().position(|l| !l.bridge_on_sparse.is_empty()).unwrap();
+    assert!(regions.layers[i].bridge.is_empty());
+    let strands: f64 = paths.layers[i]
+        .paths
+        .iter()
+        .filter(|p| p.role == Role::Bridge)
+        .map(|p| polyline_length(&p.points) * std::f64::consts::PI * 0.4 * 0.4 / 4.0)
+        .sum();
+    // The strands' plastic is the area's slab, up to a line's share at the hatch's ends.
+    let slab = area(&regions.layers[i].bridge_on_sparse) * 0.2;
+    assert!((strands / slab - 1.0).abs() < 0.03, "{strands} mm³ of strands for a {slab} mm³ slab");
+}

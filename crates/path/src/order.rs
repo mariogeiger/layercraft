@@ -218,12 +218,15 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         f64::INFINITY
     };
     let (top, solid) = (w(p.top_surface_width), w(p.solid_width));
-    // Bridge strands hang round, a nozzle wide: they touch side by side.
+    // Bridge strands are round, a nozzle wide. Over air they hang, touching side by side. Over
+    // sparse infill they rest on its lines, a solid layer like any other: spaced so that each
+    // strand's section, π·w²/4, fills its spacing times the layer's height.
+    let resting = std::f64::consts::PI * p.bridge_width * p.bridge_width / (4.0 * h);
     let fills = [
         (Role::TopSurface, &layer.top_surface, top, bead_spacing(top, h)),
         (Role::Solid, &layer.solid, solid, bead_spacing(solid, h)),
         (Role::Bridge, &layer.bridge, p.bridge_width, p.bridge_width),
-        (Role::Bridge, &layer.bridge_on_sparse, p.bridge_width, p.bridge_width),
+        (Role::Bridge, &layer.bridge_on_sparse, p.bridge_width, resting),
         (Role::Sparse, &layer.sparse, w(p.sparse_width), sparse_spacing),
     ];
     let mut areas = Vec::new();

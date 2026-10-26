@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.3.1
+
+### Fixed
+
+- Bridge strands resting on sparse infill fill their layer exactly: they are spaced
+  `π·w²/(4h)` apart (0.63 mm for a 0.4 mm nozzle on 0.2 mm layers) instead of touching, which
+  laid 57 % more plastic than the layer holds and pushed it up into the top surface. Strands
+  over air still touch, where they hang.
+
 ## 0.3.0
 
 ### Added
