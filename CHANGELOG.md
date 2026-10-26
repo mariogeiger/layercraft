@@ -2,6 +2,13 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.8
+
+### Fixed
+
+- A program's PLY picture names the role of the moves that lay no plastic `-1 none`, in the
+  form every other label takes (`role: 0 outer wall, …`), so a viewer can read it as a legend.
+
 ## 0.2.7
 
 ### Added

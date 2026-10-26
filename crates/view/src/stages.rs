@@ -2,7 +2,8 @@
 //!
 //! A bead's centre line lies half its height under the nozzle: at a layer's mid-height, where
 //! the section cuts, or a strand's radius down for a bridge, which hangs round. So the stages of
-//! one layer overlay, and a role has the same code in all of them.
+//! one layer overlay, and a role has the same code in all of them. A comment names the values of
+//! each label, `role: 0 outer wall, 1 inner wall, …`, for a viewer's legend.
 //!
 //! - mesh: the bodies' triangles, with their `body`;
 //! - sections: each layer's section, triangulated, with its `layer`;
@@ -210,7 +211,8 @@ pub fn program(program: &Program, limits: &Limits) -> Result<Complex<1, 8, 0>, V
         float("fan"),
     ];
     let mut c = Complex::new([float("t")], properties, []);
-    c.comments.push(role_comment() + ", -1 none: the move lays no plastic");
+    // The move lays no plastic: no role.
+    c.comments.push(role_comment() + ", -1 none");
     c.comments.push("move: 0 extrude, 1 travel, 2 wipe, 3 lift".into());
     c.comments.push("t: seconds since the program started, the machine's own G-code not counted".into());
     let times = estimate(&program.ops, limits, [0.0; 3]);

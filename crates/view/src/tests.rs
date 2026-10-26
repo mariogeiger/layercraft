@@ -159,4 +159,11 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         }
     }
     assert!(t > 0.0);
+    // The legend: every label value named, `-1` the moves that lay no plastic.
+    assert!(
+        c.comments
+            .iter()
+            .any(|l| l.starts_with("role: 0 outer wall, ") && l.ends_with(", 5 sparse infill, -1 none"))
+    );
+    assert!(c.comments.contains(&"move: 0 extrude, 1 travel, 2 wipe, 3 lift".to_string()));
 }
