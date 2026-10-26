@@ -26,7 +26,8 @@ enum Command {
         out: PathBuf,
         #[arg(long, default_value = "x2d")]
         machine: String,
-        /// Write a stage: mesh, sections, regions, paths or program, as STAGE=FILE (repeatable).
+        /// Write a stage: mesh, sections, regions, paths or program, as STAGE=FILE (repeatable);
+        /// as JSON, or as a PLY picture when FILE ends in .ply.
         #[arg(long, value_parser = stage_file)]
         emit: Vec<(Stage, PathBuf)>,
         /// Start from a stage file instead of the 3MF, as STAGE=FILE.

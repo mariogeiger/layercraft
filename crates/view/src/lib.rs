@@ -1,8 +1,7 @@
-//! Pictures of the toolpaths: a SolidCraft script that draws them as sketches, and the
-//! thumbnail shown on the printer's screen.
+//! Pictures of the stages: any stage as an attributed complex written as PLY, for SolidCraft or
+//! any viewer to colour and filter by its properties; the toolpaths as a SolidCraft script, one
+//! sketch per layer and role; and the thumbnail shown on the printer's screen.
 //!
-//! The script holds one sketch per layer and role, at the layer's height and named
-//! `L012 outer wall`, so layers and roles can be shown, hidden and measured in SolidCraft.
 //! The thumbnail paints the beads from the bottom layer up, seen from above, each layer
 //! lighter than the one below it.
 #![deny(
@@ -14,23 +13,17 @@
     clippy::unreachable
 )]
 
+mod ply;
+mod stages;
+#[cfg(test)]
+mod tests;
+
+pub use ply::{Complex, Kind, MAX_POINTS, Property, Table, ViewError, float, int};
+pub use stages::{ROLES, mesh, paths, program, regions, role_name, sections};
+
 use layercraft_package::Image;
 use layercraft_path::{Paths, Role};
 use serde_json::{Value, json};
-
-fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::OuterWall => "outer wall",
-        Role::InnerWall => "inner wall",
-        Role::TopSurface => "top surface",
-        Role::Solid => "solid infill",
-        Role::Bridge => "bridge",
-        Role::Sparse => "sparse infill",
-    }
-}
-
-const ROLES: [Role; 6] =
-    [Role::OuterWall, Role::InnerWall, Role::TopSurface, Role::Solid, Role::Bridge, Role::Sparse];
 
 /// A SolidCraft script drawing every bead's centre line, layers `from..to`.
 pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value {

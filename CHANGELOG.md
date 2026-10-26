@@ -2,6 +2,17 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.7
+
+### Added
+
+- Any stage as a picture: `--emit STAGE=FILE.ply` writes the stage as a PLY file of points,
+  segments and triangles with named properties, for SolidCraft or any viewer to colour and
+  filter by. Sections and region areas are triangulated exactly on the lattice; walls, beads
+  and moves are segments, a bead with its `width` and `height`, at its centre half its height
+  under the nozzle; the program's points carry their time `t`, so `t ≤ t₀` replays the print.
+  A role has the same code in every stage.
+
 ## 0.2.6
 
 ### Fixed

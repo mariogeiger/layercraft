@@ -1,4 +1,7 @@
 //! The chain of stages, with any stage written out (`--emit`) or read back in (`--from`).
+//!
+//! A stage is written as JSON, which reads back, or as PLY when the file name ends in `.ply`:
+//! a picture of the stage to look at (`layercraft_view`), which does not.
 
 use crate::settings::Settings;
 use layercraft_mesh::{Mesh, read_3mf};
@@ -6,6 +9,7 @@ use layercraft_motion::Program;
 use layercraft_path::Paths;
 use layercraft_region::Regions;
 use layercraft_section::Sections;
+use layercraft_view::{Complex, ViewError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -52,6 +56,9 @@ pub struct Output {
 const MAX_STAGE_BYTES: u64 = 4 << 30;
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+    if is_ply(path) {
+        return Err(format!("{} is a picture of a stage: resume from its JSON", path.display()));
+    }
     let len = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
     if len > MAX_STAGE_BYTES {
         return Err(format!("{} is larger than {MAX_STAGE_BYTES} bytes", path.display()));
@@ -60,10 +67,26 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn emit<T: Serialize>(stage: Stage, value: &T, emits: &[(Stage, PathBuf)]) -> Result<(), String> {
+fn is_ply(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ply"))
+}
+
+/// Writes `stage` to each file `emits` names for it: `value` as JSON, or `view` as PLY.
+fn emit<T: Serialize, const V: usize, const E: usize, const F: usize>(
+    stage: Stage,
+    value: &T,
+    view: impl Fn() -> Result<Complex<V, E, F>, ViewError>,
+    emits: &[(Stage, PathBuf)],
+) -> Result<(), String> {
     for (s, path) in emits.iter().filter(|(s, _)| *s == stage) {
-        let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        serde_json::to_writer(std::io::BufWriter::new(file), value).map_err(|e| format!("{s:?}: {e}"))?;
+        let file = std::io::BufWriter::new(
+            std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
+        );
+        if is_ply(path) {
+            view().and_then(|c| c.write(file)).map_err(|e| format!("{s:?}: {e}"))?;
+        } else {
+            serde_json::to_writer(file, value).map_err(|e| format!("{s:?}: {e}"))?;
+        }
         eprintln!("wrote the {s:?} stage to {}", path.display());
     }
     Ok(())
@@ -93,7 +116,7 @@ pub fn run(
         _ => None,
     };
     if let Some(mesh) = &mesh {
-        emit(Stage::Mesh, mesh, emits)?;
+        emit(Stage::Mesh, mesh, || layercraft_view::mesh(mesh), emits)?;
     }
     let sections: Option<Sections> = match (start, &mesh) {
         (Some(Stage::Sections), _) => from.map(|(_, p)| read_json(p)).transpose()?,
@@ -106,7 +129,7 @@ pub fn run(
         if s.open_chains > 0 {
             eprintln!("warning: {} section chains did not close (the mesh has holes)", s.open_chains);
         }
-        emit(Stage::Sections, s, emits)?;
+        emit(Stage::Sections, s, || layercraft_view::sections(s), emits)?;
     }
     let regions: Option<Regions> = match (start, &sections) {
         (Some(Stage::Regions), _) => from.map(|(_, p)| read_json(p)).transpose()?,
@@ -114,7 +137,7 @@ pub fn run(
         _ => None,
     };
     if let Some(r) = &regions {
-        emit(Stage::Regions, r, emits)?;
+        emit(Stage::Regions, r, || layercraft_view::regions(r), emits)?;
     }
     let paths: Option<Paths> = match (start, &regions) {
         (Some(Stage::Paths), _) => from.map(|(_, p)| read_json(p)).transpose()?,
@@ -122,7 +145,7 @@ pub fn run(
         _ => None,
     };
     if let Some(p) = &paths {
-        emit(Stage::Paths, p, emits)?;
+        emit(Stage::Paths, p, || layercraft_view::paths(p), emits)?;
     }
     let program: Program = match (start, &paths) {
         (Some(Stage::Program), _) => from.map(|(_, p)| read_json(p)).transpose()?.ok_or("no program")?,
@@ -131,6 +154,6 @@ pub fn run(
         }
         _ => return Err("nothing to compile".into()),
     };
-    emit(Stage::Program, &program, emits)?;
+    emit(Stage::Program, &program, || layercraft_view::program(&program, &settings.motion.limits), emits)?;
     Ok(Output { paths, program })
 }

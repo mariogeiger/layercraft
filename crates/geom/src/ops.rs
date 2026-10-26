@@ -20,6 +20,7 @@ use i_overlay::i_float::int::point::IntPoint;
 use i_overlay::mesh::int::outline::offset::IntOutlineOffset;
 use i_overlay::mesh::int::style::{IntLineJoin, IntOutlineStyle};
 use i_overlay::string::clip::{ClipRule, IntClip};
+use i_triangle::int::triangulatable::IntTriangulatable;
 
 /// The lattice every result lies on, in mm: a nanometre, a thousandth of a printer's finest
 /// step, and the distance under which CAD programs such as SolidCraft weld points.
@@ -158,6 +159,15 @@ pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, 
     let paths = contours_to_lattice(lines);
     let pieces = region_to_lattice(region).clip_paths(&paths, FillRule::NonZero, rule);
     Ok(pieces.iter().map(|p| p.iter().map(from_lattice).collect()).collect())
+}
+
+/// Triangles covering the region exactly, without overlap: their corners, on the lattice, and
+/// counterclockwise index triples into them.
+pub fn triangulate(region: &Region) -> Result<(Vec<Point>, Vec<[u32; 3]>), GeomError> {
+    check_region(region)?;
+    let mesh = region_to_lattice(region).triangulate().into_triangulation::<u32>();
+    let (triangles, _) = mesh.indices.as_chunks::<3>();
+    Ok((mesh.points.iter().map(from_lattice).collect(), triangles.to_vec()))
 }
 
 /// The area of a region: outer contours count positive, holes negative.

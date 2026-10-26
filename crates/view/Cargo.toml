@@ -6,8 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+layercraft-geom = { path = "../geom" }
+layercraft-mesh = { path = "../mesh" }
+layercraft-motion = { path = "../motion" }
 layercraft-package = { path = "../package" }
 layercraft-path = { path = "../path" }
+layercraft-region = { path = "../region" }
+layercraft-section = { path = "../section" }
 serde_json.workspace = true
 
 [lints]

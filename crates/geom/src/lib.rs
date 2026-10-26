@@ -21,8 +21,8 @@ mod ops;
 pub use bead::{bead_area, bead_spacing};
 
 pub use ops::{
-    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, union, union_contours,
-    winding_region,
+    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, triangulate, union,
+    union_contours, winding_region,
 };
 
 /// A point in the plane, in millimetres.

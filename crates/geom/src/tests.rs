@@ -128,3 +128,20 @@ fn two_roundings_of_one_edge_leave_nothing_between_them() {
     let c = union_contours(&[vec![[0.0, 0.0], [10.01, 0.0], [10.01, 10.0], [0.0, 10.0]]]).unwrap();
     assert!(close(area(&difference(&c, &a).unwrap()), 0.1));
 }
+
+#[test]
+fn triangles_cover_a_region_with_holes_exactly() {
+    // Two islands, one with a hole: 100 − 36 + 9.
+    let region =
+        union_contours(&[square(0.0, 0.0, 10.0), square(2.0, 2.0, 6.0), square(20.0, 0.0, 3.0)]).unwrap();
+    let (points, triangles) = triangulate(&region).unwrap();
+    let mut total = 0.0;
+    for t in &triangles {
+        let [a, b, c] = t.map(|i| points[i as usize]);
+        let doubled = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        assert!(doubled > 0.0, "triangle {t:?} is not counterclockwise");
+        total += doubled / 2.0;
+    }
+    assert!(close(total, 73.0), "{total}");
+    assert!(triangulate(&Vec::new()).unwrap().1.is_empty());
+}

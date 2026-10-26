@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 i_overlay.workspace = true
+i_triangle.workspace = true
 serde.workspace = true
 
 [lints]

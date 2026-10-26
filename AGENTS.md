@@ -71,7 +71,9 @@ outranks feature work.**
 ## Running and looking
 - `layercraft compile part.3mf --out part.gcode.3mf` compiles; `--emit <stage>` writes a stage
   file, `--from <file>` resumes from one.
-- **Look at the toolpaths.** `layercraft view` writes a SolidCraft script (one sketch per layer,
+- **Look at any stage.** `--emit <stage>=FILE.ply` writes it as a PLY picture: points,
+  segments and triangles with properties to colour and filter by (`layercraft_view`).
+- **Look at the toolpaths in SolidCraft.** `layercraft view` writes a SolidCraft script (one sketch per layer,
   one layer per role); run it with `solidcraft-cli` or in the open SolidCraft window and take a
   screenshot (`../solidcraft/AGENTS.md`, “Running and looking at the app”).
 - **Compare with Bambu Studio** headless, in a throwaway data folder so the owner's settings
