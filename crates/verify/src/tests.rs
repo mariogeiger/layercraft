@@ -1,8 +1,9 @@
-//! Each unsafe instruction is caught; a safe program passes.
+//! Each unsafe move is caught; a safe program passes.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_motion::Summary;
+use layercraft_motion::{Arc, Bead, Layer};
+use layercraft_path::Role;
 
 const ENVELOPE: Envelope = Envelope {
     area: [[0.0, 0.0], [256.0, 256.0]],
@@ -12,17 +13,25 @@ const ENVELOPE: Envelope = Envelope {
     max_volumetric_speed: 20.0,
 };
 
-fn program(ops: Vec<Op>) -> Program {
-    Program { ops, summary: Summary::default() }
+fn mv(to: [f64; 3], e: f64, speed: f64) -> Move {
+    let bead = (e > 0.0).then_some(Bead { role: Role::OUTER_WALL, width: 0.42 });
+    Move { to: Some(to), arc: None, e, speed, accel: 1000.0, fan: 0.0, bead }
 }
 
-fn safe() -> Vec<Op> {
+fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
+    Move { arc: Some(Arc { centre, turn }), ..mv(to, 0.0, 300.0) }
+}
+
+fn program(moves: Vec<Move>) -> Program {
+    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, moves }] }
+}
+
+/// Over at the hop from wherever the layer starts, down, then a bead.
+fn safe() -> Vec<Move> {
     vec![
-        Op::Layer { index: 0, z: 0.2, height: 0.2 },
-        Op::Lift { z: 0.6, around: None, speed: 20.0 },
-        Op::Travel { to: [10.0, 10.0, 0.6], speed: 500.0 },
-        Op::Travel { to: [10.0, 10.0, 0.2], speed: 500.0 },
-        Op::Extrude { to: [20.0, 10.0, 0.2], e: 0.3, speed: 50.0 },
+        mv([10.0, 10.0, 0.6], 0.0, 500.0),
+        mv([10.0, 10.0, 0.2], 0.0, 500.0),
+        mv([20.0, 10.0, 0.2], 0.3, 50.0),
     ]
 }
 
@@ -33,47 +42,57 @@ fn a_safe_program_passes() {
 
 #[test]
 fn each_danger_is_caught() {
-    let cases: Vec<(usize, Op)> = vec![
-        (4, Op::Extrude { to: [300.0, 10.0, 0.2], e: 0.3, speed: 50.0 }),
-        (4, Op::Extrude { to: [20.0, 10.0, 0.1], e: 0.3, speed: 50.0 }),
-        (3, Op::Travel { to: [10.0, 10.0, 0.0], speed: 500.0 }),
-        (4, Op::Extrude { to: [20.0, 10.0, 0.2], e: 10.0, speed: 50.0 }),
-        (4, Op::Extrude { to: [20.0, 10.0, 0.2], e: f64::NAN, speed: 50.0 }),
-        (2, Op::Travel { to: [10.0, 10.0, 0.6], speed: 5000.0 }),
-        (1, Op::Lift { z: 999.0, around: None, speed: 20.0 }),
-        (0, Op::Layer { index: 0, z: -1.0, height: 0.2 }),
+    let cases: Vec<(usize, Move)> = vec![
+        (2, mv([300.0, 10.0, 0.2], 0.3, 50.0)),
+        (2, mv([20.0, 10.0, 0.1], 0.3, 50.0)),
+        (1, mv([10.0, 10.0, 0.0], 0.0, 500.0)),
+        (2, mv([20.0, 10.0, 0.2], 10.0, 50.0)),
+        (2, mv([20.0, 10.0, 0.2], f64::NAN, 50.0)),
+        (0, mv([10.0, 10.0, 0.6], 0.0, 5000.0)),
+        (0, mv([10.0, 10.0, 999.0], 0.0, 500.0)),
+        (2, Move { fan: 2.0, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
+        (2, Move { accel: 0.0, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
+        // From where the layer starts, unknown, only a travel.
+        (0, mv([10.0, 10.0, 0.2], 0.3, 50.0)),
     ];
-    for (at, op) in cases {
-        let mut ops = safe();
-        ops[at] = op.clone();
-        assert!(!verify(&program(ops), &ENVELOPE).is_empty(), "{op:?} passed");
+    for (at, m) in cases {
+        let mut moves = safe();
+        moves[at] = m.clone();
+        assert!(!verify(&program(moves), &ENVELOPE).is_empty(), "{m:?} passed");
     }
-    let mut falling = safe();
-    falling.push(Op::Layer { index: 1, z: 0.2, height: 0.2 });
-    assert!(!verify(&program(falling), &ENVELOPE).is_empty());
-    let mut fan = safe();
-    fan.push(Op::Fan { speed: 2.0 });
-    assert!(!verify(&program(fan), &ENVELOPE).is_empty());
+    let mut layers = program(safe()).layers;
+    layers.push(Layer { index: 1, z: 0.2, height: 0.2, moves: safe() });
+    assert!(!verify(&Program { layers: layers.clone() }, &ENVELOPE).is_empty());
+    layers[1].z = -1.0;
+    assert!(!verify(&Program { layers }, &ENVELOPE).is_empty());
 }
 
 #[test]
-fn a_helical_lift_turns_inside_the_plate_from_a_known_place() {
-    let helix = |around: [f64; 2]| Op::Lift { z: 0.6, around: Some(around), speed: 300.0 };
-    let mut ops = safe();
-    ops.push(helix([20.0, 11.0]));
-    assert_eq!(verify(&program(ops), &ENVELOPE), vec![]);
-    // A radius of 15 around (20, -5) dips below y = 0.
-    let mut ops = safe();
-    ops.push(helix([20.0, -5.0]));
-    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
-    // After the machine's own G-code the nozzle may be anywhere.
-    let mut ops = safe();
-    ops.push(Op::Raw { text: "M400".into() });
-    ops.push(helix([20.0, 11.0]));
-    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
-    // A lift never goes down.
-    let mut ops = safe();
-    ops.push(Op::Lift { z: 0.6, around: None, speed: 20.0 });
-    ops.push(Op::Lift { z: 0.4, around: None, speed: 20.0 });
-    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
+fn an_arc_turns_inside_the_plate_from_a_known_place_and_ends_on_its_circle() {
+    let full = std::f64::consts::TAU;
+    let check = |extra: Vec<Move>| {
+        let mut moves = safe();
+        moves.extend(extra);
+        verify(&program(moves), &ENVELOPE)
+    };
+    // A helix about (20, 11) back over (20, 10) passes.
+    assert_eq!(check(vec![arc([20.0, 10.0, 0.6], [20.0, 11.0], full)]), vec![]);
+    // A radius of 15 about (20, -5) dips below y = 0.
+    assert!(!check(vec![arc([20.0, 10.0, 0.6], [20.0, -5.0], full)]).is_empty());
+    // Both ends inside, its belly out: half a turn clockwise about (22, 1) from (24, 1).
+    let belly =
+        vec![mv([24.0, 1.0, 0.2], 0.0, 300.0), arc([20.0, 1.0, 0.2], [22.0, 1.0], -std::f64::consts::PI)];
+    assert!(!check(belly).is_empty());
+    let over =
+        vec![mv([24.0, 1.0, 0.2], 0.0, 300.0), arc([20.0, 1.0, 0.2], [22.0, 1.0], std::f64::consts::PI)];
+    assert_eq!(check(over), vec![]);
+    // An end off its circle, or more than a turn.
+    assert!(!check(vec![arc([21.0, 10.0, 0.6], [20.0, 11.0], full)]).is_empty());
+    assert!(!check(vec![arc([20.0, 10.0, 0.6], [20.0, 11.0], 2.0 * full)]).is_empty());
+    // From where the layer starts, unknown, no arc.
+    let mut first = safe();
+    first.insert(0, arc([10.0, 10.0, 0.8], [10.0, 11.0], full));
+    assert!(!verify(&program(first), &ENVELOPE).is_empty());
+    // Never below the layer.
+    assert!(!check(vec![mv([20.0, 10.0, 0.1], 0.0, 20.0)]).is_empty());
 }

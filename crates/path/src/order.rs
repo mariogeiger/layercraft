@@ -2,7 +2,7 @@
 
 use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
-use crate::{Path, PathError, PathParams, Role, check};
+use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{Contour, Point, Region, bead_spacing, clip_lines, offset, signed_area, union};
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -163,7 +163,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 let outline = shape.first()?.clone();
                 let walls = shape
                     .iter()
-                    .map(|c| (0, loop_path(Role::OuterWall, w(p.outer_wall_width), c, &outline)))
+                    .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
                     .collect();
                 Some(Island { outline, walls, infill: Vec::new(), fills: Rc::default() })
             })
@@ -189,7 +189,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             let Some(&first) = contour.first() else { continue };
             let Some(i) = home(&islands, first) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                let path = loop_path(Role::InnerWall, w(p.inner_wall_width), contour, &island.outline);
+                let path = loop_path(Role::INNER_WALL, w(p.inner_wall_width), contour, &island.outline);
                 match &layer.inner_walls_within {
                     None => island.walls.push((k, path)),
                     // Only the stretches of the loop under the layer above.
@@ -223,11 +223,11 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     // strand's section, π·w²/4, fills its spacing times the layer's height.
     let resting = std::f64::consts::PI * p.bridge_width * p.bridge_width / (4.0 * h);
     let fills = [
-        (Role::TopSurface, &layer.top_surface, top, bead_spacing(top, h)),
-        (Role::Solid, &layer.solid, solid, bead_spacing(solid, h)),
-        (Role::Bridge, &layer.bridge, p.bridge_width, p.bridge_width),
-        (Role::Bridge, &layer.bridge_on_sparse, p.bridge_width, resting),
-        (Role::Sparse, &layer.sparse, w(p.sparse_width), sparse_spacing),
+        (Role::TOP_SURFACE, &layer.top_surface, top, bead_spacing(top, h)),
+        (if first { Role::BOTTOM_SURFACE } else { Role::SOLID }, &layer.solid, solid, bead_spacing(solid, h)),
+        (Role::BRIDGE, &layer.bridge, p.bridge_width, p.bridge_width),
+        (Role::INTERNAL_BRIDGE, &layer.bridge_on_sparse, p.bridge_width, resting),
+        (Role::SPARSE, &layer.sparse, w(p.sparse_width), sparse_spacing),
     ];
     let mut areas = Vec::new();
     for (role, region, width, spacing) in fills {
@@ -239,7 +239,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         let mut lines = Vec::new();
         // Over air, from edge to edge; over sparse infill, across its lines, which the layer's
         // direction already crosses at right angles.
-        if role == Role::Bridge && std::ptr::eq(region, &layer.bridge) {
+        if role.support == Support::Air {
             for shape in &reach {
                 let piece = vec![shape.clone()];
                 let angle = shortest_span_angle(&piece, spacing, solid_angle)?;
@@ -255,14 +255,14 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 island.infill.push(Path { role, width, closed: false, points: line, travel_inside: false });
             }
         }
-        // Both kinds of bridge share one role: one area for joining their lines.
+        // A role's areas join their lines as one.
         match areas.iter_mut().find(|f: &&mut Fill| f.role == role) {
             Some(fill) => fill.reach = union(&fill.reach, &reach)?,
             None => areas.push(Fill {
                 role,
                 reach,
                 max_link: 3.0 * spacing,
-                monotone: p.monotone.contains(&role),
+                monotone: role.kind == Kind::Solid && p.monotone.contains(&role.face),
             }),
         }
     }

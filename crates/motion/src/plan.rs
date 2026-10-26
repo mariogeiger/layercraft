@@ -1,10 +1,9 @@
-//! From ordered beads to the program: travels, retractions, layer changes and templates.
+//! From ordered beads to the program: travels, retractions, wipes and lifts, layer by layer.
 
-use crate::time::{Limits, estimate};
-use crate::{MotionError, MotionParams, Op, Program, RoleMotion, Summary, bead_area};
+use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area};
 use layercraft_geom::Point;
-use layercraft_machine::{Scope, Value, expand};
-use layercraft_path::{Path, PathLayer, Paths, Role};
+use layercraft_machine::{Scope, Value};
+use layercraft_path::{Kind, Path, PathLayer, Paths, Role};
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
 
@@ -38,7 +37,7 @@ pub fn placeholders(bed_type: &str, bed_first_layer_temp: f64, nozzle_diameter: 
     .collect()
 }
 
-fn check(p: &MotionParams) -> Result<(), MotionError> {
+pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
     let positive = [
         p.filament_diameter,
         p.flow_ratio,
@@ -76,14 +75,17 @@ fn check(p: &MotionParams) -> Result<(), MotionError> {
     Ok(())
 }
 
+/// The speed, acceleration and flow a role takes: a strand bridges; otherwise a wall shows
+/// outside or not, a dense line on top or not.
 fn role_motion(p: &MotionParams, role: Role) -> &RoleMotion {
-    match role {
-        Role::OuterWall => &p.outer_wall,
-        Role::InnerWall => &p.inner_wall,
-        Role::TopSurface => &p.top_surface,
-        Role::Solid => &p.solid,
-        Role::Sparse => &p.sparse,
-        Role::Bridge => &p.bridge,
+    use layercraft_path::Face;
+    match role.kind {
+        _ if role.strand() => &p.bridge,
+        Kind::Wall if role.face == Face::Inside => &p.inner_wall,
+        Kind::Wall => &p.outer_wall,
+        Kind::Solid if role.face == Face::Top => &p.top_surface,
+        Kind::Solid => &p.solid,
+        Kind::Sparse => &p.sparse,
     }
 }
 
@@ -112,25 +114,19 @@ fn path_points(path: &Path, gap: f64) -> Vec<Point> {
     points
 }
 
-/// The cross-section a bead lays: flattened on the layer below, or round when it bridges.
+/// The cross-section a bead lays: flattened on the layer below, or round for a strand.
 fn section_area(path: &Path, height: f64) -> f64 {
-    match path.role {
-        Role::Bridge => std::f64::consts::PI * path.width * path.width / 4.0,
-        _ => bead_area(path.width, height),
+    if path.role.strand() {
+        std::f64::consts::PI * path.width * path.width / 4.0
+    } else {
+        bead_area(path.width, height)
     }
-}
-
-fn length(points: &[Point]) -> f64 {
-    layercraft_geom::polyline_length(points)
 }
 
 /// The speed of a bead: by role, the first layer's own, never past the melt limit.
 fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
     let base = if layer.index == 0 {
-        match path.role {
-            Role::OuterWall | Role::InnerWall => p.first_layer_wall_speed,
-            _ => p.first_layer_infill_speed,
-        }
+        if path.role.kind == Kind::Wall { p.first_layer_wall_speed } else { p.first_layer_infill_speed }
     } else {
         role_motion(p, path.role).speed
     };
@@ -144,32 +140,25 @@ fn pushed(p: &MotionParams, path: &Path, height: f64) -> f64 {
     p.flow_ratio * role_motion(p, path.role).flow * section_area(path, height)
 }
 
+/// The nozzle as the program is written: where it is, what it does, and the moves so far.
 struct State {
-    ops: Vec<Op>,
+    moves: Vec<Move>,
     at: [f64; 3],
+    /// Whether `at` is where the nozzle is: not at a layer's start, after the machine's own
+    /// G-code, which may move it.
+    placed: bool,
     /// The bead being laid or just laid, with its speed: what a retraction wipes over.
     bead: Vec<[f64; 3]>,
     bead_speed: f64,
     /// The direction of the last move across the plate, a unit vector.
     heading: [f64; 2],
-    /// Whether `at` is where the nozzle is: not after the machine's own G-code, which may move it.
-    placed: bool,
     /// The filament pulled back, in mm, which the next bead pushes again.
     retracted: f64,
-    /// The part cooling fan, when known: not after the machine's own G-code.
-    fan: Option<f64>,
-    feature: Option<(Role, f64)>,
-    accel: Option<f64>,
+    accel: f64,
+    fan: f64,
 }
 
 impl State {
-    /// The machine's own G-code, after which the nozzle may be anywhere.
-    fn machine(&mut self, text: String) {
-        self.ops.push(Op::Raw { text });
-        self.placed = false;
-        self.fan = None;
-    }
-
     /// The direction across the plate from the nozzle to `to`; the last one when it is there.
     fn heading_to(&self, to: Point) -> [f64; 2] {
         let d = [to[0] - self.at[0], to[1] - self.at[1]];
@@ -177,17 +166,15 @@ impl State {
         if l > 1e-9 { [d[0] / l, d[1] / l] } else { self.heading }
     }
 
-    /// Records a move to `to`, and its direction across the plate.
-    fn step(&mut self, to: [f64; 3]) {
-        self.heading = self.heading_to([to[0], to[1]]);
-        self.at = to;
-        self.placed = true;
-    }
-
-    fn accel(&mut self, value: f64) {
-        if self.accel != Some(value) {
-            self.ops.push(Op::Accel { value });
-            self.accel = Some(value);
+    /// A move to `to` (or in place), with the nozzle's state.
+    fn push(&mut self, to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>) {
+        self.moves.push(Move { to, arc, e, speed, accel: self.accel, fan: self.fan, bead });
+        if let Some(to) = to {
+            if arc.is_none() {
+                self.heading = self.heading_to([to[0], to[1]]);
+            }
+            self.at = to;
+            self.placed = true;
         }
     }
 
@@ -201,7 +188,7 @@ impl State {
         let total = p.retract_length;
         let before = total * p.retract_before_wipe.clamp(0.0, 1.0);
         if before > 0.0 {
-            self.ops.push(Op::Retract { e: -before, speed: p.retract_speed });
+            self.push(None, None, -before, p.retract_speed, None);
         }
         let mut left = total - before;
         let mut wiped = Vec::new();
@@ -227,14 +214,13 @@ impl State {
             let pull = left * (length / p.wipe_distance).min(1.0);
             let speed = self.bead_speed.min(p.retract_speed * length / pull);
             for (to, d) in wiped {
-                self.ops.push(Op::Wipe { to, e: -pull * d / length, speed });
-                self.step(to);
+                self.push(Some(to), None, -pull * d / length, speed, None);
             }
             left -= pull;
         }
         // Below a nanometre of filament, what is left is rounding, not a pull.
         if left > 1e-6 {
-            self.ops.push(Op::Retract { e: -left, speed: p.retract_speed });
+            self.push(None, None, -left, p.retract_speed, None);
         }
         self.bead.clear();
         self.retracted = total;
@@ -243,62 +229,61 @@ impl State {
     /// Pushes back exactly what was pulled, at this bead's speed.
     fn deretract(&mut self, p: &MotionParams) {
         if self.retracted > 0.0 {
-            self.ops.push(Op::Retract { e: self.retracted, speed: p.deretract_speed });
+            let e = self.retracted;
+            self.push(None, None, e, p.deretract_speed, None);
         }
         self.retracted = 0.0;
     }
 
-    fn fan(&mut self, speed: f64) {
-        if self.fan != Some(speed) {
-            self.ops.push(Op::Fan { speed });
-            self.fan = Some(speed);
-        }
-    }
-
     fn travel(&mut self, to: [f64; 3], speed: f64) {
-        if to != self.at {
-            self.ops.push(Op::Travel { to, speed });
-            self.step(to);
+        if !self.placed || to != self.at {
+            self.push(Some(to), None, 0.0, speed, None);
         }
     }
 
-    /// Climbs to `z`, as fast as the travel speed and the Z axis allow. Where the nozzle is
-    /// known, the climb turns a helix of the lift radius that sets off along `heading`, so it
-    /// flows into a travel that way, and comes back over its start; elsewhere it goes straight up.
+    /// Climbs to `z`, as fast as the travel speed and the Z axis allow: one turn of a helix of
+    /// the lift radius that sets off along `heading`, so it flows into a travel that way, and
+    /// comes back over its start; straight up with no radius.
     fn lift(&mut self, p: &MotionParams, z: f64, heading: [f64; 2]) {
         let dz = z - self.at[2];
-        if dz <= 1e-9 {
+        if !self.placed || dz <= 1e-9 {
             return;
         }
-        let r = if self.placed { p.lift_radius } else { 0.0 };
-        let around = (r > 0.0).then(|| [self.at[0] - r * heading[1], self.at[1] + r * heading[0]]);
+        let r = p.lift_radius;
+        let arc = (r > 0.0).then(|| Arc {
+            centre: [self.at[0] - r * heading[1], self.at[1] + r * heading[0]],
+            turn: std::f64::consts::TAU,
+        });
         let length = (std::f64::consts::TAU * r).hypot(dz);
         let speed = p.travel.speed.min(p.limits.max_speed_z * length / dz);
-        self.ops.push(Op::Lift { z, around, speed });
-        self.at[2] = z;
+        self.push(Some([self.at[0], self.at[1], z]), arc, 0.0, speed, None);
     }
 
     /// Leaves the bead just laid: pulls the filament back while wiping over the bead, then
-    /// climbs the hop off it.
+    /// climbs the hop off it. Nothing to leave before the first bead.
     fn leave(&mut self, p: &MotionParams) {
-        self.retract(p);
-        if self.placed {
-            self.lift(p, self.at[2] + p.z_hop, self.heading);
+        if !self.placed {
+            return;
         }
+        self.retract(p);
+        self.lift(p, self.at[2] + p.z_hop, self.heading);
     }
 
     /// Moves to `start` on the layer at `z`: short hops stay down, longer ones retract and lift.
     /// Leaving takes the parameters of the bead left, `from`, whose string it breaks; arriving
-    /// takes those of the bead reached, `to`.
+    /// takes those of the bead reached, `to`. From where a layer starts, which is unknown, the
+    /// nozzle goes over at the hop height.
     fn go_to(&mut self, from: &MotionParams, to: &MotionParams, start: Point, z: f64, first_of_layer: bool) {
         let d = (start[0] - self.at[0]).hypot(start[1] - self.at[1]);
-        if first_of_layer || d > from.retract_min_travel {
+        if first_of_layer || !self.placed || d > from.retract_min_travel {
             self.retract(from);
-            self.accel(to.travel.accel);
+            self.accel = to.travel.accel;
             // Up first: the travel crosses nothing below the hop height.
+            let hop = z + from.z_hop;
             let heading = self.heading_to(start);
-            self.lift(from, z + from.z_hop, heading);
-            self.travel([start[0], start[1], self.at[2]], to.travel.speed);
+            self.lift(from, hop, heading);
+            let height = if self.placed { self.at[2].max(hop) } else { hop };
+            self.travel([start[0], start[1], height], to.travel.speed);
             self.travel([start[0], start[1], z], to.travel.speed);
         } else {
             self.travel([start[0], start[1], z], to.travel.speed);
@@ -309,146 +294,42 @@ impl State {
     }
 }
 
-fn expand_text(which: &str, template: &str, scope: &Scope) -> Result<String, MotionError> {
-    expand(template, scope).map_err(|e| MotionError::Template(which.to_string(), e))
-}
-
-/// Grows the box `b` by a bead `r` around its centre point `p`.
-fn grow(b: [[f64; 2]; 2], p: Point, r: f64) -> [[f64; 2]; 2] {
-    [[b[0][0].min(p[0] - r), b[0][1].min(p[1] - r)], [b[1][0].max(p[0] + r), b[1][1].max(p[1] + r)]]
-}
-
-const NO_BOX: [[f64; 2]; 2] = [[f64::MAX, f64::MAX], [f64::MIN, f64::MIN]];
-
-fn or_zero(b: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
-    if b[0][0] > b[1][0] { [[0.0, 0.0], [0.0, 0.0]] } else { b }
-}
-
-/// Where the first layer lays plastic: its beads' centre lines grown by their half widths.
-fn first_layer_bounds(paths: &Paths) -> [[f64; 2]; 2] {
-    let beads = paths.layers.first().into_iter().flat_map(|l| l.paths.iter());
-    or_zero(beads.fold(NO_BOX, |b, bead| bead.points.iter().fold(b, |b, p| grow(b, *p, bead.width / 2.0))))
-}
-
-/// What a program does, read from its moves, and the printer's progress filled in along them:
-/// the summary of the program as it stands, after any edit of its moves. Plastic is what the
-/// extrusions push, `e` times the filament's section.
-pub fn finish(ops: &mut [Op], limits: &Limits, filament_diameter: f64) -> Summary {
-    let filament_area = std::f64::consts::PI * (filament_diameter / 2.0).powi(2);
-    let times = estimate(ops, limits, [0.0; 3]);
-    let total = times.last().copied().unwrap_or(0.0);
-    let mut summary = Summary { motion_seconds: total, first_layer_seconds: total, ..Summary::default() };
-    let (mut bounds, mut width, mut at) = (NO_BOX, 0.0, [0.0, 0.0]);
-    for (i, op) in ops.iter_mut().enumerate() {
-        let t = times.get(i).copied().unwrap_or(0.0);
-        match op {
-            Op::Layer { z, .. } => {
-                if summary.layers == 1 {
-                    summary.first_layer_seconds = t;
-                }
-                summary.layers += 1;
-                summary.max_z = summary.max_z.max(*z);
-                summary.volume_per_layer.push(0.0);
-            }
-            Op::Feature { width: w, .. } => width = *w,
-            Op::Extrude { to, e, .. } => {
-                summary.filament_mm += *e;
-                if let Some(v) = summary.volume_per_layer.last_mut() {
-                    *v += *e * filament_area;
-                }
-                if summary.layers == 1 {
-                    bounds = grow(grow(bounds, at, width / 2.0), [to[0], to[1]], width / 2.0);
-                }
-            }
-            Op::Progress { percent, minutes_left } => {
-                *percent = if total > 0.0 { (100.0 * t / total).floor() as u32 } else { 0 };
-                *minutes_left = ((total - t) / 60.0).ceil().max(0.0) as u32;
-            }
-            _ => {}
-        }
-        if let Op::Travel { to, .. } | Op::Extrude { to, .. } | Op::Wipe { to, .. } = op {
-            at = [to[0], to[1]];
-        }
-    }
-    summary.first_layer_bounds = or_zero(bounds);
-    summary
-}
-
-/// Turns the beads into the printer's program; `scope` holds the machine's settings and
-/// the placeholders its templates read. Each bead takes the parameters at its centre, a
-/// layer's cooling those at the layer's centre; the program's frame (templates, limits,
-/// filament) is the base's.
-pub fn compile(paths: &Paths, field: &Field<MotionParams>, scope: &Scope) -> Result<Program, MotionError> {
+/// Turns the beads into the program's moves, layer by layer. Each bead takes the parameters
+/// at its centre. Beads run at their full speeds: cooling is a pass of its own (`cool`), and
+/// the machine's own G-code goes around the layers (`frame`).
+pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, MotionError> {
     let base = field.base();
     check(base)?;
     let filament_area = std::f64::consts::PI * (base.filament_diameter / 2.0).powi(2);
-    let max_z = paths.layers.last().map(|l| l.top).unwrap_or(0.0);
-    let bounds = first_layer_bounds(paths);
-    let mut scope = scope.clone();
-    let num = Value::Num;
-    let pair = |a: f64, b: f64| Value::List(vec![num(a), num(b)]);
-    scope.insert("first_layer_print_min".into(), pair(bounds[0][0], bounds[0][1]));
-    scope.insert(
-        "first_layer_print_size".into(),
-        pair(bounds[1][0] - bounds[0][0], bounds[1][1] - bounds[0][1]),
-    );
-    scope.insert("max_print_z".into(), num(max_z));
-    scope.insert("max_layer_z".into(), num(0.0));
     let mut s = State {
-        ops: Vec::new(),
+        moves: Vec::new(),
         at: [0.0; 3],
+        placed: false,
         bead: Vec::new(),
         bead_speed: base.travel.speed,
         heading: [1.0, 0.0],
-        placed: false,
         retracted: 0.0,
-        fan: None,
-        feature: None,
-        accel: None,
+        accel: base.travel.accel,
+        fan: 0.0,
     };
-    let t = &base.templates;
-    // The markers bound the machine's own sequences, as the printer's firmware expects.
-    if !t.limits.is_empty() {
-        s.machine(t.limits.clone());
-    }
-    let start = expand_text("start", &t.start, &scope)?;
-    s.machine(format!("{start}\n; MACHINE_START_GCODE_END\n"));
-    s.machine(expand_text("filament start", &t.filament_start, &scope)?);
-    if !t.prologue.is_empty() {
-        s.machine(expand_text("prologue", &t.prologue, &scope)?);
-    }
-    s.machine("G90\nG21\nM83 ; use relative distances for extrusion\n".into());
     // The parameters of the bead last laid, which leaving it takes.
     let mut last = Rc::new(base.clone());
+    let mut layers: Vec<Layer> = Vec::with_capacity(paths.layers.len());
     for layer in &paths.layers {
-        // Off the last bead while still on the layer below, where the nozzle is known.
-        s.leave(&last);
-        s.ops.push(Op::Layer { index: layer.index, z: layer.top, height: layer.height });
-        scope.insert("layer_num".into(), num(layer.index as f64));
-        scope.insert("layer_z".into(), num(layer.top));
-        scope.insert("max_layer_z".into(), num(layer.top));
-        s.machine(expand_text("layer change", &t.layer_change, &scope)?);
-        s.ops.push(Op::Progress { percent: 0, minutes_left: 0 });
-        let params = layer
-            .paths
-            .iter()
-            .map(|path| field.at(centre(&path.points, layer.top), check))
-            .collect::<Result<Vec<_>, _>>()?;
-        // Slow the whole layer down when it would print faster than it can cool.
-        let cooling = field.at(centre(layer.paths.iter().flat_map(|p| &p.points), layer.top), check)?;
-        let busy: f64 = layer
-            .paths
-            .iter()
-            .zip(&params)
-            .map(|(path, p)| length(&path_points(path, p.seam_gap)) / bead_speed(p, path, layer))
-            .sum();
-        let goal = cooling.slow_down_layer_time;
-        let slow = if busy > 0.0 && busy < goal { busy / goal } else { 1.0 };
-        for (k, (path, p)) in layer.paths.iter().zip(params).enumerate() {
+        if let Some(previous) = layers.last_mut() {
+            // Off the last bead while still on the layer below, where the nozzle is known.
+            s.leave(&last);
+            previous.moves = std::mem::take(&mut s.moves);
+        }
+        layers.push(Layer { index: layer.index, z: layer.top, height: layer.height, moves: Vec::new() });
+        // After the machine's layer change, the nozzle may be anywhere.
+        s.placed = false;
+        for (k, path) in layer.paths.iter().enumerate() {
+            let p = field.at(centre(&path.points, layer.top), check)?;
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
-            s.fan(if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed });
-            if path.travel_inside && k > 0 {
+            s.fan = if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed };
+            if path.travel_inside && k > 0 && s.placed {
                 // Inside the part from the last bead: straight there, nothing pulled back.
                 s.deretract(&p);
                 s.travel([start[0], start[1], layer.top], p.travel.speed);
@@ -457,24 +338,17 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>, scope: &Scope) -> Res
             } else {
                 s.go_to(&last, &p, start, layer.top, k == 0);
             }
-            if s.feature != Some((path.role, path.width)) {
-                s.ops.push(Op::Feature { role: path.role, width: path.width });
-                s.feature = Some((path.role, path.width));
-            }
-            let accel = if layer.index == 0 { p.first_layer_accel } else { role_motion(&p, path.role).accel };
-            s.accel(accel);
-            let full = bead_speed(&p, path, layer);
-            let speed = (full * slow).max(p.slow_down_min_speed.min(full));
+            s.accel = if layer.index == 0 { p.first_layer_accel } else { role_motion(&p, path.role).accel };
+            let speed = bead_speed(&p, path, layer);
             let per_mm = pushed(&p, path, layer.height) / filament_area;
+            let bead = Bead { role: path.role, width: path.width };
             for w in points.windows(2) {
                 let [a, b] = [w.first().copied().unwrap_or(start), w.get(1).copied().unwrap_or(start)];
                 let l = (b[0] - a[0]).hypot(b[1] - a[1]);
                 if l <= 0.0 {
                     continue;
                 }
-                let e = per_mm * l;
-                s.ops.push(Op::Extrude { to: [b[0], b[1], layer.top], e, speed });
-                s.step([b[0], b[1], layer.top]);
+                s.push(Some([b[0], b[1], layer.top]), None, per_mm * l, speed, Some(bead));
                 s.bead.push(s.at);
                 s.bead_speed = speed;
             }
@@ -483,11 +357,11 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>, scope: &Scope) -> Res
     }
     // Off the part at once, before the machine's own slow end sequence.
     s.leave(&last);
+    let max_z = paths.layers.last().map(|l| l.top).unwrap_or(0.0);
     let heading = s.heading;
     s.lift(&last, max_z + last.z_hop, heading);
-    let filament_end = expand_text("filament end", &t.filament_end, &scope)?;
-    let end = expand_text("end", &t.end, &scope)?;
-    s.machine(format!("; MACHINE_END_GCODE_START\n{filament_end}{end}"));
-    let summary = finish(&mut s.ops, &base.limits, base.filament_diameter);
-    Ok(Program { ops: s.ops, summary })
+    if let Some(previous) = layers.last_mut() {
+        previous.moves = std::mem::take(&mut s.moves);
+    }
+    Ok(Program { layers })
 }

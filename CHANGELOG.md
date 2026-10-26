@@ -2,6 +2,43 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.0
+
+### Added
+
+- `layercraft merge` prints several programs on one plate, layer by layer under one frame:
+  program stages and G-code from any slicer (`.gcode`, `.gcode.3mf`), each already placed. The
+  pieces at one height go nearest first, and each finds the filament as it expects it.
+- G-code is read back into a program (`layercraft_gcode::read`): positions, filament absolute
+  or relative, feed, acceleration and fan followed, arcs kept, the machine's own G-code left
+  out; an unknown command or feature is an error. A layer starts at its first travel or bead:
+  the wipe, pull and lift before it leave the layer below.
+- Arcs: a move may turn about a vertical axis while it climbs, any angle up to a full turn,
+  written `G2`/`G3`; the lift's helix is one. Time, verify and pictures follow arcs exactly.
+- Roles are three facts: the kind of bead (wall, dense line, sparse line), the face it makes
+  (outside, top, bottom, none) and what it rests on (solid, sparse infill, air). A strand is a
+  dense line on anything but solid; bottom surfaces, overhang walls, floating shells and
+  internal bridges are named. `monotone` takes faces: the profile's bottom surface pattern now
+  counts too.
+- `melt` holds every bead to what the hot end melts; `deliver` says how many it slowed.
+
+### Changed
+
+- The program stage is layers of moves, each with its whole state (where, how, filament,
+  speed, acceleration, fan, bead): no machine G-code, no summary, no progress in it. The frame
+  (start, layer changes, end) is expanded when written, from the program as it stands; the
+  summary and the printer's progress are read from the moves.
+- Cooling is a pass of its own over any program (`cool`), after the program stage, which keeps
+  full speeds.
+- A layer's first move, from wherever the machine's own G-code leaves the nozzle, is one
+  travel over at the hop height.
+- The thumbnail is drawn from the program's beads, so a merged or read program has one.
+
+### Fixed
+
+- A bead too short to be written at three decimals no longer leaves a `G1 E0.00001` push in
+  place: its filament, and every bead's rounding, carries to the next bead, the total exact.
+
 ## 0.3.1
 
 ### Fixed

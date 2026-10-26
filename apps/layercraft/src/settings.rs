@@ -7,7 +7,7 @@
 
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::{PathParams, Role};
+use layercraft_path::{Face, PathParams};
 use layercraft_region::RegionParams;
 use layercraft_section::Layering;
 use layercraft_verify::Envelope;
@@ -235,11 +235,12 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             infill_angle: m.number(Process, "infill_direction")?,
             first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
             bridge_width: nozzle,
-            // Bambu's monotonic patterns; its bottom surface shares the solid role here.
-            monotone: match m.text(Process, "top_surface_pattern") {
-                Ok(pattern) if pattern.starts_with("monotonic") => vec![Role::TopSurface],
-                _ => Vec::new(),
-            },
+            // Bambu's monotonic patterns, for the faces they name.
+            monotone: [("top_surface_pattern", Face::Top), ("bottom_surface_pattern", Face::Bottom)]
+                .into_iter()
+                .filter(|(key, _)| m.text(Process, key).is_ok_and(|p| p.starts_with("monotonic")))
+                .map(|(_, face)| face)
+                .collect(),
         },
         motion: MotionParams {
             filament_diameter,

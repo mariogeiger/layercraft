@@ -1,7 +1,8 @@
 //! The command line: arguments and what each command does.
 
+use crate::deliver::{Delivery, deliver};
 use crate::pipeline::{self, Stage, stage_file};
-use crate::settings::{self, plate_code};
+use crate::settings;
 use clap::{Parser, Subcommand};
 use layercraft_machine::Machine;
 use layercraft_machine::import::{BAMBU_STUDIO_PROFILES, Selection, import};
@@ -47,6 +48,27 @@ enum Command {
         gcode: Option<PathBuf>,
         /// Vary settings by place: a JSON list of overrides, each `{"within": {"z": [0, 5]},
         /// "set": {"motion": {"lift_radius": 0.6}}}`; boxes are in plate millimetres.
+        #[arg(long)]
+        tune: Option<PathBuf>,
+    },
+    /// Print several programs together on one plate, layer by layer under one frame: program
+    /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
+    Merge {
+        inputs: Vec<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value = "x2d")]
+        machine: String,
+        /// The filament's colour for the printer's screen.
+        #[arg(long, default_value = "#808080")]
+        colour: String,
+        /// The plate type, such as "Textured PEI Plate" (default: the printer's).
+        #[arg(long)]
+        bed: Option<String>,
+        /// Also write the G-code as plain text.
+        #[arg(long)]
+        gcode: Option<PathBuf>,
+        /// Vary the motion settings by place, as for `compile`: cooling, here.
         #[arg(long)]
         tune: Option<PathBuf>,
     },
@@ -153,91 +175,39 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 None => [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0],
             };
             let output = pipeline::run(input.as_deref(), at, &settings, &tuning, from.as_ref(), &emit)?;
-            let violations = layercraft_verify::verify(&output.program, &settings.envelope);
-            if let Some(first) = violations.first() {
-                for v in &violations {
-                    eprintln!("unsafe: op {}: {}", v.op, v.reason);
-                }
-                return Err(format!(
-                    "{} unsafe instructions, the first: {}; nothing written",
-                    violations.len(),
-                    first.reason
-                ));
-            }
-            let mut keys: Vec<(String, String)> =
-                settings.scope.iter().map(|(k, v)| (k.clone(), v.render())).collect();
-            keys.sort();
-            let header = layercraft_gcode::Header {
-                generator: format!("layercraft {}", env!("CARGO_PKG_VERSION")),
-                filament_diameter: settings.motion.filament_diameter,
-                filament_density: settings.filament_density,
-                settings: keys,
+            let object_name = input
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().trim_end_matches(".gcode").to_string())
+                .unwrap_or_else(|| "part".into());
+            let delivery = Delivery {
+                settings: &settings,
+                tuning: &tuning,
+                machine: &machine,
+                colour,
+                object_name,
+                gcode: gcode.as_deref(),
+                out: &out,
             };
-            let text = layercraft_gcode::write(&output.program, &header);
-            if let Some(path) = &gcode {
-                write_file(path, text.as_bytes())?;
-            }
-            let summary = &output.program.summary;
-            let filament_area = std::f64::consts::PI * (settings.motion.filament_diameter / 2.0).powi(2);
-            let grams = summary.filament_mm * filament_area * settings.filament_density / 1000.0;
-            let empty = layercraft_path::Paths { layers: Vec::new() };
-            let paths = output.paths.as_ref().unwrap_or(&empty);
-            let settings_json: serde_json::Map<String, serde_json::Value> = settings
-                .scope
-                .iter()
-                .map(|(k, v)| {
-                    let json = match v {
-                        layercraft_machine::Value::List(items) => {
-                            serde_json::Value::Array(items.iter().map(|i| i.render().into()).collect())
-                        }
-                        other => other.render().into(),
-                    };
-                    (k.clone(), json)
-                })
-                .collect();
-            let plate = layercraft_package::Plate {
-                gcode: text,
-                printer_model: settings.printer_model.clone(),
-                nozzle_diameter: settings.nozzle_diameter,
-                filament: layercraft_package::Filament {
-                    kind: settings.filament_kind.clone(),
-                    colour,
-                    code: settings.filament_code.clone(),
-                    used_m: summary.filament_mm / 1000.0,
-                    used_g: grams,
-                },
-                seconds: summary.motion_seconds,
-                bed_type: plate_code(&settings.bed_type).to_string(),
-                settings_json: serde_json::Value::Object(settings_json).to_string(),
-                thumbnail: layercraft_view::thumbnail(paths, 512),
-                small_thumbnail: layercraft_view::thumbnail(paths, 128),
-                generator: header.generator.clone(),
-                client_version: if machine.slicer_version.is_empty() {
-                    return Err("the machine description predates layercraft 0.1.3: run `layercraft machine import` again".into());
-                } else {
-                    machine.slicer_version.clone()
-                },
-                object_name: input
-                    .as_ref()
-                    .and_then(|p| p.file_stem())
-                    .map(|s| s.to_string_lossy().trim_end_matches(".gcode").to_string())
-                    .unwrap_or_else(|| "part".into()),
-                layers: summary.layers,
-                layer_height: settings.layering.layer_height,
-                first_layer_seconds: summary.first_layer_seconds,
-                bounds: summary.first_layer_bounds,
+            println!("{}", deliver(output.program, &delivery)?);
+            Ok(())
+        }
+        Command::Merge { inputs, out, machine, colour, bed, gcode, tune } => {
+            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
+            let machine = load_machine(&machine)?;
+            let settings = settings::read(&machine, bed.as_deref()).map_err(|e| e.to_string())?;
+            let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
+            let merged = layercraft_motion::merge(&programs, settings.motion.deretract_speed);
+            let delivery = Delivery {
+                settings: &settings,
+                tuning: &tuning,
+                machine: &machine,
+                colour,
+                object_name: "plate".into(),
+                gcode: gcode.as_deref(),
+                out: &out,
             };
-            let file = std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-            layercraft_package::write_package(&plate, std::io::BufWriter::new(file))
-                .map_err(|e| e.to_string())?;
-            let minutes = summary.motion_seconds / 60.0;
-            println!(
-                "{}: {} layers, {:.0} mm of filament ({grams:.2} g), {minutes:.1} min of motion (the printer's own start and end not counted), up to z = {:.2} mm",
-                out.display(),
-                summary.layers,
-                summary.filament_mm,
-                summary.max_z
-            );
+            println!("{}", deliver(merged, &delivery)?);
             Ok(())
         }
         Command::Compare { ours, theirs } => {

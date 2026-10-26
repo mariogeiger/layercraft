@@ -74,6 +74,9 @@ outranks feature work.**
 - **Experiment by place, not by script.** To compare settings, print several copies on one plate
   and vary them with `--tune` (boxes by object or height band, any region, path or motion key)
   rather than editing stage files by hand; edit a stage file only for what no setting reaches.
+- **Compare slicers on one plate.** `layercraft merge` prints program stages and G-code from any
+  slicer together, layer by layer, under one frame, cooled, held to the melt limit and verified:
+  slice the same part, placed apart, with each, and merge them.
 - **Look at any stage.** `--emit <stage>=FILE.ply` writes it as a PLY picture: points,
   segments and triangles with properties to colour and filter by (`layercraft_view`).
 - **Look at the toolpaths in SolidCraft.** `layercraft view` writes a SolidCraft script (one sketch per layer,

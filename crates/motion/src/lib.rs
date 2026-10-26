@@ -1,16 +1,17 @@
-//! Stage 4: the program the printer runs — moves with their filament, speeds and the machine's
-//! own G-code around them.
+//! Stage 4: the program the printer runs, layer by layer, as moves that each carry their
+//! whole state: where the nozzle goes and along what (a line, or an arc about a vertical axis,
+//! climbing as it turns), the filament it pushes or pulls, its speed and acceleration, the
+//! fan, and the bead it lays. Moves can be concatenated, reordered or edited without any state
+//! leaking from one to the next; the machine's own G-code goes around the layers (`frame`).
 //!
 //! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
-//! its sides, `(w − h)·h + π·h²/4`, and a bridge strand, hanging free, the disc `π·w²/4`; a
-//! move of length `L` fills that times `L`, and pushes `flow · area · L / filament_area` of
-//! filament. A wall loop stops `seam_gap` short of its start, so the seam does not pile up. Speeds come by role, capped by the hot end's
-//! volumetric limit, and slowed down on layers too short to cool. Leaving a bead, the nozzle
-//! wipes back over it while it pulls the filament, then climbs one turn of a helix that comes
-//! back over where it started: moving sideways as it rises, it breaks the string it draws
-//! instead of stretching it upward. Print time comes from a look-ahead planner of the
-//! machine's accelerations and corner speeds. Each bead takes the parameters at its centre;
-//! `finish` reads a program's summary and progress from its moves, after any edit.
+//! its sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length
+//! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament. A wall
+//! loop stops `seam_gap` short of its start. Speeds come by role, capped by the hot end's
+//! volumetric limit; a layer too short to cool is slowed by a pass of its own (`cool`). Leaving
+//! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
+//! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
+//! takes the parameters at its centre; `finish` reads a program's summary from its moves.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -20,59 +21,77 @@
     clippy::unreachable
 )]
 
+mod cool;
+mod frame;
+mod melt;
+mod merge;
+mod moves;
 mod plan;
 mod time;
 
-pub use plan::{compile, finish, placeholders};
+pub use cool::cool;
+pub use frame::{Frame, finish, frame};
+pub use melt::melt;
+pub use merge::merge;
+pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};
 
 pub use layercraft_geom::bead_area;
-use layercraft_machine::{Scope, TemplateError};
+use layercraft_machine::TemplateError;
 use layercraft_path::Role;
 use layercraft_tune::TuneError;
 use serde::{Deserialize, Serialize};
 
-/// One instruction of the program.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Op {
-    /// The machine's own G-code, copied as is.
-    Raw { text: String },
-    /// The start of a layer printed at `z`.
-    Layer { index: usize, z: f64, height: f64 },
-    /// What the following beads are.
-    Feature { role: Role, width: f64 },
-    /// A move without extrusion, at `speed` mm/s.
-    Travel { to: [f64; 3], speed: f64 },
-    /// A move back over the bead just laid, pulling `e` (negative) mm of filament on the way, at
-    /// `speed` mm/s: the nozzle wipes its tip on the part instead of leaving a string.
-    Wipe { to: [f64; 3], e: f64, speed: f64 },
-    /// A climb to `z` from wherever the nozzle is, at `speed` mm/s: straight up, or one
-    /// counter-clockwise turn of a helix `around` a vertical axis through that point, back over
-    /// where it started.
-    Lift {
-        z: f64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        around: Option<[f64; 2]>,
-        speed: f64,
-    },
-    /// A move pushing `e` mm of filament, at `speed` mm/s.
-    Extrude { to: [f64; 3], e: f64, speed: f64 },
-    /// Filament pulled back (negative) or pushed again (positive), at `speed` mm/s.
-    Retract { e: f64, speed: f64 },
-    /// Part cooling fan, from 0 to 1.
-    Fan { speed: f64 },
-    /// Acceleration for the following moves, in mm/s².
-    Accel { value: f64 },
-    /// Progress shown by the printer: percent done and minutes left.
-    Progress { percent: u32, minutes_left: u32 },
+/// The way a move goes about a vertical axis through `centre`, turning `turn` radians
+/// (counter-clockwise positive, at most a full turn either way) and climbing evenly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Arc {
+    pub centre: [f64; 2],
+    pub turn: f64,
 }
 
-/// The output of the motion stage.
+/// The plastic a move lays: what it is for, and how wide.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Bead {
+    pub role: Role,
+    pub width: f64,
+}
+
+/// One move of the nozzle, with all it does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Move {
+    /// Where the nozzle goes; nowhere, for filament pushed or pulled in place.
+    pub to: Option<[f64; 3]>,
+    /// Along an arc; a straight line when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arc: Option<Arc>,
+    /// Filament pushed (positive) or pulled back (negative), in mm.
+    pub e: f64,
+    /// Along the path, in mm/s; the filament's own speed for a move in place.
+    pub speed: f64,
+    /// In mm/s².
+    pub accel: f64,
+    /// The part cooling fan, from 0 to 1.
+    pub fan: f64,
+    /// The bead laid, for a move that lays one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bead: Option<Bead>,
+}
+
+/// One layer: the moves printed at `z`, after the machine's own layer change, from wherever
+/// that leaves the nozzle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Layer {
+    pub index: usize,
+    pub z: f64,
+    pub height: f64,
+    pub moves: Vec<Move>,
+}
+
+/// The output of the motion stage: what it does is read from it (`finish`), never stored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
-    pub ops: Vec<Op>,
-    pub summary: Summary,
+    pub layers: Vec<Layer>,
 }
 
 /// What the program does, for people and for comparisons.
@@ -185,9 +204,6 @@ impl From<TuneError> for MotionError {
         MotionError::BadParams(e.to_string())
     }
 }
-
-/// The variables of the machine's templates that the slicer computes, added to its settings.
-pub type Placeholders = Scope;
 
 #[cfg(test)]
 mod tests;

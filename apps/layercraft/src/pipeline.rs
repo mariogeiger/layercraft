@@ -2,8 +2,8 @@
 //!
 //! A stage is written as JSON, which reads back, or as PLY when the file name ends in `.ply`:
 //! a picture of the stage to look at (`layercraft_view`), which does not. A tuning varies the
-//! region, path and motion parameters by place (`--tune`); a program read back has its summary
-//! and progress read from its moves again, so hand edits stay consistent.
+//! region, path and motion parameters by place (`--tune`). The program stage holds the moves
+//! at full speed, without the machine's own G-code: cooling and the frame come after it.
 
 use crate::settings::Settings;
 use layercraft_mesh::{Mesh, read_3mf};
@@ -87,6 +87,15 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     }
     let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     serde_json::from_reader(std::io::BufReader::new(file)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A program from a file: a program stage (JSON), or the moves of G-code from any slicer.
+pub fn read_program(path: &Path) -> Result<Program, String> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+        return read_json(path);
+    }
+    let text = crate::compare::read_gcode(path)?;
+    layercraft_gcode::read(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 fn is_ply(path: &Path) -> bool {
@@ -176,14 +185,8 @@ pub fn run(
         emit(Stage::Paths, p, || layercraft_view::paths(p), emits)?;
     }
     let program: Program = match (start, &paths) {
-        (Some(Stage::Program), _) => {
-            // Moves edited by hand: the summary and progress are read from them again.
-            let mut program: Program = from.map(|(_, p)| read_json(p)).transpose()?.ok_or("no program")?;
-            let m = &settings.motion;
-            program.summary = layercraft_motion::finish(&mut program.ops, &m.limits, m.filament_diameter);
-            program
-        }
-        (_, Some(p)) => layercraft_motion::compile(p, &motion, &settings.scope).map_err(|e| e.to_string())?,
+        (Some(Stage::Program), _) => from.map(|(_, p)| read_json(p)).transpose()?.ok_or("no program")?,
+        (_, Some(p)) => layercraft_motion::compile(p, &motion).map_err(|e| e.to_string())?,
         _ => return Err("nothing to compile".into()),
     };
     emit(Stage::Program, &program, || layercraft_view::program(&program, &settings.motion.limits), emits)?;

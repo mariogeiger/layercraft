@@ -23,24 +23,14 @@
 mod hatch;
 mod link;
 mod order;
+mod role;
+
+pub use role::{Face, Kind, Role, Support};
 
 use layercraft_geom::{GeomError, Point};
 use layercraft_region::Regions;
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
-
-/// What a path is for; speeds, accelerations and cooling are chosen by role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    OuterWall,
-    InnerWall,
-    TopSurface,
-    Solid,
-    /// Strands hanging over sparse infill or air, round in section.
-    Bridge,
-    Sparse,
-}
 
 /// One bead: a polyline drawn `width` wide, closed back to its start when `closed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,11 +77,11 @@ pub struct PathParams {
     pub first_layer_width: f64,
     /// The width of a bridge strand: the nozzle's, as it hangs round from it.
     pub bridge_width: f64,
-    /// The roles whose lines are laid in sweeps across their area, each against the one before
-    /// and all the same way, so the surface they make looks the same everywhere; the others go
-    /// nearest first.
+    /// The faces whose dense lines are laid in sweeps across their area, each against the one
+    /// before and all the same way, so the surface looks the same everywhere; the other lines
+    /// go nearest first.
     #[serde(default)]
-    pub monotone: Vec<Role>,
+    pub monotone: Vec<Face>,
 }
 
 /// Why the path stage failed.

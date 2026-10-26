@@ -1,14 +1,14 @@
 //! Stage 5: the guard between the compiler and the machine. A program leaves only if every
 //! move it makes is safe.
 //!
-//! Checked for every move layercraft generates: finite numbers; positions inside the plate's
-//! printable area and below its printable height; the nozzle never below the layer it prints
-//! (extrusions at the layer's height, travels at or above it); layers rising; speeds within the
-//! machine's limits; filament flowing no faster than the hot end melts it; wipes that move along
-//! the layer; lifts that climb, a helical one from where the nozzle is known and within the
-//! printable area over its whole turn; fan between 0 and 1.
-//! The machine's own G-code (start, end, layer change) is the maker's and is not interpreted:
-//! after it, the nozzle may be anywhere.
+//! Checked for every move, compiled or read from another slicer: finite numbers; the whole
+//! path inside the plate's printable area, an arc's sweep included, and below its printable
+//! height; the nozzle never below the layer it prints (extrusions at the layer's height, other
+//! moves at or above it); layers rising; speeds within the machine's limits, accelerations
+//! positive; filament flowing no faster than the hot end melts it; wipes that move; arcs that
+//! end on their circle, at most a turn; fan between 0 and 1. The machine's own G-code between
+//! layers is the maker's and is not interpreted: after it the nozzle may be anywhere, so a
+//! layer's first move must be a straight travel to a named point.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -18,7 +18,7 @@
     clippy::unreachable
 )]
 
-use layercraft_motion::{Op, Program};
+use layercraft_motion::{Move, Program};
 use serde::{Deserialize, Serialize};
 
 /// What the machine can safely do.
@@ -33,164 +33,117 @@ pub struct Envelope {
     pub max_volumetric_speed: f64,
 }
 
-/// One unsafe instruction.
+/// One unsafe move.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Violation {
-    /// The position of the instruction in the program.
-    pub op: usize,
+    pub layer: usize,
+    /// The move's place in its layer.
+    pub index: usize,
     pub reason: String,
 }
 
 /// Room for rounding in comparisons, in mm (or mm³/s for flow).
 const SLACK: f64 = 1e-6;
+/// Room for the rounding of positions in G-code, three decimals, in mm.
+const WRITTEN: f64 = 2e-3;
 /// The most violations listed.
 const MAX_LISTED: usize = 50;
+/// The most filament pulled or pushed in place, in mm.
+const MAX_IN_PLACE: f64 = 20.0;
 
-/// Every unsafe instruction of the program; empty when it may be sent to the machine.
+/// What is wrong with move `m` from `from` on the layer at `z`, if anything.
+fn check(m: &Move, from: Option<[f64; 3]>, z: f64, e: &Envelope) -> Option<String> {
+    let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
+    if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
+        return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
+    }
+    if !(0.0..=1.0).contains(&m.fan) {
+        return Some(format!("fan at {}", m.fan));
+    }
+    let Some(to) = m.to else {
+        return (m.e.abs() > MAX_IN_PLACE).then(|| format!("{} mm of filament in place", m.e));
+    };
+    if !to.iter().all(|v| v.is_finite()) {
+        return Some(format!("move to {to:?}"));
+    }
+    if m.speed > e.max_speed + SLACK {
+        return Some(format!("{} mm/s is faster than the machine's {}", m.speed, e.max_speed));
+    }
+    if to[2] > e.max_z {
+        return Some(format!("move to z = {} is above the printable height", to[2]));
+    }
+    if to[2] < z - SLACK {
+        return Some(format!("move to z = {} below the layer at {z}", to[2]));
+    }
+    let Some(from) = from else {
+        // After the machine's own G-code: only a travel to a named point is safe.
+        return (m.arc.is_some() || m.e != 0.0).then(|| "a move from where the nozzle is not known".into());
+    };
+    if let Some(arc) = m.arc {
+        let end = m.point(from, 1.0);
+        let off = (end[0] - to[0]).hypot(end[1] - to[1]);
+        if !(arc.turn.is_finite() && arc.turn != 0.0 && arc.turn.abs() <= std::f64::consts::TAU + SLACK) {
+            return Some(format!("an arc turning {} radians", arc.turn));
+        }
+        if !(off <= WRITTEN && arc.centre.iter().all(|v| v.is_finite())) {
+            return Some(format!("an arc ending {off:.4} mm off its circle"));
+        }
+    }
+    let [lo, hi] = m.bounds(from);
+    if lo[0] < e.area[0][0] - SLACK
+        || lo[1] < e.area[0][1] - SLACK
+        || hi[0] > e.area[1][0] + SLACK
+        || hi[1] > e.area[1][1] + SLACK
+    {
+        return Some(format!("move to ({:.3}, {:.3}) leaves the printable area", to[0], to[1]));
+    }
+    let length = m.length(from);
+    if m.e > 0.0 {
+        if (to[2] - z).abs() > SLACK {
+            return Some(format!("extrusion at z = {} on the layer at {z}", to[2]));
+        }
+        let filament_area = std::f64::consts::PI * (e.filament_diameter / 2.0).powi(2);
+        let flow = if length > 0.0 { m.e * filament_area * m.speed / length } else { f64::INFINITY };
+        if flow > e.max_volumetric_speed + SLACK {
+            return Some(format!("{flow:.2} mm³/s is past the melt limit {}", e.max_volumetric_speed));
+        }
+    }
+    if m.e < 0.0 && length <= SLACK {
+        return Some("a wipe that does not move pulls filament in place".into());
+    }
+    None
+}
+
+/// Every unsafe move of the program; empty when it may be sent to the machine.
 pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
     let mut found = Vec::new();
-    let mut note = |op: usize, reason: String| {
+    let mut note = |layer: usize, index: usize, reason: String| {
         if found.len() < MAX_LISTED {
-            found.push(Violation { op, reason });
+            found.push(Violation { layer, index, reason });
         }
     };
-    let filament_area = std::f64::consts::PI * (envelope.filament_diameter / 2.0).powi(2);
-    let mut layer_z: Option<f64> = None;
-    let mut at: Option<[f64; 3]> = None;
-    let inside = |p: &[f64; 3]| {
-        p[0] >= envelope.area[0][0] - SLACK
-            && p[0] <= envelope.area[1][0] + SLACK
-            && p[1] >= envelope.area[0][1] - SLACK
-            && p[1] <= envelope.area[1][1] + SLACK
-    };
-    for (i, op) in program.ops.iter().enumerate() {
-        match op {
-            Op::Layer { z, height, .. } => {
-                if !(z.is_finite() && height.is_finite() && *height > 0.0 && *z > 0.0) {
-                    note(i, format!("layer at z = {z} with height {height}"));
-                }
-                if let Some(previous) = layer_z
-                    && *z <= previous
-                {
-                    note(i, format!("layer at z = {z} does not rise above {previous}"));
-                }
-                if *z > envelope.max_z {
-                    note(i, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
-                }
-                layer_z = Some(*z);
+    let mut below: Option<f64> = None;
+    for (k, layer) in program.layers.iter().enumerate() {
+        let z = layer.z;
+        if !(z.is_finite() && layer.height.is_finite() && layer.height > 0.0 && z > 0.0) {
+            note(k, 0, format!("layer at z = {z} with height {}", layer.height));
+        }
+        if below.is_some_and(|b| z <= b) {
+            note(k, 0, format!("layer at z = {z} does not rise above {}", below.unwrap_or(0.0)));
+        }
+        if z > envelope.max_z {
+            note(k, 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
+        }
+        below = Some(z);
+        // After the machine's layer change the nozzle may be anywhere.
+        let mut at: Option<[f64; 3]> = None;
+        for (i, m) in layer.moves.iter().enumerate() {
+            if let Some(reason) = check(m, at, z, envelope) {
+                note(k, i, reason);
             }
-            Op::Travel { to, speed } | Op::Extrude { to, speed, .. } => {
-                if !to.iter().all(|v| v.is_finite()) || !speed.is_finite() || *speed <= 0.0 {
-                    note(i, format!("move to {to:?} at {speed} mm/s is not finite"));
-                    continue;
-                }
-                if !inside(to) {
-                    note(i, format!("move to ({:.3}, {:.3}) leaves the printable area", to[0], to[1]));
-                }
-                if to[2] > envelope.max_z {
-                    note(i, format!("move to z = {} is above the printable height", to[2]));
-                }
-                if *speed > envelope.max_speed + SLACK {
-                    note(i, format!("{speed} mm/s is faster than the machine's {}", envelope.max_speed));
-                }
-                match (op, layer_z) {
-                    (_, None) => note(i, "a move before the first layer".into()),
-                    (Op::Extrude { .. }, Some(z)) if (to[2] - z).abs() > SLACK => {
-                        note(i, format!("extrusion at z = {} on the layer at {z}", to[2]));
-                    }
-                    (Op::Travel { .. }, Some(z)) if to[2] < z - SLACK => {
-                        note(i, format!("travel at z = {} below the layer at {z}", to[2]));
-                    }
-                    _ => {}
-                }
-                if let (Op::Extrude { e, .. }, Some(from)) = (op, at) {
-                    let length = ((to[0] - from[0]).powi(2) + (to[1] - from[1]).powi(2)).sqrt();
-                    if !e.is_finite() || *e < 0.0 {
-                        note(i, format!("extrusion of {e} mm of filament"));
-                    } else if length > 0.0 {
-                        let flow = e * filament_area * speed / length;
-                        if flow > envelope.max_volumetric_speed + SLACK {
-                            note(
-                                i,
-                                format!(
-                                    "{flow:.2} mm³/s is past the melt limit {}",
-                                    envelope.max_volumetric_speed
-                                ),
-                            );
-                        }
-                    }
-                }
-                at = Some(*to);
+            if m.to.is_some() {
+                at = m.to;
             }
-            Op::Wipe { to, e, speed } => {
-                if !to.iter().all(|v| v.is_finite())
-                    || !(speed.is_finite() && *speed > 0.0)
-                    || !e.is_finite()
-                    || *e > 0.0
-                {
-                    note(i, format!("wipe to {to:?} pulling {e} mm at {speed} mm/s"));
-                } else if !inside(to) {
-                    note(i, format!("wipe to ({:.3}, {:.3}) leaves the printable area", to[0], to[1]));
-                } else if layer_z.is_none_or(|z| (to[2] - z).abs() > SLACK) {
-                    note(i, format!("wipe at z = {} off the layer", to[2]));
-                } else if at.is_none_or(|p| (to[0] - p[0]).hypot(to[1] - p[1]) < SLACK) {
-                    note(i, "a wipe that does not move pulls filament in place".into());
-                }
-                at = Some(*to);
-            }
-            Op::Lift { z, around, speed } => {
-                if !(z.is_finite() && speed.is_finite() && *speed > 0.0) || *z > envelope.max_z {
-                    note(i, format!("lift to z = {z} at {speed} mm/s"));
-                }
-                if *speed > envelope.max_speed + SLACK {
-                    note(i, format!("{speed} mm/s is faster than the machine's {}", envelope.max_speed));
-                }
-                if let (Some(layer), true) = (layer_z, z.is_finite())
-                    && *z < layer - SLACK
-                {
-                    note(i, format!("lift down to z = {z} below the layer at {layer}"));
-                }
-                if let Some(p) = at
-                    && *z < p[2] - SLACK
-                {
-                    note(i, format!("lift down to z = {z} from {}", p[2]));
-                }
-                if let Some(c) = around {
-                    match at {
-                        None => note(i, "a helical lift from where the nozzle is not known".into()),
-                        Some(p) => {
-                            let r = (p[0] - c[0]).hypot(p[1] - c[1]);
-                            let far = [[c[0] - r, c[1] - r, 0.0], [c[0] + r, c[1] + r, 0.0]];
-                            if !(r.is_finite() && inside(&far[0]) && inside(&far[1])) {
-                                note(i, format!("helical lift of radius {r} leaves the printable area"));
-                            }
-                        }
-                    }
-                }
-                at = at.map(|p| [p[0], p[1], *z]);
-            }
-            Op::Retract { e, speed } => {
-                if !(e.is_finite() && speed.is_finite() && *speed > 0.0) || e.abs() > 20.0 {
-                    note(i, format!("retraction of {e} mm at {speed} mm/s"));
-                }
-            }
-            Op::Fan { speed } => {
-                if !(speed.is_finite() && (0.0..=1.0).contains(speed)) {
-                    note(i, format!("fan at {speed}"));
-                }
-            }
-            Op::Accel { value } => {
-                if !(value.is_finite() && *value > 0.0) {
-                    note(i, format!("acceleration {value}"));
-                }
-            }
-            Op::Raw { text } => {
-                if text.contains('\0') {
-                    note(i, "machine G-code holds a NUL byte".into());
-                }
-                at = None;
-            }
-            Op::Feature { .. } | Op::Progress { .. } => {}
         }
     }
     found

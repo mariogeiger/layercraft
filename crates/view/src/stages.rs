@@ -19,31 +19,24 @@
 use crate::ply::{Complex, ViewError, float, int};
 use layercraft_geom::{Point, Region, triangulate};
 use layercraft_mesh::Mesh;
-use layercraft_motion::{Limits, Op, Program, estimate};
+use layercraft_motion::{Limits, Program, estimate};
 use layercraft_path::{Paths, Role};
 use layercraft_region::Regions;
 use layercraft_section::Sections;
 
-/// The roles, in the order of their codes.
-pub const ROLES: [Role; 6] =
-    [Role::OuterWall, Role::InnerWall, Role::TopSurface, Role::Solid, Role::Bridge, Role::Sparse];
+/// The roles a legend names, in the order of their codes.
+pub const ROLES: [Role; 10] = Role::NAMED;
 
-pub fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::OuterWall => "outer wall",
-        Role::InnerWall => "inner wall",
-        Role::TopSurface => "top surface",
-        Role::Solid => "solid infill",
-        Role::Bridge => "bridge",
-        Role::Sparse => "sparse infill",
-    }
+/// A role's name in a legend.
+pub fn role_name(role: Role) -> String {
+    role.name().to_lowercase()
 }
 
 /// The code of a move that lays no plastic.
 const NO_ROLE: f64 = -1.0;
 
 fn role_code(role: Role) -> f64 {
-    ROLES.iter().position(|r| *r == role).map_or(NO_ROLE, |i| i as f64)
+    role.code() as f64
 }
 
 fn role_comment() -> String {
@@ -52,9 +45,9 @@ fn role_comment() -> String {
     format!("role: {}", codes.join(", "))
 }
 
-/// A bead's cross-section, width and height: a layer high, or round for a hanging strand.
+/// A bead's cross-section, width and height: a layer high, or round for a strand.
 fn bead_section(role: Role, width: f64, layer_height: f64) -> [f64; 2] {
-    if role == Role::Bridge { [width, width] } else { [width, layer_height] }
+    if role.strand() { [width, width] } else { [width, layer_height] }
 }
 
 /// The farthest a chord of a drawn arc strays from it, in mm: a fortieth of a bead.
@@ -143,17 +136,17 @@ pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
     for layer in &regions.layers {
         let (z, index) = (layer.top - layer.height / 2.0, layer.index as f64);
         for (k, wall) in layer.walls.iter().enumerate() {
-            let role = role_code(if k == 0 { Role::OuterWall } else { Role::InnerWall });
+            let role = role_code(if k == 0 { Role::OUTER_WALL } else { Role::INNER_WALL });
             for contour in wall.iter().flatten() {
                 polyline(&mut c, contour, true, z, [index, role])?;
             }
         }
         let areas = [
-            (&layer.top_surface, Role::TopSurface),
-            (&layer.solid, Role::Solid),
-            (&layer.bridge, Role::Bridge),
-            (&layer.bridge_on_sparse, Role::Bridge),
-            (&layer.sparse, Role::Sparse),
+            (&layer.top_surface, Role::TOP_SURFACE),
+            (&layer.solid, if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID }),
+            (&layer.bridge, Role::BRIDGE),
+            (&layer.bridge_on_sparse, Role::INTERNAL_BRIDGE),
+            (&layer.sparse, Role::SPARSE),
         ];
         for (area, role) in areas {
             fill(&mut c, area, z, [index, role_code(role)])?;
@@ -215,63 +208,53 @@ pub fn program(program: &Program, limits: &Limits) -> Result<Complex<1, 8, 0>, V
     c.comments.push(role_comment() + ", -1 none");
     c.comments.push("move: 0 extrude, 1 travel, 2 wipe, 3 lift".into());
     c.comments.push("t: seconds since the program started, the machine's own G-code not counted".into());
-    let times = estimate(&program.ops, limits, [0.0; 3]);
-    let (mut layer, mut layer_height, mut feature, mut fan) = (-1.0, 0.0, None, 0.0);
-    let mut at: Option<[f64; 3]> = None;
+    let times = estimate(program, limits);
     let mut last = None;
-    for (i, op) in program.ops.iter().enumerate() {
-        let t0 = times.get(i).copied().unwrap_or(0.0);
-        let t1 = times.get(i + 1).copied().unwrap_or(t0);
-        match op {
-            Op::Layer { index, height, .. } => (layer, layer_height) = (*index as f64, *height),
-            Op::Feature { role, width } => feature = Some((*role, *width)),
-            Op::Fan { speed } => fan = *speed,
-            Op::Raw { .. } => at = None,
-            Op::Travel { to, speed } | Op::Wipe { to, speed, .. } | Op::Extrude { to, speed, .. } => {
-                if let Some(from) = at {
-                    let (values, down) = match (op, feature) {
-                        (Op::Extrude { e, .. }, Some((role, width))) => {
-                            let [w, h] = bead_section(role, width, layer_height);
-                            ([layer, 0.0, role_code(role), w, h, *speed, *e, fan], h / 2.0)
-                        }
-                        (Op::Wipe { e, .. }, _) => ([layer, 2.0, NO_ROLE, 0.0, 0.0, *speed, *e, fan], 0.0),
-                        (Op::Extrude { e, .. }, None) => {
-                            ([layer, 0.0, NO_ROLE, 0.0, 0.0, *speed, *e, fan], 0.0)
-                        }
-                        _ => ([layer, 1.0, NO_ROLE, 0.0, 0.0, *speed, 0.0, fan], 0.0),
-                    };
-                    let a = vertex(&mut c, &mut last, [from[0], from[1], from[2] - down], t0)?;
-                    let b = vertex(&mut c, &mut last, [to[0], to[1], to[2] - down], t1)?;
-                    c.segment([a, b], values);
-                }
-                at = Some(*to);
+    let mut slot = 0usize;
+    let mut t0 = 0.0;
+    for layer in &program.layers {
+        let index = layer.index as f64;
+        // After the machine's own G-code the nozzle may be anywhere: nothing is drawn until it
+        // is known.
+        let mut at: Option<[f64; 3]> = None;
+        for m in &layer.moves {
+            let t1 = times.get(slot).copied().unwrap_or(t0);
+            slot += 1;
+            let (Some(from), Some(to)) = (at, m.to) else {
+                at = m.to.or(at);
+                t0 = t1;
+                continue;
+            };
+            let kind = match (m.bead, m.e) {
+                (Some(_), _) => 0.0,
+                (None, e) if e < 0.0 => 2.0,
+                _ if m.arc.is_some() || (to[0] == from[0] && to[1] == from[1]) => 3.0,
+                _ => 1.0,
+            };
+            let (role, [w, h]) = m.bead.map_or((NO_ROLE, [0.0, 0.0]), |b| {
+                (role_code(b.role), bead_section(b.role, b.width, layer.height))
+            });
+            let values = [index, kind, role, w, h, m.speed, m.e, m.fan];
+            // A bead is drawn along its centre line, half its height under the nozzle.
+            let down = h / 2.0;
+            let n = if m.arc.is_some() {
+                let turns = m.arc.map_or(0.0, |a| a.turn.abs() / std::f64::consts::TAU);
+                ((chords(m.radius(from)) as f64 * turns).ceil() as usize).max(1)
+            } else {
+                1
+            };
+            let shift = |p: [f64; 3]| [p[0], p[1], p[2] - down];
+            let mut a = vertex(&mut c, &mut last, shift(from), t0)?;
+            for k in 1..=n {
+                let s = k as f64 / n as f64;
+                // The path ends exactly where the move says.
+                let p = if k == n { to } else { m.point(from, s) };
+                let b = vertex(&mut c, &mut last, shift(p), t0 + (t1 - t0) * s)?;
+                c.segment([a, b], values);
+                a = b;
             }
-            Op::Lift { z, around, speed } => {
-                if let Some(from) = at {
-                    let values = [layer, 3.0, NO_ROLE, 0.0, 0.0, *speed, 0.0, fan];
-                    let r = around.map_or(0.0, |o| (from[0] - o[0]).hypot(from[1] - o[1]));
-                    let n = if r > 0.0 { chords(r) } else { 1 };
-                    let start = around.map_or(0.0, |o| (from[1] - o[1]).atan2(from[0] - o[0]));
-                    let mut a = vertex(&mut c, &mut last, from, t0)?;
-                    for k in 1..=n {
-                        let s = k as f64 / n as f64;
-                        let height = from[2] + (z - from[2]) * s;
-                        let p = match around {
-                            // The turn ends exactly over where it started.
-                            Some(o) if r > 0.0 && k < n => {
-                                let angle = start + std::f64::consts::TAU * s;
-                                [o[0] + r * angle.cos(), o[1] + r * angle.sin(), height]
-                            }
-                            _ => [from[0], from[1], height],
-                        };
-                        let b = vertex(&mut c, &mut last, p, t0 + (t1 - t0) * s)?;
-                        c.segment([a, b], values);
-                        a = b;
-                    }
-                }
-                at = at.map(|p| [p[0], p[1], *z]);
-            }
-            Op::Retract { .. } | Op::Accel { .. } | Op::Progress { .. } => {}
+            at = Some(to);
+            t0 = t1;
         }
     }
     Ok(c)

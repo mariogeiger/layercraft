@@ -73,7 +73,8 @@ fn solid_hatch_covers_its_area() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
     let layer = &paths.layers[0];
     let solid = area(&regions.layers[0].solid);
-    let covered = filled_area(&layer.paths, Role::Solid, 45.0);
+    // On the bed, the solid is the part's bottom surface.
+    let covered = filled_area(&layer.paths, Role::BOTTOM_SURFACE, 45.0);
     assert!((covered / solid - 1.0).abs() < 0.03, "{covered} for {solid}");
 }
 
@@ -82,7 +83,7 @@ fn sparse_grid_has_its_density() {
     let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
     let i = 7;
     let sparse = area(&regions.layers[i].sparse);
-    let covered = filled_area(&paths.layers[i].paths, Role::Sparse, 135.0);
+    let covered = filled_area(&paths.layers[i].paths, Role::SPARSE, 135.0);
     assert!((covered / sparse - 0.2).abs() < 0.02, "{}", covered / sparse);
 }
 
@@ -90,11 +91,11 @@ fn sparse_grid_has_its_density() {
 fn walls_come_inner_first_and_seams_align() {
     let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] });
     let roles: Vec<Role> = paths.layers[5].paths.iter().map(|p| p.role).take(2).collect();
-    assert_eq!(roles, vec![Role::InnerWall, Role::OuterWall]);
+    assert_eq!(roles, vec![Role::INNER_WALL, Role::OUTER_WALL]);
     let seams: Vec<Point> = paths
         .layers
         .iter()
-        .map(|l| l.paths.iter().find(|p| p.role == Role::OuterWall).unwrap().points[0])
+        .map(|l| l.paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap().points[0])
         .collect();
     assert!(seams.windows(2).all(|w| w[0] == w[1]), "{seams:?}");
 }
@@ -127,9 +128,9 @@ fn sparse_beads_never_cross_on_a_layer() {
     let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
     for layer in &paths.layers {
         let angle = 45.0 + if layer.index % 2 == 1 { 90.0 } else { 0.0 };
-        let sparse: Vec<&Path> = layer.paths.iter().filter(|p| p.role == Role::Sparse).collect();
+        let sparse: Vec<&Path> = layer.paths.iter().filter(|p| p.role == Role::SPARSE).collect();
         // Every long segment runs in the layer's one direction; the rest are short joins.
-        let along = hatch_segments(&layer.paths, Role::Sparse, angle).len();
+        let along = hatch_segments(&layer.paths, Role::SPARSE, angle).len();
         let all: usize = sparse.iter().map(|p| p.points.len() - 1).sum();
         let joins = all - along;
         assert!(joins <= along + sparse.len(), "layer {}: {joins} joins for {along} lines", layer.index);
@@ -137,7 +138,7 @@ fn sparse_beads_never_cross_on_a_layer() {
             for w in p.points.windows(2) {
                 let l = polyline_length(&[w[0], w[1]]);
                 let is_line =
-                    hatch_segments(std::slice::from_ref(*p), Role::Sparse, angle).contains(&(w[0], w[1]));
+                    hatch_segments(std::slice::from_ref(*p), Role::SPARSE, angle).contains(&(w[0], w[1]));
                 assert!(is_line || l <= 3.0 * 2.0 * 0.4 / 0.2 + 1e-9, "layer {}: a {l} mm join", layer.index);
             }
         }
@@ -147,7 +148,7 @@ fn sparse_beads_never_cross_on_a_layer() {
 #[test]
 fn moves_between_neighbouring_lines_stay_inside() {
     let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
-    let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::Solid).collect();
+    let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::SOLID).collect();
     let outside = solid.iter().skip(1).filter(|p| !p.travel_inside).count();
     assert!(outside <= 1, "{outside} of {} moves leave the part", solid.len());
 }
@@ -164,7 +165,7 @@ fn a_bridge_crosses_its_gap_the_short_way() {
         ],
     };
     let (_, paths) = paths_of(&mesh);
-    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::Bridge).collect();
+    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
     assert!(!strands.is_empty());
     for s in strands {
         let (a, b) = (s.points[0], s.points[s.points.len() - 1]);
@@ -191,11 +192,11 @@ fn a_monotone_surface_is_laid_in_one_sweep() {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
-    let monotone = PathParams { monotone: vec![Role::TopSurface], ..PATHS };
+    let monotone = PathParams { monotone: vec![Face::Top], ..PATHS };
     let top = regions.layers.len() - 1;
     let angle = if top % 2 == 1 { 135.0 } else { 45.0 };
     let paths = trace(&regions, &Field::uniform(monotone)).unwrap();
-    let lines = sweep_of(&paths.layers[top].paths, Role::TopSurface, angle);
+    let lines = sweep_of(&paths.layers[top].paths, Role::TOP_SURFACE, angle);
     assert!(lines.len() > 10);
     // Across the surface one way, each line running back the way the last one came.
     let one_way = |s: f64| lines.windows(2).all(|w| s * (w[1].0 - w[0].0) > 0.0);
@@ -221,7 +222,7 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
         paths.layers[5]
             .paths
             .iter()
-            .filter(|p| p.role == Role::Sparse && (lo..hi).contains(&p.points[0][0]))
+            .filter(|p| p.role == Role::SPARSE && (lo..hi).contains(&p.points[0][0]))
             .map(|p| p.points.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum::<f64>())
             .sum()
     };
@@ -240,7 +241,7 @@ fn strands_resting_on_sparse_infill_fill_their_layer_exactly() {
     let strands: f64 = paths.layers[i]
         .paths
         .iter()
-        .filter(|p| p.role == Role::Bridge)
+        .filter(|p| p.role == Role::INTERNAL_BRIDGE)
         .map(|p| polyline_length(&p.points) * std::f64::consts::PI * 0.4 * 0.4 / 4.0)
         .sum();
     // The strands' plastic is the area's slab, up to a line's share at the hatch's ends.

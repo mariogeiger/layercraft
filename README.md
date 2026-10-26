@@ -19,10 +19,13 @@ curious humans like that too.
 | **sections** | one planar region per layer | the *exact* cut of the mesh at the layer's mid-height: a vertex on the plane counts as above it, so every cut edge is cut once and the loops close with no tolerance |
 | **regions** | each layer split into walls, top and bottom skins, solid and sparse infill, bridges | Boolean operations and offsets on a nanometre lattice, exact in integers |
 | **paths** | every bead, in printing order | wall loops with their seams lined up, hatches on a fixed grid, strands across bridges |
-| **program** | every move of the nozzle, with its time | filament from the volume each bead fills, speeds from the machine, time from a look-ahead planner |
+| **program** | every move of the nozzle, layer by layer, each with all it does: where it goes (a line, or an arc climbing about a vertical axis), the filament, speed, acceleration and fan, and the bead it lays | filament from the volume each bead fills, speeds from the machine, time from a look-ahead planner |
 
-Then `verify` checks every move against the machine, and the program is written as G-code and
-packed into the `.gcode.3mf` the printer reads from its storage.
+Then each layer is slowed if it would print faster than it cools, each bead held to what the hot
+end melts, the machine's own G-code is put around the layers, `verify` checks every move against
+the machine, and the program is written as G-code and packed into the `.gcode.3mf` the printer
+reads from its storage. A program can also be read back from any slicer's G-code, and several
+programs merged onto one plate.
 
 Any stage can be written out and read back in:
 
@@ -90,13 +93,16 @@ cargo install --path apps/layercraft
 layercraft machine import                       # once: the X2D, 0.20 mm Standard, Bambu PLA Basic
 layercraft compile part.3mf --out part.gcode.3mf
 layercraft compile part.3mf --out part.gcode.3mf --tune tune.json   # vary settings by place
+layercraft merge a.json b.gcode.3mf --out plate.gcode.3mf   # several programs on one plate
 layercraft compare part.gcode.3mf other.gcode   # side by side with another slicer's output
 ```
 
 `machine import` reads the printer maker's profiles from an installed Bambu Studio, once, into
 `~/.config/layercraft/`; nothing from them enters this repository. `compare` lines up two
 G-code files layer by layer and feature by feature: another slicer is a reference to compare
-against, not an oracle. `--tune` varies any setting by height or by object: a JSON list of
+against, not an oracle. `merge` prints programs together, layer by layer: program stages and
+G-code from any slicer, each already placed, so two slicers' parts can share one plate.
+`--tune` varies any setting by height or by object: a JSON list of
 boxes, each with the settings it changes, such as `{"within": {"z": [0, 5]}, "set": {"motion":
 {"lift_radius": 0.6}}}`; so several variants of a test can share one plate.
 

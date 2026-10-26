@@ -3,8 +3,13 @@
 //! The text has a header block (time, layers, filament), a configuration block (every setting,
 //! one per line) and the executable block. Positions are absolute and extrusion relative
 //! (`M83`); a move names only the axes that change and a feed rate only when it changes, and a
-//! move that changes nothing at the precision written is left out. A helical lift is one
-//! counter-clockwise arc, `G3 Z… I… J… P1`, a full turn back over its start.
+//! move that changes nothing at the precision written is left out. A bead's filament is written
+//! to five decimals with the rounding carried to the next bead, so the total stays exact; a bead
+//! too short to be written carries all of its filament on. Each move carries its whole
+//! state; the acceleration (`M204`), the fan (`M106`) and the feature comments are written when
+//! they change, and again after the machine's own G-code. An arc is `G2`/`G3` with its centre
+//! relative to the nozzle, a full turn back over its start `G3 Z… I… J… P1`. The printer's
+//! progress (`M73`) is the planner's time at each layer's start.
 //! `stats` reads G-code back, from layercraft or another slicer, to compare them.
 #![deny(
     clippy::unwrap_used,
@@ -15,9 +20,12 @@
     clippy::unreachable
 )]
 
+mod read;
 pub mod stats;
 
-use layercraft_motion::{Op, Program};
+pub use read::{ReadError, read};
+
+use layercraft_motion::{Arc, Frame, Limits, Move, Program, estimate, finish};
 use layercraft_path::Role;
 use std::fmt::Write;
 
@@ -41,14 +49,7 @@ pub fn number(v: f64, decimals: usize) -> String {
 
 /// The name a role goes by in the G-code's feature comments.
 pub fn feature_name(role: Role) -> &'static str {
-    match role {
-        Role::OuterWall => "Outer wall",
-        Role::InnerWall => "Inner wall",
-        Role::TopSurface => "Top surface",
-        Role::Solid => "Internal solid infill",
-        Role::Bridge => "Bridge",
-        Role::Sparse => "Sparse infill",
-    }
+    role.name()
 }
 
 fn duration(seconds: f64) -> String {
@@ -66,12 +67,31 @@ struct Writer {
     feed: Option<f64>,
     /// Whether arcs are known to be in the XY plane (`G17`).
     plane: bool,
+    accel: Option<f64>,
+    fan: Option<f64>,
+    feature: Option<(Role, f64)>,
+    /// The beads' filament not written yet, in mm: rounding, and beads too short to write.
+    carry: f64,
 }
 
 impl Writer {
     fn line(&mut self, text: &str) {
         self.out.push_str(text);
         self.out.push('\n');
+    }
+
+    /// The machine's own G-code, after which nothing is known.
+    fn machine(&mut self, text: &str) {
+        self.out.push_str(text);
+        if !text.ends_with('\n') {
+            self.out.push('\n');
+        }
+        self.at = [None; 3];
+        self.feed = None;
+        self.plane = false;
+        self.accel = None;
+        self.fan = None;
+        self.feature = None;
     }
 
     fn feed(&mut self, speed: f64, words: &mut String) {
@@ -82,10 +102,9 @@ impl Writer {
         }
     }
 
-    fn mov(&mut self, to: [Option<f64>; 3], e: Option<f64>, speed: f64) {
-        let mut words = String::from("G1");
-        for (axis, (name, value)) in ["X", "Y", "Z"].into_iter().zip(to).enumerate() {
-            let Some(v) = value else { continue };
+    /// The axes of `to` that differ from where the nozzle is, as written, and records them.
+    fn axes(&mut self, to: [f64; 3], words: &mut String) {
+        for (axis, (name, v)) in ["X", "Y", "Z"].into_iter().zip(to).enumerate() {
             let rounded: f64 = number(v, 3).parse().unwrap_or(v);
             if self.at.get(axis).copied().flatten() != Some(rounded) {
                 let _ = write!(words, " {name}{}", number(v, 3));
@@ -94,40 +113,104 @@ impl Writer {
                 }
             }
         }
-        if let Some(e) = e.map(|e| number(e, 5)).filter(|e| e != "0") {
-            let _ = write!(words, " E{e}");
-        }
-        if words == "G1" {
-            return;
-        }
-        self.feed(speed, &mut words);
-        self.line(&words);
     }
 
-    /// One counter-clockwise turn around `around`, climbing to `z`, from where the nozzle is.
-    fn helix(&mut self, z: f64, around: [f64; 2], speed: f64) {
-        let [Some(x), Some(y), _] = self.at else {
-            // Nowhere known to turn around: straight up, which needs no position.
-            return self.mov([None, None, Some(z)], None, speed);
+    fn state(&mut self, m: &Move) {
+        if let Some(bead) = m.bead
+            && self.feature != Some((bead.role, bead.width))
+        {
+            self.line(&format!("; FEATURE: {}", feature_name(bead.role)));
+            self.line(&format!("; LINE_WIDTH: {}", number(bead.width, 3)));
+            self.feature = Some((bead.role, bead.width));
+        }
+        let fan = (m.fan * 255.0).round();
+        if self.fan != Some(fan) {
+            self.line(&format!("M106 S{}", number(fan, 0)));
+            self.fan = Some(fan);
+        }
+        if self.accel != Some(m.accel) {
+            self.line(&format!("M204 S{}", number(m.accel, 0)));
+            self.accel = Some(m.accel);
+        }
+    }
+
+    /// The words of an arc to `to` about `arc` from (`x`, `y`), as written, and records where
+    /// it ends: a full turn back over its start is `P1` with no end named.
+    fn arc_words(&mut self, to: [f64; 3], arc: Arc, x: f64, y: f64) -> String {
+        let (i, j) = (number(arc.centre[0] - x, 3), number(arc.centre[1] - y, 3));
+        let full = (arc.turn.abs() - std::f64::consts::TAU).abs() < 1e-9;
+        let mut words = String::from(if arc.turn > 0.0 { "G3" } else { "G2" });
+        let z: Option<f64> = number(to[2], 3).parse().ok();
+        if full {
+            let _ = write!(words, " Z{} I{i} J{j} P1", number(to[2], 3));
+        } else {
+            let _ = write!(words, " X{} Y{}", number(to[0], 3), number(to[1], 3));
+            if self.at[2] != z {
+                let _ = write!(words, " Z{}", number(to[2], 3));
+            }
+            let _ = write!(words, " I{i} J{j}");
+            self.at[0] = number(to[0], 3).parse().ok();
+            self.at[1] = number(to[1], 3).parse().ok();
+        }
+        self.at[2] = z;
+        words
+    }
+
+    /// Writes a move, and the state it needs before it, unless it changes nothing at the
+    /// precision written.
+    fn write_move(&mut self, m: &Move) {
+        // A bead's filament with what earlier beads carried; the rest carries on.
+        let wanted = if m.bead.is_some() { m.e + self.carry } else { m.e };
+        let e = Some(number(wanted, 5)).filter(|e| e != "0");
+        let words = match (m.to, m.arc, self.at) {
+            (None, _, _) => e.as_ref().map(|e| format!("G1 E{e}")),
+            // An arc from nowhere known, which `verify` refuses, is never written as one.
+            (Some(to), Some(arc), [Some(x), Some(y), _]) => Some(self.arc_words(to, arc, x, y)),
+            (Some(to), _, _) => {
+                let mut words = String::from("G1");
+                self.axes(to, &mut words);
+                (words != "G1" || e.is_some()).then_some(words)
+            }
         };
-        if !self.plane {
+        let Some(mut words) = words.filter(|w| m.bead.is_none() || w.contains(['X', 'Y', 'I'])) else {
+            if m.bead.is_some() {
+                self.carry = wanted;
+            }
+            return;
+        };
+        if m.bead.is_some() {
+            self.carry = wanted - e.as_deref().and_then(|e| e.parse::<f64>().ok()).unwrap_or(0.0);
+        }
+        if m.to.is_some()
+            && let Some(e) = &e
+        {
+            let _ = write!(words, " E{e}");
+        }
+        self.state(m);
+        if (words.starts_with("G2") || words.starts_with("G3")) && !self.plane {
             self.line("G17");
             self.plane = true;
         }
-        let mut words =
-            format!("G3 Z{} I{} J{} P1", number(z, 3), number(around[0] - x, 3), number(around[1] - y, 3));
-        self.at[2] = number(z, 3).parse().ok();
-        self.feed(speed, &mut words);
+        self.feed(m.speed, &mut words);
         self.line(&words);
     }
 }
 
-/// Writes the program as G-code.
-pub fn write(program: &Program, header: &Header) -> String {
-    let s = &program.summary;
+/// Writes the program, in its frame, as G-code; `limits` time it for the printer's progress.
+pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header) -> String {
+    let s = finish(program, limits, header.filament_diameter);
     let area = std::f64::consts::PI * (header.filament_diameter / 2.0).powi(2);
     let grams = s.filament_mm * area * header.filament_density / 1000.0;
-    let mut w = Writer { out: String::new(), at: [None; 3], feed: None, plane: false };
+    let mut w = Writer {
+        out: String::new(),
+        at: [None; 3],
+        feed: None,
+        plane: false,
+        accel: None,
+        fan: None,
+        feature: None,
+        carry: 0.0,
+    };
     w.line("; HEADER_BLOCK_START");
     w.line(&format!("; {}", header.generator));
     let time = duration(s.motion_seconds);
@@ -149,42 +232,27 @@ pub fn write(program: &Program, header: &Header) -> String {
     w.line("; CONFIG_BLOCK_END");
     w.line("");
     w.line("; EXECUTABLE_BLOCK_START");
-    for op in &program.ops {
-        match op {
-            Op::Raw { text } => {
-                w.out.push_str(text);
-                if !text.ends_with('\n') {
-                    w.out.push('\n');
-                }
-                // The machine's own code may move anywhere: forget where we are.
-                w.at = [None; 3];
-                w.feed = None;
-                w.plane = false;
-            }
-            Op::Layer { z, height, .. } => {
-                w.line("; CHANGE_LAYER");
-                w.line(&format!("; Z_HEIGHT: {}", number(*z, 3)));
-                w.line(&format!("; LAYER_HEIGHT: {}", number(*height, 3)));
-            }
-            Op::Feature { role, width } => {
-                w.line(&format!("; FEATURE: {}", feature_name(*role)));
-                w.line(&format!("; LINE_WIDTH: {}", number(*width, 3)));
-            }
-            Op::Travel { to, speed } => w.mov(to.map(Some), None, *speed),
-            Op::Extrude { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
-            Op::Wipe { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
-            Op::Lift { z, around: None, speed } => w.mov([None, None, Some(*z)], None, *speed),
-            Op::Lift { z, around: Some(c), speed } => w.helix(*z, *c, *speed),
-            Op::Retract { e, speed } => {
-                let mut words = format!("G1 E{}", number(*e, 5));
-                w.feed(*speed, &mut words);
-                w.line(&words);
-            }
-            Op::Fan { speed } => w.line(&format!("M106 S{}", number((speed * 255.0).round(), 0))),
-            Op::Accel { value } => w.line(&format!("M204 S{}", number(*value, 0))),
-            Op::Progress { percent, minutes_left } => w.line(&format!("M73 P{percent} R{minutes_left}")),
+    w.machine(&frame.start);
+    let times = estimate(program, limits);
+    let total = times.last().copied().unwrap_or(0.0);
+    let mut done = 0usize;
+    for (k, layer) in program.layers.iter().enumerate() {
+        w.line("; CHANGE_LAYER");
+        w.line(&format!("; Z_HEIGHT: {}", number(layer.z, 3)));
+        w.line(&format!("; LAYER_HEIGHT: {}", number(layer.height, 3)));
+        if let Some(text) = frame.layers.get(k) {
+            w.machine(text);
         }
+        let t = done.checked_sub(1).and_then(|i| times.get(i)).copied().unwrap_or(0.0);
+        let percent = if total > 0.0 { (100.0 * t / total).floor() as u32 } else { 0 };
+        let left = ((total - t) / 60.0).ceil().max(0.0) as u32;
+        w.line(&format!("M73 P{percent} R{left}"));
+        for m in &layer.moves {
+            w.write_move(m);
+        }
+        done += layer.moves.len();
     }
+    w.machine(&frame.end);
     w.line("M73 P100 R0");
     w.line("; EXECUTABLE_BLOCK_END");
     w.out

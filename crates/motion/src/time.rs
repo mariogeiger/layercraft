@@ -4,11 +4,12 @@
 //! the program. The speed through a corner between unit directions `u₁` and `u₂` is limited so
 //! the velocity jumps by at most `jerk`: `v · |u₁ − u₂| ≤ jerk`. A backward pass caps each
 //! entry speed by what the rest can brake from, a forward pass by what can be reached; each
-//! move then takes the time of its trapezoid. A helical lift of radius `r` climbing `dz` is one
-//! move of length `√((2πr)² + dz²)`, leaving along the tangent it set off on, and runs no faster
-//! than its centripetal acceleration allows: `v²/r ≤ a`.
+//! move then takes the time of its trapezoid. A move along an arc of radius `r` enters and
+//! leaves along its tangents and runs no faster than its centripetal acceleration allows,
+//! `v²/r ≤ a`. A move in place takes its filament's length over its speed, the nozzle at rest.
 
-use crate::Op;
+use crate::Program;
+use crate::moves::chained;
 use serde::{Deserialize, Serialize};
 
 /// The machine's motion limits.
@@ -24,7 +25,8 @@ struct Segment {
     /// Where this move's finishing time goes in the list of times.
     slot: usize,
     length: f64,
-    dir: [f64; 3],
+    /// The directions it enters and leaves with.
+    dir: ([f64; 3], [f64; 3]),
     vmax: f64,
     accel: f64,
 }
@@ -50,9 +52,8 @@ fn run_time(segments: &[Segment], jerk: f64) -> f64 {
     let mut junction = vec![0.0; n + 1];
     for i in 1..n {
         let (Some(a), Some(b)) = (segments.get(i - 1), segments.get(i)) else { continue };
-        let du =
-            ((a.dir[0] - b.dir[0]).powi(2) + (a.dir[1] - b.dir[1]).powi(2) + (a.dir[2] - b.dir[2]).powi(2))
-                .sqrt();
+        let (u, v) = (a.dir.1, b.dir.0);
+        let du = ((u[0] - v[0]).powi(2) + (u[1] - v[1]).powi(2) + (u[2] - v[2]).powi(2)).sqrt();
         let corner = if du < 1e-9 { f64::INFINITY } else { jerk / du };
         if let Some(j) = junction.get_mut(i) {
             *j = corner.min(a.vmax).min(b.vmax);
@@ -83,13 +84,12 @@ fn run_time(segments: &[Segment], jerk: f64) -> f64 {
         .sum()
 }
 
-/// The time of the program up to each op, in seconds; the last entry is the total.
-pub fn estimate(ops: &[Op], limits: &Limits, start: [f64; 3]) -> Vec<f64> {
-    let mut times = Vec::with_capacity(ops.len() + 1);
+/// The time of the program at the end of each move, layer after layer, in seconds; the last
+/// is the total. The machine's own G-code between layers takes no time here.
+pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
+    let mut times = Vec::new();
     let mut done = 0.0;
     let mut run: Vec<Segment> = Vec::new();
-    let mut accel = limits.max_accel;
-    let mut at = start;
     let flush = |run: &mut Vec<Segment>, times: &mut Vec<f64>, done: &mut f64| {
         // Spread the run's time over its moves by length, which is exact at the run's end.
         let total = run_time(run, limits.jerk);
@@ -104,67 +104,37 @@ pub fn estimate(ops: &[Op], limits: &Limits, start: [f64; 3]) -> Vec<f64> {
         *done += total;
         run.clear();
     };
-    times.push(0.0);
-    for op in ops {
-        match op {
-            Op::Travel { .. } | Op::Extrude { .. } | Op::Wipe { .. } | Op::Lift { .. } => {
-                let (to, speed) = match op {
-                    Op::Lift { z, speed, .. } => ([at[0], at[1], *z], *speed),
-                    Op::Travel { to, speed } | Op::Extrude { to, speed, .. } | Op::Wipe { to, speed, .. } => {
-                        (*to, *speed)
-                    }
-                    _ => (at, 1.0),
-                };
-                let mut d = [to[0] - at[0], to[1] - at[1], to[2] - at[2]];
-                let mut turn = f64::INFINITY;
-                if let Op::Lift { around: Some(c), .. } = op {
-                    // The helix sets off along the tangent, counter-clockwise, around the axis.
-                    let (rx, ry) = (at[0] - c[0], at[1] - c[1]);
-                    let r = rx.hypot(ry);
-                    if r > 0.0 {
-                        let arc = std::f64::consts::TAU * r;
-                        d = [-ry / r * arc, rx / r * arc, d[2]];
-                        turn = (accel.min(limits.max_accel).max(1.0) * r).sqrt();
-                    }
-                }
-                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                at = to;
-                if length <= 0.0 || !length.is_finite() {
-                    times.push(done);
-                    continue;
-                }
-                let dir = [d[0] / length, d[1] / length, d[2] / length];
-                let mut vmax = speed.min(limits.max_speed_xy).min(turn);
-                if dir[2].abs() > 1e-9 {
-                    vmax = vmax.min(limits.max_speed_z / dir[2].abs());
-                }
-                run.push(Segment {
-                    slot: times.len(),
-                    length,
-                    dir,
-                    vmax: vmax.max(1e-3),
-                    accel: accel.min(limits.max_accel).max(1.0),
-                });
-                times.push(done);
-            }
-            Op::Accel { value } => {
-                accel = *value;
-                times.push(done);
-            }
-            Op::Retract { e, speed } => {
+    let mut at = [0.0; 3];
+    for layer in &program.layers {
+        // The machine's layer change stops the nozzle.
+        flush(&mut run, &mut times, &mut done);
+        for (from, m) in chained(&layer.moves, Some(at)) {
+            let from = from.unwrap_or(at);
+            let Some(to) = m.to else {
                 flush(&mut run, &mut times, &mut done);
-                done += if *speed > 0.0 { e.abs() / speed } else { 0.0 };
+                done += if m.speed > 0.0 { m.e.abs() / m.speed } else { 0.0 };
                 times.push(done);
-            }
-            Op::Raw { .. } => {
-                flush(&mut run, &mut times, &mut done);
+                continue;
+            };
+            at = to;
+            let length = m.length(from);
+            if length <= 0.0 || !length.is_finite() {
                 times.push(done);
+                continue;
             }
-            _ => times.push(done),
+            let dir = m.directions(from);
+            let accel = m.accel.min(limits.max_accel).max(1.0);
+            let mut vmax = m.speed.min(limits.max_speed_xy).min((accel * m.radius(from)).sqrt());
+            let climb = dir.0[2].abs().max(dir.1[2].abs());
+            if climb > 1e-9 {
+                vmax = vmax.min(limits.max_speed_z / climb);
+            }
+            run.push(Segment { slot: times.len(), length, dir, vmax: vmax.max(1e-3), accel });
+            times.push(done);
         }
     }
     flush(&mut run, &mut times, &mut done);
-    // Ops after a run's last move carry the time reached so far.
+    // Moves after a run's last one carry the time reached so far.
     let mut best = 0.0f64;
     for t in times.iter_mut() {
         best = best.max(*t);

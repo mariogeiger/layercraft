@@ -9,6 +9,8 @@ repository.workspace = true
 layercraft-motion = { path = "../motion" }
 serde.workspace = true
 
+[dev-dependencies]
+layercraft-path = { path = "../path" }
 
 [lints]
 workspace = true

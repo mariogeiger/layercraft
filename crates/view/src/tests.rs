@@ -4,7 +4,7 @@
 use super::*;
 use layercraft_geom::{Point, union_contours};
 use layercraft_mesh::{Body, Mesh};
-use layercraft_motion::{Limits, Op, Program, Summary};
+use layercraft_motion::{Arc, Bead, Layer as MoveLayer, Limits, Move, Program};
 use layercraft_path::{Path, PathLayer};
 use layercraft_region::{RegionLayer, Regions};
 use layercraft_section::{Layer, Sections};
@@ -85,22 +85,22 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
     let c = regions(&Regions { layers: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.
     let roles: Vec<f64> = c.segments.rows.iter().map(|(_, v)| v[1]).collect();
-    assert_eq!(roles, [[0.0; 8].as_slice(), &[1.0; 4]].concat());
+    assert_eq!(roles, [[0.0; 8].as_slice(), &[2.0; 4]].concat());
     assert!(close(area(&c), 16.0));
-    assert!(c.triangles.rows.iter().all(|(_, v)| v == &[3.0, 3.0]));
+    assert!(c.triangles.rows.iter().all(|(_, v)| v == &[3.0, 6.0]));
 }
 
 #[test]
 fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
     let wall = Path {
-        role: Role::OuterWall,
+        role: Role::OUTER_WALL,
         width: 0.42,
         closed: true,
         points: square(0.0, 0.0, 5.0),
         travel_inside: false,
     };
     let strand = Path {
-        role: Role::Bridge,
+        role: Role::BRIDGE,
         width: 0.4,
         closed: false,
         points: vec![[0.0, 0.0], [5.0, 0.0]],
@@ -110,7 +110,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
     let c = paths(&p).unwrap();
     assert_eq!(c.segments.rows.len(), 4 + 1);
     let (ends, values) = &c.segments.rows[4];
-    assert_eq!(values, &[1.0, 4.0, 0.4, 0.4, 1.0]);
+    assert_eq!(values, &[1.0, 7.0, 0.4, 0.4, 1.0]);
     assert!(close(c.points.rows[ends[0] as usize].0[2], 0.2));
     let (ends, values) = &c.segments.rows[3];
     assert_eq!(values, &[1.0, 0.0, 0.42, 0.2, 0.0]);
@@ -121,17 +121,26 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
 
 #[test]
 fn the_program_lays_beads_turns_helices_and_keeps_time() {
-    let ops = vec![
-        Op::Raw { text: "G28".into() },
-        Op::Travel { to: [0.0, 0.0, 0.2], speed: 100.0 },
-        Op::Layer { index: 0, z: 0.2, height: 0.2 },
-        Op::Feature { role: Role::OuterWall, width: 0.42 },
-        Op::Extrude { to: [10.0, 0.0, 0.2], e: 0.5, speed: 50.0 },
-        Op::Lift { z: 0.6, around: Some([10.0, -3.0]), speed: 10.0 },
-        Op::Travel { to: [20.0, 0.0, 0.6], speed: 200.0 },
+    let mv = |to: [f64; 3], arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>| Move {
+        to: Some(to),
+        arc,
+        e,
+        speed,
+        accel: 1000.0,
+        fan: 0.0,
+        bead,
+    };
+    let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
+    let helix = Arc { centre: [10.0, -3.0], turn: std::f64::consts::TAU };
+    let moves = vec![
+        mv([0.0, 0.0, 0.2], None, 0.0, 100.0, None),
+        mv([10.0, 0.0, 0.2], None, 0.5, 50.0, Some(wall)),
+        mv([10.0, 0.0, 0.6], Some(helix), 0.0, 10.0, None),
+        mv([20.0, 0.0, 0.6], None, 0.0, 200.0, None),
     ];
     let limits = Limits { max_accel: 10_000.0, jerk: 10.0, max_speed_xy: 500.0, max_speed_z: 20.0 };
-    let c = program(&Program { ops, summary: Summary::default() }, &limits).unwrap();
+    let layer = MoveLayer { index: 0, z: 0.2, height: 0.2, moves };
+    let c = program(&Program { layers: vec![layer] }, &limits).unwrap();
     let segments = &c.segments.rows;
     // Nothing before the nozzle is known; the bead, the helix's chords, the travel.
     let moves: Vec<f64> = segments.iter().map(|(_, v)| v[1]).collect();
@@ -163,7 +172,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
     assert!(
         c.comments
             .iter()
-            .any(|l| l.starts_with("role: 0 outer wall, ") && l.ends_with(", 5 sparse infill, -1 none"))
+            .any(|l| l.starts_with("role: 0 outer wall, ") && l.ends_with(", 9 sparse infill, -1 none"))
     );
     assert!(c.comments.contains(&"move: 0 extrude, 1 travel, 2 wipe, 3 lift".to_string()));
 }

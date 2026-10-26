@@ -4,6 +4,7 @@
 //!   layercraft compile part.3mf --out part.gcode.3mf [--emit paths=p.json] [--from paths=p.json]
 //!                                           [--emit program=p.ply]  a stage as a picture
 //!   layercraft view part.3mf --out view.json   a SolidCraft script drawing the toolpaths
+//!   layercraft merge a.json b.gcode.3mf --out plate.gcode.3mf   several programs on one plate
 //!   layercraft compare ours.gcode.3mf theirs.gcode   side by side, layer by layer
 //!
 //! Nothing here sends a file to a printer or starts a print.
@@ -18,6 +19,7 @@
 
 mod commands;
 mod compare;
+mod deliver;
 mod pipeline;
 mod settings;
 

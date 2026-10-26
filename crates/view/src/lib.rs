@@ -21,6 +21,7 @@ mod tests;
 pub use ply::{Complex, Kind, MAX_POINTS, Property, Table, ViewError, float, int};
 pub use stages::{ROLES, mesh, paths, program, regions, role_name, sections};
 
+use layercraft_motion::{Bead, Program};
 use layercraft_package::Image;
 use layercraft_path::{Paths, Role};
 use serde_json::{Value, json};
@@ -51,24 +52,55 @@ pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value
     json!({ "commands": commands })
 }
 
+/// A role's colour: strands green; walls orange outside, yellow inside; dense lines red on
+/// top, purple elsewhere; sparse lines blue.
 fn colour(role: Role) -> [f64; 3] {
-    match role {
-        Role::OuterWall => [0.95, 0.55, 0.15],
-        Role::InnerWall => [0.95, 0.80, 0.25],
-        Role::TopSurface => [0.90, 0.25, 0.25],
-        Role::Solid => [0.65, 0.30, 0.75],
-        Role::Bridge => [0.25, 0.75, 0.45],
-        Role::Sparse => [0.30, 0.60, 0.85],
+    use layercraft_path::{Face, Kind};
+    match (role.kind, role.face) {
+        _ if role.strand() => [0.25, 0.75, 0.45],
+        (Kind::Wall, Face::Inside) => [0.95, 0.80, 0.25],
+        (Kind::Wall, _) => [0.95, 0.55, 0.15],
+        (Kind::Solid, Face::Top) => [0.90, 0.25, 0.25],
+        (Kind::Solid, _) => [0.65, 0.30, 0.75],
+        (Kind::Sparse, _) => [0.30, 0.60, 0.85],
     }
 }
 
+/// A piece of bead across the plate: from, to, and the bead.
+type Stroke = ([f64; 2], [f64; 2], Bead);
+
+/// The beads of a program as segments across the plate, layer by layer, arcs as chords.
+fn beads(program: &Program) -> Vec<Vec<Stroke>> {
+    program
+        .layers
+        .iter()
+        .map(|layer| {
+            let mut out = Vec::new();
+            let mut at: Option<[f64; 3]> = None;
+            for m in &layer.moves {
+                if let (Some(from), Some(to), Some(bead)) = (at, m.to, m.bead) {
+                    let n = if m.arc.is_some() { 16 } else { 1 };
+                    let mut a = [from[0], from[1]];
+                    for k in 1..=n {
+                        let p = if k == n { to } else { m.point(from, k as f64 / n as f64) };
+                        out.push((a, [p[0], p[1]], bead));
+                        a = [p[0], p[1]];
+                    }
+                }
+                at = m.to.or(at);
+            }
+            out
+        })
+        .collect()
+}
+
 /// A `size` × `size` picture of the beads seen from above, framing the print.
-pub fn thumbnail(paths: &Paths, size: u32) -> Image {
+pub fn thumbnail(program: &Program, size: u32) -> Image {
     let size = size.clamp(1, 4096);
     let mut rgba = vec![0u8; size as usize * size as usize * 4];
-    let points = paths.layers.iter().flat_map(|l| l.paths.iter()).flat_map(|p| p.points.iter());
+    let layers = beads(program);
     let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-    for p in points {
+    for p in layers.iter().flatten().flat_map(|(a, b, _)| [a, b]) {
         lo = [lo[0].min(p[0]), lo[1].min(p[1])];
         hi = [hi[0].max(p[0]), hi[1].max(p[1])];
     }
@@ -81,23 +113,13 @@ pub fn thumbnail(paths: &Paths, size: u32) -> Image {
     let pixel = |p: &[f64; 2]| {
         [(p[0] - centre[0]) * scale + size as f64 / 2.0, size as f64 / 2.0 - (p[1] - centre[1]) * scale]
     };
-    let count = paths.layers.len().max(1) as f64;
-    for (k, layer) in paths.layers.iter().enumerate() {
+    let count = layers.len().max(1) as f64;
+    for (k, layer) in layers.iter().enumerate() {
         let light = 0.55 + 0.45 * (k as f64 + 1.0) / count;
-        for path in &layer.paths {
-            let c = colour(path.role).map(|v| (v * light * 255.0).round().clamp(0.0, 255.0) as u8);
-            let radius = (path.width * scale / 2.0).max(0.5);
-            let mut pts: Vec<[f64; 2]> = path.points.iter().map(pixel).collect();
-            if path.closed
-                && let Some(&first) = pts.first()
-            {
-                pts.push(first);
-            }
-            for w in pts.windows(2) {
-                if let [a, b] = w {
-                    stroke(&mut rgba, size, *a, *b, radius, c);
-                }
-            }
+        for (a, b, bead) in layer {
+            let c = colour(bead.role).map(|v| (v * light * 255.0).round().clamp(0.0, 255.0) as u8);
+            let radius = (bead.width * scale / 2.0).max(0.5);
+            stroke(&mut rgba, size, pixel(a), pixel(b), radius, c);
         }
     }
     Image { width: size, height: size, rgba }
