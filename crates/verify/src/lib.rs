@@ -5,8 +5,10 @@
 //! printable area and below its printable height; the nozzle never below the layer it prints
 //! (extrusions at the layer's height, travels at or above it); layers rising; speeds within the
 //! machine's limits; filament flowing no faster than the hot end melts it; wipes that move along
-//! the layer; fan between 0 and 1.
-//! The machine's own G-code (start, end, layer change) is the maker's and is not interpreted.
+//! the layer; lifts that climb, a helical one from where the nozzle is known and within the
+//! printable area over its whole turn; fan between 0 and 1.
+//! The machine's own G-code (start, end, layer change) is the maker's and is not interpreted:
+//! after it, the nozzle may be anywhere.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -136,14 +138,34 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                 }
                 at = Some(*to);
             }
-            Op::Lift { z, speed } => {
+            Op::Lift { z, around, speed } => {
                 if !(z.is_finite() && speed.is_finite() && *speed > 0.0) || *z > envelope.max_z {
                     note(i, format!("lift to z = {z} at {speed} mm/s"));
+                }
+                if *speed > envelope.max_speed + SLACK {
+                    note(i, format!("{speed} mm/s is faster than the machine's {}", envelope.max_speed));
                 }
                 if let (Some(layer), true) = (layer_z, z.is_finite())
                     && *z < layer - SLACK
                 {
                     note(i, format!("lift down to z = {z} below the layer at {layer}"));
+                }
+                if let Some(p) = at
+                    && *z < p[2] - SLACK
+                {
+                    note(i, format!("lift down to z = {z} from {}", p[2]));
+                }
+                if let Some(c) = around {
+                    match at {
+                        None => note(i, "a helical lift from where the nozzle is not known".into()),
+                        Some(p) => {
+                            let r = (p[0] - c[0]).hypot(p[1] - c[1]);
+                            let far = [[c[0] - r, c[1] - r, 0.0], [c[0] + r, c[1] + r, 0.0]];
+                            if !(r.is_finite() && inside(&far[0]) && inside(&far[1])) {
+                                note(i, format!("helical lift of radius {r} leaves the printable area"));
+                            }
+                        }
+                    }
                 }
                 at = at.map(|p| [p[0], p[1], *z]);
             }
@@ -166,6 +188,7 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                 if text.contains('\0') {
                     note(i, "machine G-code holds a NUL byte".into());
                 }
+                at = None;
             }
             Op::Feature { .. } | Op::Progress { .. } => {}
         }

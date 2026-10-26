@@ -19,7 +19,7 @@ fn program(ops: Vec<Op>) -> Program {
 fn safe() -> Vec<Op> {
     vec![
         Op::Layer { index: 0, z: 0.2, height: 0.2 },
-        Op::Lift { z: 0.6, speed: 20.0 },
+        Op::Lift { z: 0.6, around: None, speed: 20.0 },
         Op::Travel { to: [10.0, 10.0, 0.6], speed: 500.0 },
         Op::Travel { to: [10.0, 10.0, 0.2], speed: 500.0 },
         Op::Extrude { to: [20.0, 10.0, 0.2], e: 0.3, speed: 50.0 },
@@ -40,7 +40,7 @@ fn each_danger_is_caught() {
         (4, Op::Extrude { to: [20.0, 10.0, 0.2], e: 10.0, speed: 50.0 }),
         (4, Op::Extrude { to: [20.0, 10.0, 0.2], e: f64::NAN, speed: 50.0 }),
         (2, Op::Travel { to: [10.0, 10.0, 0.6], speed: 5000.0 }),
-        (1, Op::Lift { z: 999.0, speed: 20.0 }),
+        (1, Op::Lift { z: 999.0, around: None, speed: 20.0 }),
         (0, Op::Layer { index: 0, z: -1.0, height: 0.2 }),
     ];
     for (at, op) in cases {
@@ -54,4 +54,26 @@ fn each_danger_is_caught() {
     let mut fan = safe();
     fan.push(Op::Fan { speed: 2.0 });
     assert!(!verify(&program(fan), &ENVELOPE).is_empty());
+}
+
+#[test]
+fn a_helical_lift_turns_inside_the_plate_from_a_known_place() {
+    let helix = |around: [f64; 2]| Op::Lift { z: 0.6, around: Some(around), speed: 300.0 };
+    let mut ops = safe();
+    ops.push(helix([20.0, 11.0]));
+    assert_eq!(verify(&program(ops), &ENVELOPE), vec![]);
+    // A radius of 15 around (20, -5) dips below y = 0.
+    let mut ops = safe();
+    ops.push(helix([20.0, -5.0]));
+    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
+    // After the machine's own G-code the nozzle may be anywhere.
+    let mut ops = safe();
+    ops.push(Op::Raw { text: "M400".into() });
+    ops.push(helix([20.0, 11.0]));
+    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
+    // A lift never goes down.
+    let mut ops = safe();
+    ops.push(Op::Lift { z: 0.6, around: None, speed: 20.0 });
+    ops.push(Op::Lift { z: 0.4, around: None, speed: 20.0 });
+    assert!(!verify(&program(ops), &ENVELOPE).is_empty());
 }

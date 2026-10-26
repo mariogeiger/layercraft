@@ -5,8 +5,11 @@
 //! its sides, `(w − h)·h + π·h²/4`, and a bridge strand, hanging free, the disc `π·w²/4`; a
 //! move of length `L` fills that times `L`, and pushes `flow · area · L / filament_area` of
 //! filament. A wall loop stops `seam_gap` short of its start, so the seam does not pile up. Speeds come by role, capped by the hot end's
-//! volumetric limit, and slowed down on layers too short to cool. Print time comes from a
-//! look-ahead planner of the machine's accelerations and corner speeds.
+//! volumetric limit, and slowed down on layers too short to cool. Leaving a bead, the nozzle
+//! wipes back over it while it pulls the filament, then climbs one turn of a helix that comes
+//! back over where it started: moving sideways as it rises, it breaks the string it draws
+//! instead of stretching it upward. Print time comes from a look-ahead planner of the
+//! machine's accelerations and corner speeds.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -42,8 +45,15 @@ pub enum Op {
     /// A move back over the bead just laid, pulling `e` (negative) mm of filament on the way, at
     /// `speed` mm/s: the nozzle wipes its tip on the part instead of leaving a string.
     Wipe { to: [f64; 3], e: f64, speed: f64 },
-    /// A vertical move to `z` from wherever the nozzle is, at `speed` mm/s.
-    Lift { z: f64, speed: f64 },
+    /// A climb to `z` from wherever the nozzle is, at `speed` mm/s: straight up, or one
+    /// counter-clockwise turn of a helix `around` a vertical axis through that point, back over
+    /// where it started.
+    Lift {
+        z: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        around: Option<[f64; 2]>,
+        speed: f64,
+    },
     /// A move pushing `e` mm of filament, at `speed` mm/s.
     Extrude { to: [f64; 3], e: f64, speed: f64 },
     /// Filament pulled back (negative) or pushed again (positive), at `speed` mm/s.
@@ -130,6 +140,8 @@ pub struct MotionParams {
     /// The fraction of the retraction done in place before the wipe, from 0 to 1.
     pub retract_before_wipe: f64,
     pub z_hop: f64,
+    /// The radius of the helix a lift turns, in mm (0: straight up).
+    pub lift_radius: f64,
     /// A layer printing faster than this is slowed down, in seconds.
     pub slow_down_layer_time: f64,
     pub slow_down_min_speed: f64,

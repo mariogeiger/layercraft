@@ -58,6 +58,31 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
     Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)? })
 }
 
+/// The hop and the radius of the helix a lift turns; a filament's own lift wins over the
+/// printer's. A spiral lift climbs the hop on the slope where the Z axis at its top speed keeps
+/// pace with the travel speed: its turn `2πr` is to the hop as the travel speed is to Z's, so
+/// the helix is flown at the travel speed. Bambu's automatic lift is taken as the spiral one.
+fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
+    use Kind::{Filament, Machine as M, Process};
+    let z_hop = match m.get(Filament, "filament_z_hop").ok().and_then(|v| v.number()) {
+        Some(h) => h,
+        None => m.number(M, "z_hop")?,
+    };
+    let kind = match m.text(Filament, "filament_z_hop_types").ok().filter(|t| t != "nil") {
+        Some(t) => t,
+        None => m.text(M, "z_hop_types").unwrap_or_else(|_| "Normal Lift".into()),
+    };
+    let radius = match kind.as_str() {
+        "Normal Lift" => 0.0,
+        "Spiral Lift" | "Auto Lift" => {
+            z_hop * m.number(Process, "travel_speed")?
+                / (std::f64::consts::TAU * m.number(M, "machine_max_speed_z")?)
+        }
+        other => return Err(MachineError::Unsupported(format!("the lift `{other}`"))),
+    };
+    Ok((z_hop, radius))
+}
+
 /// The bed's first-layer and other-layer temperature keys for a plate type.
 fn plate_keys(bed_type: &str) -> (&'static str, &'static str) {
     match bed_type {
@@ -176,6 +201,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         .insert("max_additional_fan".into(), Value::Num(m.number(Filament, "additional_cooling_fan_speed")?));
     let max_z = m.number(M, "printable_height")?;
     let max_speed = m.number(M, "machine_max_speed_x")?.min(m.number(M, "machine_max_speed_y")?);
+    let (z_hop, lift_radius) = lift(m)?;
     Ok(Settings {
         layering: Layering {
             first_layer_height: m.number(Process, "initial_layer_print_height")?,
@@ -249,7 +275,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 Some(v) => v / 100.0,
                 None => m.number(M, "retract_before_wipe").unwrap_or(0.0) / 100.0,
             },
-            z_hop: m.number(M, "z_hop")?,
+            z_hop,
+            lift_radius,
             slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,
             slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,
             fan_speed: fraction(m, Filament, "fan_max_speed")?.clamp(0.0, 1.0),

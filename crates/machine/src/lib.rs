@@ -55,6 +55,7 @@ pub enum MachineError {
     Missing(String),
     NotANumber(String, String),
     Import(String),
+    Unsupported(String),
 }
 
 impl std::fmt::Display for MachineError {
@@ -63,6 +64,7 @@ impl std::fmt::Display for MachineError {
             MachineError::Missing(k) => write!(f, "the machine description has no `{k}`"),
             MachineError::NotANumber(k, v) => write!(f, "setting `{k}` is not a number: {v}"),
             MachineError::Import(e) => write!(f, "cannot import the machine: {e}"),
+            MachineError::Unsupported(e) => write!(f, "not supported yet: {e}"),
         }
     }
 }

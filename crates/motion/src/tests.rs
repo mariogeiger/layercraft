@@ -1,4 +1,4 @@
-//! Filament by volume, times against closed forms, and the order of a travel.
+//! Filament by volume, times against closed forms, the order of a travel and the shape of a lift.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -31,6 +31,7 @@ fn params() -> MotionParams {
         wipe_distance: 0.0,
         retract_before_wipe: 0.0,
         z_hop: 0.4,
+        lift_radius: 0.0,
         slow_down_layer_time: 0.0,
         slow_down_min_speed: 10.0,
         fan_speed: 1.0,
@@ -225,4 +226,58 @@ fn a_move_inside_the_part_neither_retracts_nor_lifts() {
         between.iter().all(|op| !matches!(op, Op::Retract { .. } | Op::Lift { .. } | Op::Wipe { .. })),
         "{between:?}"
     );
+}
+
+#[test]
+fn lifts_turn_a_helix_where_the_nozzle_is_known() {
+    let line = |y: f64| Path {
+        role: Role::Sparse,
+        width: 0.4,
+        closed: false,
+        points: vec![[10.0, y], [20.0, y]],
+        travel_inside: false,
+    };
+    let paths = Paths {
+        layers: vec![PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![line(10.0), line(30.0)] }],
+    };
+    let mut p = params();
+    p.lift_radius = 1.0;
+    p.wipe_distance = 1.0;
+    let program = compile(&paths, &p, &scope()).unwrap();
+    let lifts: Vec<(f64, Option<[f64; 2]>, f64)> = program
+        .ops
+        .iter()
+        .filter_map(
+            |op| if let Op::Lift { z, around, speed } = op { Some((*z, *around, *speed)) } else { None },
+        )
+        .collect();
+    assert_eq!(lifts.len(), 3, "{lifts:?}");
+    // After the machine's own G-code the nozzle may be anywhere: straight up.
+    assert_eq!(lifts[0].1, None);
+    // Off the first line, wiped back from (20, 10) to (19, 10), setting off towards the second
+    // line's start at (10, 30): counter-clockwise, the axis lies a radius left of that heading.
+    let h = [-9.0 / 481f64.sqrt(), 20.0 / 481f64.sqrt()];
+    let c = lifts[1].1.unwrap();
+    assert!((c[0] - (19.0 - h[1])).abs() < 1e-12 && (c[1] - (10.0 + h[0])).abs() < 1e-12, "{c:?}");
+    // Flown at the travel speed, the Z axis below its limit: 20 mm/s · √((2π)² + 0.4²) / 0.4 > 300.
+    assert_eq!(lifts[1].2, 300.0);
+    // The print ends climbing off the wipe's end at (19, 30), setting off the way it wiped, -x.
+    let end = program.ops.iter().rposition(|op| matches!(op, Op::Raw { .. })).unwrap();
+    let last = &program.ops[end - 1];
+    assert!(
+        matches!(last, Op::Lift { z, around: Some([19.0, 29.0]), speed: 300.0 } if (z - 0.6).abs() < 1e-12),
+        "{last:?}"
+    );
+}
+
+#[test]
+fn a_helix_runs_at_its_centripetal_limit() {
+    let limits = Limits { max_accel: 1000.0, jerk: 0.0, max_speed_xy: 1000.0, max_speed_z: 20.0 };
+    // One turn of radius 1 climbing 0.4 mm: v ≤ √(a·r) = 31.6 mm/s, from rest to rest.
+    let ops = vec![Op::Lift { z: 0.4, around: Some([0.0, 1.0]), speed: 300.0 }];
+    let t = estimate(&ops, &limits, [0.0; 3]);
+    let length = std::f64::consts::TAU.hypot(0.4);
+    let v = 1000f64.sqrt();
+    let expected = 2.0 * v / 1000.0 + (length - v * v / 1000.0) / v;
+    assert!((t[1] - expected).abs() < 1e-9, "{t:?} against {expected}");
 }

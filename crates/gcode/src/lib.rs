@@ -2,7 +2,9 @@
 //!
 //! The text has a header block (time, layers, filament), a configuration block (every setting,
 //! one per line) and the executable block. Positions are absolute and extrusion relative
-//! (`M83`); a move names only the axes that change and a feed rate only when it changes.
+//! (`M83`); a move names only the axes that change and a feed rate only when it changes, and a
+//! move that changes nothing at the precision written is left out. A helical lift is one
+//! counter-clockwise arc, `G3 Z… I… J… P1`, a full turn back over its start.
 //! `stats` reads G-code back, from layercraft or another slicer, to compare them.
 #![deny(
     clippy::unwrap_used,
@@ -62,6 +64,8 @@ struct Writer {
     out: String,
     at: [Option<f64>; 3],
     feed: Option<f64>,
+    /// Whether arcs are known to be in the XY plane (`G17`).
+    plane: bool,
 }
 
 impl Writer {
@@ -90,12 +94,29 @@ impl Writer {
                 }
             }
         }
-        if let Some(e) = e {
-            let _ = write!(words, " E{}", number(e, 5));
+        if let Some(e) = e.map(|e| number(e, 5)).filter(|e| e != "0") {
+            let _ = write!(words, " E{e}");
         }
         if words == "G1" {
             return;
         }
+        self.feed(speed, &mut words);
+        self.line(&words);
+    }
+
+    /// One counter-clockwise turn around `around`, climbing to `z`, from where the nozzle is.
+    fn helix(&mut self, z: f64, around: [f64; 2], speed: f64) {
+        let [Some(x), Some(y), _] = self.at else {
+            // Nowhere known to turn around: straight up, which needs no position.
+            return self.mov([None, None, Some(z)], None, speed);
+        };
+        if !self.plane {
+            self.line("G17");
+            self.plane = true;
+        }
+        let mut words =
+            format!("G3 Z{} I{} J{} P1", number(z, 3), number(around[0] - x, 3), number(around[1] - y, 3));
+        self.at[2] = number(z, 3).parse().ok();
         self.feed(speed, &mut words);
         self.line(&words);
     }
@@ -106,7 +127,7 @@ pub fn write(program: &Program, header: &Header) -> String {
     let s = &program.summary;
     let area = std::f64::consts::PI * (header.filament_diameter / 2.0).powi(2);
     let grams = s.filament_mm * area * header.filament_density / 1000.0;
-    let mut w = Writer { out: String::new(), at: [None; 3], feed: None };
+    let mut w = Writer { out: String::new(), at: [None; 3], feed: None, plane: false };
     w.line("; HEADER_BLOCK_START");
     w.line(&format!("; {}", header.generator));
     let time = duration(s.motion_seconds);
@@ -138,6 +159,7 @@ pub fn write(program: &Program, header: &Header) -> String {
                 // The machine's own code may move anywhere: forget where we are.
                 w.at = [None; 3];
                 w.feed = None;
+                w.plane = false;
             }
             Op::Layer { z, height, .. } => {
                 w.line("; CHANGE_LAYER");
@@ -151,7 +173,8 @@ pub fn write(program: &Program, header: &Header) -> String {
             Op::Travel { to, speed } => w.mov(to.map(Some), None, *speed),
             Op::Extrude { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
             Op::Wipe { to, e, speed } => w.mov(to.map(Some), Some(*e), *speed),
-            Op::Lift { z, speed } => w.mov([None, None, Some(*z)], None, *speed),
+            Op::Lift { z, around: None, speed } => w.mov([None, None, Some(*z)], None, *speed),
+            Op::Lift { z, around: Some(c), speed } => w.helix(*z, *c, *speed),
             Op::Retract { e, speed } => {
                 let mut words = format!("G1 E{}", number(*e, 5));
                 w.feed(*speed, &mut words);

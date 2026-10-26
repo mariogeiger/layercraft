@@ -4,7 +4,9 @@
 //! the program. The speed through a corner between unit directions `u₁` and `u₂` is limited so
 //! the velocity jumps by at most `jerk`: `v · |u₁ − u₂| ≤ jerk`. A backward pass caps each
 //! entry speed by what the rest can brake from, a forward pass by what can be reached; each
-//! move then takes the time of its trapezoid.
+//! move then takes the time of its trapezoid. A helical lift of radius `r` climbing `dz` is one
+//! move of length `√((2πr)² + dz²)`, leaving along the tangent it set off on, and runs no faster
+//! than its centripetal acceleration allows: `v²/r ≤ a`.
 
 use crate::Op;
 use serde::{Deserialize, Serialize};
@@ -107,13 +109,24 @@ pub fn estimate(ops: &[Op], limits: &Limits, start: [f64; 3]) -> Vec<f64> {
         match op {
             Op::Travel { .. } | Op::Extrude { .. } | Op::Wipe { .. } | Op::Lift { .. } => {
                 let (to, speed) = match op {
-                    Op::Lift { z, speed } => ([at[0], at[1], *z], *speed),
+                    Op::Lift { z, speed, .. } => ([at[0], at[1], *z], *speed),
                     Op::Travel { to, speed } | Op::Extrude { to, speed, .. } | Op::Wipe { to, speed, .. } => {
                         (*to, *speed)
                     }
                     _ => (at, 1.0),
                 };
-                let d = [to[0] - at[0], to[1] - at[1], to[2] - at[2]];
+                let mut d = [to[0] - at[0], to[1] - at[1], to[2] - at[2]];
+                let mut turn = f64::INFINITY;
+                if let Op::Lift { around: Some(c), .. } = op {
+                    // The helix sets off along the tangent, counter-clockwise, around the axis.
+                    let (rx, ry) = (at[0] - c[0], at[1] - c[1]);
+                    let r = rx.hypot(ry);
+                    if r > 0.0 {
+                        let arc = std::f64::consts::TAU * r;
+                        d = [-ry / r * arc, rx / r * arc, d[2]];
+                        turn = (accel.min(limits.max_accel).max(1.0) * r).sqrt();
+                    }
+                }
                 let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                 at = to;
                 if length <= 0.0 || !length.is_finite() {
@@ -121,7 +134,7 @@ pub fn estimate(ops: &[Op], limits: &Limits, start: [f64; 3]) -> Vec<f64> {
                     continue;
                 }
                 let dir = [d[0] / length, d[1] / length, d[2] / length];
-                let mut vmax = speed.min(limits.max_speed_xy);
+                let mut vmax = speed.min(limits.max_speed_xy).min(turn);
                 if dir[2].abs() > 1e-9 {
                     vmax = vmax.min(limits.max_speed_z / dir[2].abs());
                 }

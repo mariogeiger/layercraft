@@ -2,6 +2,17 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.2.6
+
+### Fixed
+
+- No more string pulled up off the part at the end of a print, nor at each lift: the nozzle
+  leaves the part as the profile's spiral lift asks, one turn of a helix (`G3 … P1`) back over
+  where it started, moving sideways as it rises instead of straight up. Its radius makes the Z
+  axis at its top speed keep pace with the travel speed (3.18 mm on the X2D). A filament's own
+  lift height and type win over the printer's; a slope lift is not supported yet.
+- No more `G1 E0` lines: a move that changes nothing at the precision written is left out.
+
 ## 0.2.5
 
 ### Fixed
