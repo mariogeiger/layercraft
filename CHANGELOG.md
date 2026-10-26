@@ -9,6 +9,7 @@ All notable user-visible changes to this project are documented here.
 - `layercraft merge` prints several programs on one plate, layer by layer under one frame:
   program stages and G-code from any slicer (`.gcode`, `.gcode.3mf`), each already placed. The
   pieces at one height go nearest first, and each finds the filament as it expects it.
+  `--emit program=FILE` writes the merged program, as JSON or as a PLY picture.
 - G-code is read back into a program (`layercraft_gcode::read`): positions, filament absolute
   or relative, feed, acceleration and fan followed, arcs kept, the machine's own G-code left
   out; an unknown command or feature is an error. A layer starts at its first travel or bead:

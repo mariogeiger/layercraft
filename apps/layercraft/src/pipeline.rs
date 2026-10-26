@@ -103,7 +103,7 @@ fn is_ply(path: &Path) -> bool {
 }
 
 /// Writes `stage` to each file `emits` names for it: `value` as JSON, or `view` as PLY.
-fn emit<T: Serialize, const V: usize, const E: usize, const F: usize>(
+pub fn emit<T: Serialize, const V: usize, const E: usize, const F: usize>(
     stage: Stage,
     value: &T,
     view: impl Fn() -> Result<Complex<V, E, F>, ViewError>,

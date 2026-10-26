@@ -71,6 +71,9 @@ enum Command {
         /// Vary the motion settings by place, as for `compile`: cooling, here.
         #[arg(long)]
         tune: Option<PathBuf>,
+        /// Write the merged program: program=FILE, as JSON or as a PLY picture (repeatable).
+        #[arg(long, value_parser = stage_file)]
+        emit: Vec<(Stage, PathBuf)>,
     },
     /// Compare two G-code files (.gcode or .gcode.3mf), layer by layer and feature by feature.
     Compare { ours: PathBuf, theirs: PathBuf },
@@ -192,12 +195,17 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}", deliver(output.program, &delivery)?);
             Ok(())
         }
-        Command::Merge { inputs, out, machine, colour, bed, gcode, tune } => {
+        Command::Merge { inputs, out, machine, colour, bed, gcode, tune, emit } => {
+            if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
+                return Err(format!("merge writes the program stage only, not {stage:?}"));
+            }
             let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
             let machine = load_machine(&machine)?;
             let settings = settings::read(&machine, bed.as_deref()).map_err(|e| e.to_string())?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             let merged = layercraft_motion::merge(&programs, settings.motion.deretract_speed);
+            let limits = &settings.motion.limits;
+            pipeline::emit(Stage::Program, &merged, || layercraft_view::program(&merged, limits), &emit)?;
             let delivery = Delivery {
                 settings: &settings,
                 tuning: &tuning,
