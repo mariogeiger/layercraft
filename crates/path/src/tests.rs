@@ -34,6 +34,7 @@ fn region_params() -> RegionParams {
         first_layer_width: 0.4,
         one_wall_on_top: false,
         sparse_gap: 4.0,
+        bridge_width: 0.4,
         min_sparse_area: 0.0,
     }
 }

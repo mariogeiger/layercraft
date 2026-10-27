@@ -222,6 +222,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 d if d > 0.0 => layercraft_geom::bead_spacing(sparse_width, layer_height) / d,
                 _ => 0.0,
             },
+            bridge_width: nozzle,
             min_sparse_area: m.number(Process, "minimum_sparse_infill_area").unwrap_or(0.0),
         },
         path: PathParams {

@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.1
+
+### Fixed
+
+- A bridge strand hangs only over air deeper than it reaches: round, a nozzle wide, it hangs
+  `nozzle − h` below its layer (0.2 mm for a 0.4 mm nozzle on 0.2 mm layers). Over an engraving
+  one layer deep, as the text under the Benchy's hull, it lay on the bed and filled the letters
+  with 57 % more plastic than the layer holds; the layer over such a pocket is now laid flat,
+  as solid, and the engraving stays open.
+
 ## 0.4.0
 
 ### Added

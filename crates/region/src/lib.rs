@@ -9,9 +9,10 @@
 //! needs a skin over it: what rests on walls is held up.
 //! The part of `A_i` not covered by layer `i + 1` is the top surface, the one exposed to the air.
 //! Solid or top that the layer below does not hold up is a bridge, laid as hanging strands: over
-//! air, wherever it is wider than a bead, reaching a bead's width onto the support at its ends;
-//! over sparse infill, only where it is wide enough to span a gap between the sparse lines
-//! (`sparse_gap`) — a narrower band rests on them.
+//! air, wherever it is wider than a bead and deeper than a strand hangs below the layer, reaching
+//! a bead's width onto the support at its ends; over sparse infill, only where it is wide enough
+//! to span a gap between the sparse lines (`sparse_gap`) — a narrower band rests on them. Over
+//! shallower air, as an engraving a layer deep, a strand would lie on the floor and fill it.
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
 //! layer above covers them, and the top surface reaches the outer wall.
@@ -52,6 +53,8 @@ pub struct RegionParams {
     pub one_wall_on_top: bool,
     /// The distance between the sparse infill's lines: the gap a strand over it must span.
     pub sparse_gap: f64,
+    /// The diameter of a bridge strand, the nozzle's: it hangs that far below the layer's top.
+    pub bridge_width: f64,
     /// Pieces of sparse infill smaller than this are solid, in mm².
     #[serde(default)]
     pub min_sparse_area: f64,
@@ -119,9 +122,11 @@ impl From<GeomError> for RegionError {
 
 fn check(params: &RegionParams) -> Result<(), RegionError> {
     let width = |w: f64| w.is_finite() && (0.05..=3.0).contains(&w);
-    if !width(params.outer_wall_width) || !width(params.inner_wall_width) || !width(params.first_layer_width)
+    if ![params.outer_wall_width, params.inner_wall_width, params.first_layer_width, params.bridge_width]
+        .into_iter()
+        .all(width)
     {
-        return Err(RegionError::BadParams("wall widths must be 0.05 to 3 mm".into()));
+        return Err(RegionError::BadParams("wall and strand widths must be 0.05 to 3 mm".into()));
     }
     if !params.sparse_gap.is_finite() || params.sparse_gap < 0.0 {
         return Err(RegionError::BadParams("sparse gap must be finite and not negative".into()));
@@ -169,6 +174,33 @@ fn opening(region: &Region, r: f64) -> Result<Region, GeomError> {
     }
     let core = offset(region, -r)?;
     intersection(&offset(&core, r)?, region)
+}
+
+/// Floors closer than this to a strand's bottom touch it, in mm.
+const TOUCH_MM: f64 = 1e-6;
+
+/// The part of `region`, on layer `i`, over air deeper than `depth` below the layer: outside
+/// every section under it down to that depth. Empty where the bed is within it.
+fn over_deep_air(
+    region: &Region,
+    regions: &[Region],
+    heights: &[f64],
+    i: usize,
+    depth: f64,
+) -> Result<Region, GeomError> {
+    let mut air = region.clone();
+    let mut reached = 0.0;
+    let mut j = i;
+    while reached <= depth + TOUCH_MM && !air.is_empty() {
+        let Some(below) = j.checked_sub(1) else { return Ok(Vec::new()) };
+        let (Some(section), Some(h)) = (regions.get(below), heights.get(below)) else {
+            return Ok(Vec::new());
+        };
+        air = difference(&air, section)?;
+        reached += h;
+        j = below;
+    }
+    Ok(air)
 }
 
 /// The intersection of the sections `from..from + count`, empty when one is missing.
@@ -235,6 +267,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
     }
     let insides: Vec<Region> =
         inside_parts.iter().map(|parts| parts.iter().flatten().cloned().collect()).collect();
+    let heights: Vec<f64> = sections.layers.iter().map(|l| l.height).collect();
     let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
     for (i, ((layer, parts), part_insides)) in
         sections.layers.iter().zip(&layer_parts).zip(&inside_parts).enumerate()
@@ -256,7 +289,13 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         let mut walls_everywhere: Region = Vec::new();
         let mut walls_clipped = false;
         for ((p, region), inside) in parts.iter().zip(part_insides) {
-            let around = Around { next: &next, regions: &regions, insides: &insides, below: layers.last() };
+            let around = Around {
+                next: &next,
+                regions: &regions,
+                heights: &heights,
+                insides: &insides,
+                below: layers.last(),
+            };
             let piece = split_part(i, layer, p, region, inside, &around)?;
             for (k, wall) in piece.walls.into_iter().enumerate() {
                 match out.walls.get_mut(k) {
@@ -287,8 +326,9 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
 struct Around<'a> {
     /// The section of the layer above.
     next: &'a Region,
-    /// Every layer's section and what lies inside its walls.
+    /// Every layer's section, height and what lies inside its walls.
     regions: &'a [Region],
+    heights: &'a [f64],
     insides: &'a [Region],
     /// The layer below, split.
     below: Option<&'a RegionLayer>,
@@ -303,7 +343,7 @@ fn split_part(
     inside: &Region,
     around: &Around,
 ) -> Result<RegionLayer, RegionError> {
-    let Around { next, regions, insides, below: previous } = *around;
+    let Around { next, regions, heights, insides, below: previous } = *around;
     let h = layer.height;
     let widths = widths(p, i);
     let i = i as isize;
@@ -333,20 +373,22 @@ fn split_part(
     let shells = difference(inside, &deep)?;
     let solid = difference(&shells, &top_surface)?;
     // What is not held up from below: over air (the layer below is absent) and over
-    // its sparse infill. Only the parts wide enough to need hanging strands are bridges.
+    // its sparse infill. Only the parts wide enough to need hanging strands are bridges, and
+    // over air only where it is deep enough for them to hang: a strand reaches its diameter
+    // below the layer's top, and a shallower floor holds it up.
     let filled = union(&solid, &top_surface)?;
-    let (bridge, bridge_on_sparse) =
-        match (usize::try_from(i - 1).ok().and_then(|j| regions.get(j)), previous) {
-            (Some(below), Some(previous)) => {
-                let width = widths.inner.max(widths.outer);
-                // Each strand rests a bead's width on the support at either end.
-                let gap = opening(&difference(&filled, below)?, width / 2.0)?;
-                let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;
-                let over_sparse = opening(&intersection(&filled, &previous.sparse)?, p.sparse_gap / 2.0)?;
-                (over_air.clone(), difference(&over_sparse, &over_air)?)
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
+    let (bridge, bridge_on_sparse) = match (usize::try_from(i), previous) {
+        (Ok(index), Some(previous)) => {
+            let width = widths.inner.max(widths.outer);
+            let air = over_deep_air(&filled, regions, heights, index, (p.bridge_width - h).max(0.0))?;
+            // Each strand rests a bead's width on the support at either end.
+            let gap = opening(&air, width / 2.0)?;
+            let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;
+            let over_sparse = opening(&intersection(&filled, &previous.sparse)?, p.sparse_gap / 2.0)?;
+            (over_air.clone(), difference(&over_sparse, &over_air)?)
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
     let hanging = union(&bridge, &bridge_on_sparse)?;
     Ok(RegionLayer {
         index: layer.index,

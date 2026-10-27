@@ -18,6 +18,7 @@ const PARAMS: RegionParams = RegionParams {
     first_layer_width: 0.4,
     one_wall_on_top: false,
     sparse_gap: 2.0,
+    bridge_width: 0.4,
     min_sparse_area: 15.0,
 };
 
@@ -110,6 +111,29 @@ fn an_overhang_over_air_is_a_bridge() {
     // The 6 mm gap, plus a 0.5 mm bead's width onto each post.
     assert!(close(area(&first.bridge), 7.0 * inside), "{}", area(&first.bridge));
     assert!(regions.layers[6].bridge.is_empty());
+}
+
+#[test]
+fn a_strand_hangs_only_over_air_deeper_than_it_reaches() {
+    // A plate with a 4 × 1 mm slot engraved in its bottom. A strand 0.4 mm round hangs 0.2 mm
+    // below a 0.2 mm layer: over a slot one layer deep it would lie on the bed and fill it, so
+    // the layer over it is solid; over a slot two layers deep it hangs.
+    for (depth, hangs) in [(0.2, false), (0.4, true)] {
+        let mesh = Mesh {
+            bodies: vec![
+                cuboid("front", [0.0; 3], [10.0, 4.5, depth]),
+                cuboid("back", [0.0, 5.5, 0.0], [10.0, 10.0, depth]),
+                cuboid("left", [0.0, 4.5, 0.0], [3.0, 5.5, depth]),
+                cuboid("right", [7.0, 4.5, 0.0], [10.0, 5.5, depth]),
+                cuboid("plate", [0.0, 0.0, depth], [10.0, 10.0, 2.0]),
+            ],
+        };
+        let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+        let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
+        let over = &regions.layers[(depth / 0.2).round() as usize];
+        assert_eq!(!over.bridge.is_empty(), hangs, "slot {depth} mm deep: bridge {}", area(&over.bridge));
+        assert!(regions.layers.iter().all(|l| l.index == over.index || l.bridge.is_empty()));
+    }
 }
 
 #[test]
