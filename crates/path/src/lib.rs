@@ -10,7 +10,8 @@
 //! island is printed whole — inner walls, outer
 //! wall, then its infill — and islands follow each other nearest first. The lines of a
 //! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
-//! are all `first_layer_width` wide. Each island is traced by the parameters at its centre.
+//! are all `first_layer_width` wide. Each wall segment carries the share of its bead that hangs
+//! past the layer below (`overhang`). Each island is traced by the parameters at its centre.
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -23,6 +24,7 @@
 mod hatch;
 mod link;
 mod order;
+mod overhang;
 mod role;
 
 pub use role::{Face, Kind, Role, Support};
@@ -42,6 +44,10 @@ pub struct Path {
     /// The move here from the previous bead stays inside the part: no need to retract or lift.
     #[serde(default)]
     pub travel_inside: bool,
+    /// How far each segment hangs over air, as a fraction of the bead's width from 0 to 1,
+    /// segment `i` running from point `i` to the next; empty where nothing hangs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overhang: Vec<f64>,
 }
 
 /// The beads of one layer, in printing order.

@@ -2,6 +2,7 @@
 
 use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
+use crate::overhang::{Below, overhang};
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{
     Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, offset, polyline_length, signed_area, union,
@@ -156,6 +157,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         closed: true,
         points: start_near(contour.clone(), back_right(outline)),
         travel_inside: false,
+        overhang: Vec::new(),
     };
     // The outer wall's shapes are the islands; without walls, the infill's shapes are.
     let mut islands: Vec<Island> = match layer.walls.first() {
@@ -218,6 +220,13 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             }
         }
     }
+    // How far each wall hangs over the layer below, which motion slows for.
+    if let Some(below) = &layer.support {
+        let support = Below::new(below, w(p.outer_wall_width).max(w(p.inner_wall_width)));
+        for (_, path) in islands.iter_mut().flat_map(|island| island.walls.iter_mut()) {
+            (path.points, path.overhang) = overhang(&path.points, path.closed, &support, path.width);
+        }
+    }
     let odd = layer.index % 2 == 1;
     let solid_angle = p.infill_angle + if odd { 90.0 } else { 0.0 };
     let h = layer.height;
@@ -264,7 +273,14 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                island.infill.push(Path { role, width, closed: false, points: line, travel_inside: false });
+                island.infill.push(Path {
+                    role,
+                    width,
+                    closed: false,
+                    points: line,
+                    travel_inside: false,
+                    overhang: Vec::new(),
+                });
             }
         }
         // A role's areas join their lines as one.

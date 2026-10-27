@@ -22,6 +22,7 @@ fn params() -> MotionParams {
         solid: role(100.0),
         sparse: role(100.0),
         bridge: role(50.0),
+        overhang_speeds: Vec::new(),
         first_layer_wall_speed: 50.0,
         first_layer_infill_speed: 50.0,
         first_layer_accel: 500.0,
@@ -51,6 +52,7 @@ fn line(len: f64) -> Paths {
         closed: false,
         points: vec![[10.0, 10.0], [10.0 + len, 10.0]],
         travel_inside: false,
+        overhang: Vec::new(),
     };
     Paths {
         layers: vec![
@@ -195,6 +197,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
         closed: true,
         points: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
         travel_inside: false,
+        overhang: Vec::new(),
     };
     let bridge = Path {
         role: Role::BRIDGE,
@@ -202,6 +205,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
         closed: false,
         points: vec![[10.0, 10.0], [20.0, 10.0]],
         travel_inside: false,
+        overhang: Vec::new(),
     };
     let paths = Paths {
         layers: vec![
@@ -236,6 +240,7 @@ fn a_move_inside_the_part_neither_retracts_nor_lifts() {
         closed: false,
         points: vec![[10.0, y], [20.0, y]],
         travel_inside: inside,
+        overhang: Vec::new(),
     };
     let paths = Paths {
         layers: vec![PathLayer {
@@ -267,6 +272,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
         closed: false,
         points: vec![[10.0, y], [20.0, y]],
         travel_inside: false,
+        overhang: Vec::new(),
     };
     let paths = Paths {
         layers: vec![PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![line(10.0), line(30.0)] }],
@@ -438,4 +444,27 @@ fn beads_are_held_to_what_the_hot_end_melts() {
     assert!((program.layers[0].moves[1].speed - 24.0 / area).abs() < 1e-9);
     // Held already: left alone.
     assert_eq!(melt(&mut program, 24.0, 1.75), 0);
+}
+
+#[test]
+fn a_wall_slows_by_how_far_it_hangs() {
+    // Four segments of an outer wall, on solid, a third over air, three quarters, wholly over.
+    let wall = Path {
+        role: Role::OUTER_WALL,
+        width: 0.4,
+        closed: false,
+        points: vec![[10.0, 10.0], [12.0, 10.0], [14.0, 10.0], [16.0, 10.0], [18.0, 10.0]],
+        travel_inside: false,
+        overhang: vec![0.0, 0.3, 0.75, 1.0],
+    };
+    let paths = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall] }] };
+    let mut p = params();
+    // By quarters, each held at its band's middle, then wholly over air; the first quarter
+    // keeps the wall's speed. Between, linear: 0.3 lies 0.7 of the way from 1/8 (100) to 3/8
+    // (50), 0.75 halfway from 5/8 (30) to 7/8 (10).
+    p.overhang_speeds = vec![0.0, 50.0, 30.0, 10.0, 5.0];
+    let program = compiled(&paths, &p);
+    let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
+    let expected = [100.0, 65.0, 20.0, 5.0];
+    assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
 }

@@ -272,3 +272,33 @@ fn an_inner_wall_under_the_layer_above_stays_a_loop_at_the_seam() {
         "{step} mm from the inner wall's end to the outer wall's start"
     );
 }
+
+#[test]
+fn a_wall_hangs_the_share_of_its_bead_past_the_layer_below() {
+    // A block whose +x side steps out by `step` every 0.2 mm layer. The outer bead, 0.4 mm wide
+    // with its side on the edge, hangs `step` past the layer below: the share `step / 0.4` of
+    // its width, all of it once the step passes the bead. The other sides stand straight.
+    for (step, share) in [(0.1, 0.25), (0.2, 0.5), (0.6, 1.0)] {
+        let bodies = (0..10)
+            .map(|k| {
+                let z = 0.2 * k as f64;
+                cuboid("step", [0.0, 0.0, z], [10.0 + step * k as f64, 10.0, z + 0.2])
+            })
+            .collect();
+        let (_, paths) = paths_of(&Mesh { bodies });
+        let outer = paths.layers[5].paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap();
+        assert_eq!(outer.overhang.len(), outer.points.len(), "one share per segment of the loop");
+        let edge = 10.0 + 5.0 * step - 0.2;
+        let mut points = outer.points.clone();
+        points.push(points[0]);
+        for (w, &u) in points.windows(2).zip(&outer.overhang) {
+            let (a, b) = (w[0], w[1]);
+            let middle = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+            if (a[0] - edge).abs() < 1e-6 && (b[0] - edge).abs() < 1e-6 && (1.0..9.0).contains(&middle[1]) {
+                assert!((u - share).abs() < 1e-6, "step {step}: {u} on the overhanging side");
+            } else if middle[0] < edge - 1.0 {
+                assert_eq!(u, 0.0, "step {step}: {u} at {middle:?}");
+            }
+        }
+    }
+}

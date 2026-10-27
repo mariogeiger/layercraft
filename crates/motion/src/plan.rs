@@ -66,6 +66,9 @@ pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
     if !positive.iter().all(|v| v.is_finite() && *v > 0.0) {
         return Err(MotionError::BadParams("speeds, sizes and limits must be positive".into()));
     }
+    if !p.overhang_speeds.iter().all(|v| v.is_finite() && *v >= 0.0) || p.overhang_speeds.len() > 100 {
+        return Err(MotionError::BadParams("overhang speeds must be finite, not negative, and few".into()));
+    }
     let non_negative =
         [p.retract_length, p.retract_min_travel, p.z_hop, p.lift_radius, p.slow_down_layer_time, p.fan_speed];
     let bounded = p.fan_speed <= 1.0 && p.z_hop <= 10.0 && p.lift_radius <= 10.0;
@@ -132,6 +135,30 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
     };
     let melt = p.max_volumetric_speed / pushed(p, path, layer.height).max(1e-6);
     base.min(melt)
+}
+
+/// The speed of a wall bead hanging the fraction `u` of its width over air, `speed` on solid.
+/// Each overhang speed holds at the middle of its band, the last at a bead wholly over air,
+/// the wall's own at none; between, the speed runs linearly, so a wall whose overhang wavers
+/// about a band's edge from layer to layer keeps nearly one speed. Never faster than `speed`.
+fn overhang_speed(p: &MotionParams, u: f64, speed: f64) -> f64 {
+    let n = p.overhang_speeds.len().saturating_sub(1);
+    if u <= 0.0 || n == 0 {
+        return speed;
+    }
+    let own = |s: f64| if s > 0.0 { s.min(speed) } else { speed };
+    let bands =
+        p.overhang_speeds.iter().take(n).enumerate().map(|(k, &s)| ((k as f64 + 0.5) / n as f64, own(s)));
+    let full = p.overhang_speeds.get(n).map(|&s| (1.0, own(s)));
+    let mut below = (0.0, speed);
+    for (at, s) in bands.chain(full) {
+        if u <= at {
+            let t = (u - below.0) / (at - below.0);
+            return below.1 + t * (s - below.1);
+        }
+        below = (at, s);
+    }
+    below.1
 }
 
 /// The plastic a bead pushes per mm, in mm²: its section times the flow, which the hot end
@@ -342,12 +369,13 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             let speed = bead_speed(&p, path, layer);
             let per_mm = pushed(&p, path, layer.height) / filament_area;
             let bead = Bead { role: path.role, width: path.width };
-            for w in points.windows(2) {
+            for (i, w) in points.windows(2).enumerate() {
                 let [a, b] = [w.first().copied().unwrap_or(start), w.get(1).copied().unwrap_or(start)];
                 let l = (b[0] - a[0]).hypot(b[1] - a[1]);
                 if l <= 0.0 {
                     continue;
                 }
+                let speed = overhang_speed(&p, path.overhang.get(i).copied().unwrap_or(0.0), speed);
                 s.push(Some([b[0], b[1], layer.top]), None, per_mm * l, speed, Some(bead));
                 s.bead.push(s.at);
                 s.bead_speed = speed;

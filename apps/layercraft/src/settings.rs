@@ -259,6 +259,15 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 flow: m.number(Process, "bridge_flow").unwrap_or(1.0),
                 ..role(m, "bridge_speed", "bridge_acceleration")?
             },
+            // Bambu's quarters of a bead's width over air, then a bead wholly over it.
+            overhang_speeds: if m.number(Process, "enable_overhang_speed").unwrap_or(0.0) > 0.0 {
+                ["overhang_1_4_speed", "overhang_2_4_speed", "overhang_3_4_speed", "overhang_4_4_speed", "overhang_totally_speed"]
+                    .iter()
+                    .map(|key| m.number(Process, key))
+                    .collect::<Result<_, _>>()?
+            } else {
+                Vec::new()
+            },
             first_layer_wall_speed: m.number(Process, "initial_layer_speed")?,
             first_layer_infill_speed: m.number(Process, "initial_layer_infill_speed")?,
             first_layer_accel: accel(m, "initial_layer_acceleration")?,

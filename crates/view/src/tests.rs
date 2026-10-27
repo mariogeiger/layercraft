@@ -81,6 +81,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         bridge: empty.clone(),
         bridge_on_sparse: empty.clone(),
         sparse: empty,
+        support: None,
     };
     let c = regions(&Regions { layers: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.
@@ -98,6 +99,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         closed: true,
         points: square(0.0, 0.0, 5.0),
         travel_inside: false,
+        overhang: Vec::new(),
     };
     let strand = Path {
         role: Role::BRIDGE,
@@ -105,6 +107,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         closed: false,
         points: vec![[0.0, 0.0], [5.0, 0.0]],
         travel_inside: false,
+        overhang: Vec::new(),
     };
     let p = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall, strand] }] };
     let c = paths(&p).unwrap();

@@ -7,8 +7,9 @@
 //! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
 //! its sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length
 //! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament. A wall
-//! loop stops `seam_gap` short of its start. Speeds come by role, capped by the hot end's
-//! volumetric limit; a layer too short to cool is slowed by a pass of its own (`cool`). Leaving
+//! loop stops `seam_gap` short of its start. Speeds come by role, a wall's slowed by the share
+//! of its bead hanging over air (`overhang_speeds`), capped by the hot end's volumetric limit;
+//! a layer too short to cool is slowed by a pass of its own (`cool`). Leaving
 //! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
 //! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
 //! takes the parameters at its centre; `finish` reads a program's summary from its moves.
@@ -153,6 +154,12 @@ pub struct MotionParams {
     pub solid: RoleMotion,
     pub sparse: RoleMotion,
     pub bridge: RoleMotion,
+    /// The speeds of a wall bead hanging over air, by the fraction of its width that hangs:
+    /// with `n + 1` speeds, speed `k` for the band `(k/n, (k+1)/n]`, held at its middle, the
+    /// last for a bead wholly over air; linear between. A speed of 0 keeps the wall's own; none,
+    /// no slowing.
+    #[serde(default)]
+    pub overhang_speeds: Vec<f64>,
     pub first_layer_wall_speed: f64,
     pub first_layer_infill_speed: f64,
     pub first_layer_accel: f64,

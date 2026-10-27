@@ -83,6 +83,10 @@ pub struct RegionLayer {
     pub bridge_on_sparse: Region,
     /// Inside the walls, deep in the solid.
     pub sparse: Region,
+    /// The section of the layer below, which holds this layer's walls up; none on the first
+    /// layer, which the bed holds.
+    #[serde(default)]
+    pub support: Option<Region>,
 }
 
 /// The output of the region stage.
@@ -290,6 +294,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             bridge: Vec::new(),
             bridge_on_sparse: Vec::new(),
             sparse: Vec::new(),
+            support: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
         };
         // Parts whose inner walls run everywhere, when others' stop under the air.
         let mut walls_everywhere: Region = Vec::new();
@@ -424,6 +429,7 @@ fn split_part(
         bridge,
         bridge_on_sparse,
         sparse: difference(&deep, &hanging)?,
+        support: None,
     })
 }
 
