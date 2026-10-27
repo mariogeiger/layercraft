@@ -249,3 +249,26 @@ fn strands_resting_on_sparse_infill_fill_their_layer_exactly() {
     let slab = area(&regions.layers[i].bridge_on_sparse) * 0.2;
     assert!((strands / slab - 1.0).abs() < 0.03, "{strands} mm³ of strands for a {slab} mm³ slab");
 }
+
+#[test]
+fn an_inner_wall_under_the_layer_above_stays_a_loop_at_the_seam() {
+    // With one wall on top, inner walls are drawn only under the layer above. Inside a cube the
+    // layer above covers them whole: each stays a closed loop starting at the seam, so the move
+    // to the outer wall is the diagonal between their corners, not a trip around the part.
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let params = RegionParams { one_wall_on_top: true, ..region_params() };
+    let regions = split(&sections, &Field::uniform(params)).unwrap();
+    assert!(regions.layers[5].inner_walls_within.is_some());
+    let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
+    let layer = &paths.layers[5].paths;
+    let (inner, outer) = (&layer[0], &layer[1]);
+    assert_eq!((inner.role, outer.role), (Role::INNER_WALL, Role::OUTER_WALL));
+    assert!(inner.closed);
+    let step = polyline_length(&[inner.points[0], outer.points[0]]);
+    let spacing = 0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    assert!(
+        step < spacing * 2f64.sqrt() + 1e-6,
+        "{step} mm from the inner wall's end to the outer wall's start"
+    );
+}

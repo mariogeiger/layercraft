@@ -3,7 +3,9 @@
 use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
-use layercraft_geom::{Contour, Point, Region, bead_spacing, clip_lines, offset, signed_area, union};
+use layercraft_geom::{
+    Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, offset, polyline_length, signed_area, union,
+};
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
@@ -192,11 +194,21 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 let path = loop_path(Role::INNER_WALL, w(p.inner_wall_width), contour, &island.outline);
                 match &layer.inner_walls_within {
                     None => island.walls.push((k, path)),
-                    // Only the stretches of the loop under the layer above.
+                    // Only the stretches of the loop under the layer above; a loop wholly under
+                    // it stays a loop, its seam where it was.
                     Some(within) => {
                         let mut closed = path.points.clone();
                         closed.extend(path.points.first().copied());
-                        for piece in clip_lines(&[closed], within)? {
+                        let pieces = clip_lines(std::slice::from_ref(&closed), within)?;
+                        let whole = polyline_length(&closed);
+                        if let [piece] = pieces.as_slice()
+                            // Clipping rounds each point to the lattice: a step each, at most.
+                            && polyline_length(piece) + closed.len() as f64 * GRID_MM >= whole
+                        {
+                            island.walls.push((k, path));
+                            continue;
+                        }
+                        for piece in pieces {
                             if piece.len() >= 2 {
                                 island.walls.push((k, Path { closed: false, points: piece, ..path.clone() }));
                             }
