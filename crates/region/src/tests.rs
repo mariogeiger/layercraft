@@ -137,6 +137,31 @@ fn a_strand_hangs_only_over_air_deeper_than_it_reaches() {
 }
 
 #[test]
+fn an_inner_wall_runs_only_where_its_bead_passes() {
+    // Two 10 mm squares joined by a 1.6 mm neck. Inside the outer walls the inner wall's inset
+    // narrows there to 0.39 mm, under its 0.5 mm bead: the loop through the neck would run in and
+    // back over its own plastic. The inner wall is two loops, one per square; the neck's band is
+    // solid.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("left", [0.0; 3], [10.0, 10.0, 2.0]),
+            cuboid("neck", [10.0, 4.2, 0.0], [14.0, 5.8, 2.0]),
+            cuboid("right", [14.0, 0.0, 0.0], [24.0, 10.0, 2.0]),
+        ],
+    };
+    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
+    let layer = &regions.layers[5];
+    let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    let inset = offset(&sections.layers[5].region, -(0.2 + s(0.4) / 2.0 + s(0.5) / 2.0)).unwrap();
+    assert_eq!(inset.len(), 1, "the plain inset runs through the neck");
+    assert_eq!(layer.walls[1].len(), 2);
+    let neck = vec![vec![vec![[11.0, 4.0], [13.0, 4.0], [13.0, 6.0], [11.0, 6.0]]]];
+    let filled = union(&layer.solid, &layer.sparse).unwrap();
+    assert!(area(&intersection(&filled, &neck).unwrap()) > 0.5, "the neck's band is filled");
+}
+
+#[test]
 fn the_first_layer_is_wider_and_the_top_has_one_wall() {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
     let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();

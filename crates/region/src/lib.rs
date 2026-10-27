@@ -1,7 +1,8 @@
 //! Stage 2: what each part of a layer becomes — walls, solid surfaces or sparse infill.
 //!
 //! With `R_i` the section of layer `i`, the walls are the centre lines of successive insets of
-//! `R_i`, one bead spacing apart, and `A_i` is what lies inside the innermost wall. A point of
+//! `R_i`, one bead spacing apart — an inner one only where its bead passes, the band it leaves
+//! filled as inside — and `A_i` is what lies inside the innermost wall. A point of
 //! `A_i` is sparse infill when the inside continues, in `A_j`, for `top_layers` layers above it,
 //! and the solid, in `R_j`, for `bottom_layers` below it; otherwise it is solid. What is laid
 //! above stands on solid unless it is infill itself: under a thin rib or the strokes of raised
@@ -176,6 +177,11 @@ fn opening(region: &Region, r: f64) -> Result<Region, GeomError> {
     intersection(&offset(&core, r)?, region)
 }
 
+/// What the beads `2r` wide along the boundary of `centre` cover.
+fn bead_cover(centre: &Region, r: f64) -> Result<Region, GeomError> {
+    difference(&offset(centre, r)?, &offset(centre, -r)?)
+}
+
 /// Floors closer than this to a strand's bottom touch it, in mm.
 const TOUCH_MM: f64 = 1e-6;
 
@@ -347,14 +353,31 @@ fn split_part(
     let h = layer.height;
     let widths = widths(p, i);
     let i = i as isize;
+    // The outer wall follows the whole outline, the surface that shows. An inner wall runs only
+    // where its bead passes: through a neck of its inset narrower than the bead, or along a cusp
+    // where two rounded holes nearly meet, its loop would run in and back over its own plastic.
+    // Corners keep their point, the offsets being mitred. The band it leaves uncovered, at least
+    // half a bead wide, is filled with the inside.
     let mut walls = Vec::new();
+    let mut inner_cover: Region = Vec::new();
     for k in 0..p.walls {
-        let centre = offset(region, -wall_centre(widths, k, h))?;
+        let mut centre = offset(region, -wall_centre(widths, k, h))?;
+        if k > 0 {
+            centre = opening(&centre, widths.inner / 2.0)?;
+            inner_cover = union(&inner_cover, &bead_cover(&centre, widths.inner / 2.0)?)?;
+        }
         if centre.is_empty() {
             break;
         }
         walls.push(centre);
     }
+    let inside = &if p.walls > 1 {
+        let band = difference(&offset(region, -walls_depth(widths, 1, h))?, inside)?;
+        let gap = opening(&difference(&band, &inner_cover)?, widths.inner / 4.0)?;
+        union(inside, &gap)?
+    } else {
+        inside.clone()
+    };
     // Inner walls under the air would only show through the top: there, the top surface
     // runs out to the outer wall and the inner walls stop.
     let (top_reach, inner_walls_within) = if p.one_wall_on_top && p.walls > 1 {
