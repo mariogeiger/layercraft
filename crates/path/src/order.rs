@@ -1,6 +1,6 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
-use crate::hatch::{hatch, shortest_span_angle};
+use crate::hatch::{bridge_angle, hatch};
 use crate::link::{Fill, link};
 use crate::overhang::{Below, overhang};
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
@@ -261,9 +261,12 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         // Over air, from edge to edge; over sparse infill, across its lines, which the layer's
         // direction already crosses at right angles.
         if role.support == Support::Air {
+            // An end hangs when its strand's last bead rests nowhere on the layer below.
+            let below = layer.support.as_ref().map(|below| Below::new(below, width));
+            let hangs = |end: Point| below.as_ref().is_none_or(|b| b.fraction(end, width) >= 1.0);
             for shape in &reach {
                 let piece = vec![shape.clone()];
-                let angle = shortest_span_angle(&piece, spacing, solid_angle)?;
+                let angle = bridge_angle(&piece, spacing, solid_angle, hangs)?;
                 lines.extend(hatch(&piece, spacing, angle)?);
             }
         } else {

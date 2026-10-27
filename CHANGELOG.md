@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.7
+
+### Fixed
+
+- Bridge strands over air run from support to support: of the directions tried, the one whose
+  strands leave the fewest ends over air wins, then the one whose longest strand is shortest.
+  Before, only the longest strand counted, and a slab 6 mm wide on two posts 20 mm apart was
+  laid across its width, each strand hanging from nothing at both ends.
+
 ## 0.4.6
 
 ### Changed
