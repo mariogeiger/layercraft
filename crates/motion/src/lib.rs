@@ -10,7 +10,8 @@
 //! loop stops `seam_gap` short of its start. Speeds come by role, a wall's slowed by the share
 //! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
 //! share), capped by the hot end's volumetric limit;
-//! a layer too short to cool is slowed by a pass of its own (`cool`). Leaving
+//! a layer too short to cool is slowed by a pass of its own (`cool`), and the beads are
+//! written as the fewest lines and arcs within the resolution (`fit`). Leaving
 //! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
 //! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
 //! takes the parameters at its centre; `finish` reads a program's summary from its moves.
@@ -24,6 +25,7 @@
 )]
 
 mod cool;
+mod fit;
 mod frame;
 mod melt;
 mod merge;
@@ -32,6 +34,7 @@ mod plan;
 mod time;
 
 pub use cool::cool;
+pub use fit::fit;
 pub use frame::{Frame, finish, frame};
 pub use melt::melt;
 pub use merge::merge;
@@ -190,6 +193,12 @@ pub struct MotionParams {
     pub overhang_fan_share: f64,
     /// Layers printed with the fan off, from the first.
     pub fan_off_layers: usize,
+    /// How far, in mm, the moves written may stray from the beads traced (0: as traced).
+    #[serde(default)]
+    pub resolution: f64,
+    /// Whether the moves written may be arcs.
+    #[serde(default)]
+    pub arc_fitting: bool,
     pub limits: Limits,
     pub templates: Templates,
 }

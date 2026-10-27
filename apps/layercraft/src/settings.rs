@@ -320,6 +320,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             overhang_fan_speed,
             overhang_fan_share,
             fan_off_layers: m.number(Filament, "close_fan_the_first_x_layers")?.max(0.0) as usize,
+            resolution: m.number(Process, "resolution")?,
+            arc_fitting: m.number(Process, "enable_arc_fitting")? > 0.0,
             limits: Limits {
                 max_accel: m.number(M, "machine_max_acceleration_x")?,
                 jerk: m.number(M, "machine_max_jerk_x")?,

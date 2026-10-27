@@ -1,5 +1,5 @@
 //! Filament by volume, times against closed forms, the order of a travel, the shape of a lift,
-//! the geometry of an arc, cooling, and the frame.
+//! the geometry of an arc, beads fitted as lines and arcs, cooling, and the frame.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -42,6 +42,8 @@ fn params() -> MotionParams {
         overhang_fan_speed: 0.0,
         overhang_fan_share: 0.0,
         fan_off_layers: 1,
+        resolution: 0.0,
+        arc_fitting: false,
         limits: Limits { max_accel: 1000.0, jerk: 0.0, max_speed_xy: 1000.0, max_speed_z: 20.0 },
         templates: Templates { start: "; start [who]\n".into(), ..Templates::default() },
     }
@@ -503,4 +505,79 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
         let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
         assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-6), "goal {goal}: {speeds:?}");
     }
+}
+
+#[test]
+fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
+    // Three quarters of a circle of 10 mm in 128 chords, then 10 mm straight on along its tangent
+    // in 9 pieces, then a zigzag 0.05 mm high, more than the resolution: one arc, one line, and
+    // the zigzag as it is. Without arcs, the circle takes chords of two pieces, each within
+    // the resolution.
+    let (c, r, eps) = ([50.0, 50.0], 10.0, 0.012);
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let mut points: Vec<[f64; 2]> = (0..=128)
+        .map(|k| 3.0 * quarter * k as f64 / 128.0)
+        .map(|a: f64| [c[0] + r * a.cos(), c[1] + r * a.sin()])
+        .collect();
+    let end = *points.last().unwrap();
+    points.extend((1..=9).map(|k| [end[0] + 10.0 * k as f64 / 9.0, end[1]]));
+    let end = *points.last().unwrap();
+    points.extend((1..=6).map(|k| [end[0] + k as f64, end[1] + 0.05 * (k % 2) as f64]));
+    let wall = Path {
+        role: Role::OUTER_WALL,
+        width: 0.4,
+        closed: false,
+        points: points.clone(),
+        travel_inside: false,
+        overhang: Vec::new(),
+    };
+    let paths = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall] }] };
+    let traced = compiled(&paths, &params());
+    let beads = |program: &Program| -> Vec<(Option<[f64; 3]>, Move)> {
+        chained(&program.layers[0].moves, None)
+            .filter(|(_, m)| m.bead.is_some())
+            .map(|(f, m)| (f, m.clone()))
+            .collect()
+    };
+    let (from, first) = &beads(&traced)[0];
+    let per_mm = first.e / first.length(from.unwrap());
+
+    let mut arcs = traced.clone();
+    fit(&mut arcs, eps, true);
+    let fitted = beads(&arcs);
+    assert_eq!(fitted.len(), 1 + 1 + 6, "{fitted:?}");
+    let arc = fitted[0].1.arc.unwrap();
+    assert!((arc.centre[0] - c[0]).abs() < 1e-9 && (arc.centre[1] - c[1]).abs() < 1e-9, "{arc:?}");
+    assert!((arc.turn - 3.0 * quarter).abs() < 1e-9);
+    assert!((fitted[0].1.e - per_mm * r * 3.0 * quarter).abs() < 1e-12);
+    assert!(fitted[1].1.arc.is_none() && fitted[1].1.to.unwrap()[0] == end[0]);
+    for (f, m) in &fitted {
+        assert!((m.e - per_mm * m.length(f.unwrap())).abs() < 1e-12);
+        assert_eq!((m.speed, m.fan, m.bead), (first.speed, first.fan, first.bead));
+    }
+
+    let mut lines = traced.clone();
+    fit(&mut lines, eps, false);
+    let fitted = beads(&lines);
+    assert_eq!(fitted.len(), 64 + 1 + 6);
+    let ends: Vec<[f64; 2]> = std::iter::once(points[0])
+        .chain(fitted.iter().map(|(_, m)| [m.to.unwrap()[0], m.to.unwrap()[1]]))
+        .collect();
+    let to_polyline = |p: [f64; 2]| {
+        ends.windows(2)
+            .map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let e = [b[0] - a[0], b[1] - a[1]];
+                let s = (((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / (e[0] * e[0] + e[1] * e[1]))
+                    .clamp(0.0, 1.0);
+                (p[0] - a[0] - s * e[0]).hypot(p[1] - a[1] - s * e[1])
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    assert!(points.iter().all(|&p| to_polyline(p) <= eps));
+
+    // A resolution of nothing leaves the beads as traced.
+    let mut same = traced.clone();
+    fit(&mut same, 0.0, true);
+    assert_eq!(same, traced);
 }

@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.5
+
+### Added
+
+- Beads are written as the fewest lines and arcs (`G2`/`G3`) within the profile's `resolution`
+  (0.012 mm on the X2D) of the beads traced, arcs only with `enable_arc_fitting`. Each move
+  keeps its bead's plastic per mm, speed and fan. The Benchy goes from 768,000 moves to
+  102,000, about as many as Bambu Studio's.
+
 ## 0.4.4
 
 ### Changed

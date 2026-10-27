@@ -1,7 +1,7 @@
 //! From a program to the file the printer runs: each layer cooled, each bead held to what the
-//! hot end melts, the machine's own G-code around the layers, every move verified, then written
-//! as G-code and packaged with the plate's summary and thumbnails. Compiled, read or merged,
-//! every program leaves this way.
+//! hot end melts and written as the fewest lines and arcs within the resolution, the machine's
+//! own G-code around the layers, every move verified, then written as G-code and packaged with
+//! the plate's summary and thumbnails. Compiled, read or merged, every program leaves this way.
 
 use crate::settings::{Settings, plate_code};
 use layercraft_machine::Machine;
@@ -29,6 +29,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let field = Field::new(motion.clone(), d.tuning, "motion").map_err(|e| e.to_string())?;
     layercraft_motion::cool(&mut program, &field).map_err(|e| e.to_string())?;
     let slowed = layercraft_motion::melt(&mut program, motion.max_volumetric_speed, motion.filament_diameter);
+    layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
     let frame =
         layercraft_motion::frame(&program, &motion.templates, &settings.scope).map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);
