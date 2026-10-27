@@ -468,3 +468,33 @@ fn a_wall_slows_by_how_far_it_hangs() {
     let expected = [100.0, 65.0, 20.0, 5.0];
     assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
 }
+
+#[test]
+fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
+    // 10 mm of outer wall and 10 mm of sparse infill at 100 mm/s: 0.2 s, to last 0.5 s. The
+    // infill alone takes the 0.3 s more, at 25 mm/s; the wall keeps its 100 mm/s. To last 1.5 s,
+    // the infill falls to its 10 mm/s floor (1 s), and the wall slows to 20 mm/s for the rest.
+    let line = |role: Role, y: f64| Path {
+        role,
+        width: 0.4,
+        closed: false,
+        points: vec![[10.0, y], [20.0, y]],
+        travel_inside: true,
+        overhang: Vec::new(),
+    };
+    let paths = Paths {
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.4,
+            height: 0.2,
+            paths: vec![line(Role::OUTER_WALL, 10.0), line(Role::SPARSE, 10.5)],
+        }],
+    };
+    for (goal, expected) in [(0.5, [100.0, 25.0]), (1.5, [20.0, 10.0])] {
+        let p = MotionParams { slow_down_layer_time: goal, ..params() };
+        let mut program = compiled(&paths, &p);
+        cool(&mut program, &Field::uniform(p)).unwrap();
+        let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
+        assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-6), "goal {goal}: {speeds:?}");
+    }
+}

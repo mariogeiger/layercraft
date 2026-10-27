@@ -300,7 +300,12 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             z_hop,
             lift_radius,
-            slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,
+            // A filament that does not slow down for cooling has no layer time to reach.
+            slow_down_layer_time: if m.number(Filament, "slow_down_for_layer_cooling").unwrap_or(1.0) > 0.0 {
+                m.number(Filament, "slow_down_layer_time")?
+            } else {
+                0.0
+            },
             slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,
             fan_speed: fraction(m, Filament, "fan_max_speed")?.clamp(0.0, 1.0),
             fan_off_layers: m.number(Filament, "close_fan_the_first_x_layers")?.max(0.0) as usize,

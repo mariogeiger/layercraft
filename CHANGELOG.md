@@ -2,6 +2,17 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.3
+
+### Fixed
+
+- A filament that does not slow down for layer cooling (`slow_down_for_layer_cooling = 0`, as
+  Bambu PLA Basic on the X2D) is no longer slowed: layercraft ignored the switch and slowed
+  every layer shorter than `slow_down_layer_time`.
+- A layer too short to cool is slowed on its hidden beads first, the surface only once they are
+  at their floor. Slowed whole, a short layer laid its outer wall slower than its neighbours,
+  which shows as a band on the side of the part.
+
 ## 0.4.2
 
 ### Added
