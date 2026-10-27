@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.4.6"
+version = "0.5.0-egglog.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mariogeiger/layercraft"
@@ -31,3 +31,4 @@ quick-xml = "0.42"
 md-5 = "0.11"
 png = "0.18"
 clap = { version = "4.6", features = ["derive"] }
+egglog = { git = "https://github.com/egraphs-good/egglog", branch = "main" }

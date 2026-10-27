@@ -1,0 +1,8 @@
+; The ways to fill the dense areas of a layer: each piece, by lines at any of its angles.
+(datatype Fill
+  (Piece i64)
+  (Hatch i64 i64)
+  (Both Fill Fill))
+; `(candidate p a)`: piece `p` may be hatched at its `a`-th angle.
+(relation candidate (i64 i64))
+(rule ((= f (Piece p)) (candidate p a)) ((union f (Hatch p a))))

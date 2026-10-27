@@ -21,6 +21,7 @@ const PATHS: PathParams = PathParams {
     first_layer_width: 0.4,
     bridge_width: 0.4,
     monotone: Vec::new(),
+    resolution: 0.0,
 };
 
 fn region_params() -> RegionParams {

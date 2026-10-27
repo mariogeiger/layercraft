@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+layercraft-choose = { path = "../choose" }
+layercraft-cost = { path = "../cost" }
 layercraft-geom = { path = "../geom" }
 layercraft-region = { path = "../region" }
 layercraft-tune = { path = "../tune" }

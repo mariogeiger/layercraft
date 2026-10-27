@@ -1,5 +1,6 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
+use crate::dense::best_hatch;
 use crate::hatch::{hatch, shortest_span_angle};
 use crate::link::{Fill, link};
 use crate::overhang::{Below, overhang};
@@ -266,6 +267,8 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 let angle = shortest_span_angle(&piece, spacing, solid_angle)?;
                 lines.extend(hatch(&piece, spacing, angle)?);
             }
+        } else if role.kind == Kind::Solid && role.support == Support::Solid && p.resolution > 0.0 {
+            lines = best_hatch(&reach, spacing, h, solid_angle, p.resolution)?;
         } else {
             lines = hatch(&reach, spacing, solid_angle)?;
         }

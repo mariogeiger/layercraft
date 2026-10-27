@@ -251,6 +251,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 .filter(|(key, _)| m.text(Process, key).is_ok_and(|p| p.starts_with("monotonic")))
                 .map(|(_, face)| face)
                 .collect(),
+            resolution: m.number(Process, "resolution")?,
         },
         motion: MotionParams {
             filament_diameter,

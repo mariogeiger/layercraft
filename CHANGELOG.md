@@ -2,6 +2,19 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.5.0-egglog.1 (experimental branch `egglog`)
+
+### Added
+
+- The objective every choice is ranked by (`layercraft-cost`): the printed surface's deviation
+  from the solid, in whole `resolution`s, then the interior's error (voids, and plastic
+  pushed where there is no room), then the filament, both in `resolution`³, then the time,
+  compared in that order.
+- Choosing beads with an e-graph (`layercraft-choose`, egglog): each piece of a dense area is
+  hatched at the angle the objective prefers, among the layer's, across it and along its
+  longest edges. On the Benchy, the dense areas' interior error falls from 514 mm³ to
+  370 mm³, their plastic by 1.3 %, and the moves take 31.2 min instead of 33.2.
+
 ## 0.4.6
 
 ### Changed
