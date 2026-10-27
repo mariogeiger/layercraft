@@ -39,6 +39,8 @@ fn params() -> MotionParams {
         slow_down_layer_time: 0.0,
         slow_down_min_speed: 10.0,
         fan_speed: 1.0,
+        overhang_fan_speed: 0.0,
+        overhang_fan_share: 0.0,
         fan_off_layers: 1,
         limits: Limits { max_accel: 1000.0, jerk: 0.0, max_speed_xy: 1000.0, max_speed_z: 20.0 },
         templates: Templates { start: "; start [who]\n".into(), ..Templates::default() },
@@ -459,14 +461,18 @@ fn a_wall_slows_by_how_far_it_hangs() {
     };
     let paths = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall] }] };
     let mut p = params();
-    // By quarters, each held at its band's middle, then wholly over air; the first quarter
-    // keeps the wall's speed. Between, linear: 0.3 lies 0.7 of the way from 1/8 (100) to 3/8
-    // (50), 0.75 halfway from 5/8 (30) to 7/8 (10).
+    // By quarters, each closed above, then wholly over air; a bead on solid keeps its speed.
     p.overhang_speeds = vec![0.0, 50.0, 30.0, 10.0, 5.0];
+    // From half a bead over air on, the overhang fan replaces the layer's weaker one.
+    p.fan_speed = 0.2;
+    p.overhang_fan_speed = 0.5;
+    p.overhang_fan_share = 0.5;
     let program = compiled(&paths, &p);
-    let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
-    let expected = [100.0, 65.0, 20.0, 5.0];
-    assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
+    let beads: Vec<&Move> = all(&program).into_iter().filter(|m| m.bead.is_some()).collect();
+    let speeds: Vec<f64> = beads.iter().map(|m| m.speed).collect();
+    let fans: Vec<f64> = beads.iter().map(|m| m.fan).collect();
+    assert!(speeds.iter().zip([100.0, 50.0, 30.0, 5.0]).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
+    assert_eq!(fans, [0.2, 0.2, 0.5, 0.5]);
 }
 
 #[test]

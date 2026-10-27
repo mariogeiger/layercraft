@@ -3,7 +3,7 @@
 use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area};
 use layercraft_geom::Point;
 use layercraft_machine::{Scope, Value};
-use layercraft_path::{Kind, Path, PathLayer, Paths, Role};
+use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
 
@@ -137,28 +137,25 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
     base.min(melt)
 }
 
-/// The speed of a wall bead hanging the fraction `u` of its width over air, `speed` on solid.
-/// Each overhang speed holds at the middle of its band, the last at a bead wholly over air,
-/// the wall's own at none; between, the speed runs linearly, so a wall whose overhang wavers
-/// about a band's edge from layer to layer keeps nearly one speed. Never faster than `speed`.
+/// The speed of a wall bead hanging the fraction `u` of its width over air, `speed` on solid:
+/// the speed of the overhang band `u` falls in, never faster than `speed`.
 fn overhang_speed(p: &MotionParams, u: f64, speed: f64) -> f64 {
     let n = p.overhang_speeds.len().saturating_sub(1);
     if u <= 0.0 || n == 0 {
         return speed;
     }
-    let own = |s: f64| if s > 0.0 { s.min(speed) } else { speed };
-    let bands =
-        p.overhang_speeds.iter().take(n).enumerate().map(|(k, &s)| ((k as f64 + 0.5) / n as f64, own(s)));
-    let full = p.overhang_speeds.get(n).map(|&s| (1.0, own(s)));
-    let mut below = (0.0, speed);
-    for (at, s) in bands.chain(full) {
-        if u <= at {
-            let t = (u - below.0) / (at - below.0);
-            return below.1 + t * (s - below.1);
-        }
-        below = (at, s);
+    let band = if u >= 1.0 { n } else { ((u * n as f64).ceil() as usize).clamp(1, n) - 1 };
+    match p.overhang_speeds.get(band) {
+        Some(&s) if s > 0.0 => s.min(speed),
+        _ => speed,
     }
-    below.1
+}
+
+/// The fan over a bead hanging the fraction `u` of its width over air, `fan` on solid: the
+/// overhang fan from `overhang_fan_share` on, and over every strand on air.
+fn overhang_fan(p: &MotionParams, role: Role, u: f64, fan: f64) -> f64 {
+    let hangs = role.support == Support::Air || (p.overhang_fan_share > 0.0 && u >= p.overhang_fan_share);
+    if hangs { fan.max(p.overhang_fan_speed) } else { fan }
 }
 
 /// The plastic a bead pushes per mm, in mm²: its section times the flow, which the hot end
@@ -355,7 +352,8 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             let p = field.at(centre(&path.points, layer.top), check)?;
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
-            s.fan = if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed };
+            let fan = if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed };
+            s.fan = fan;
             if path.travel_inside && k > 0 && s.placed {
                 // Inside the part from the last bead: straight there, nothing pulled back.
                 s.deretract(&p);
@@ -375,7 +373,10 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
                 if l <= 0.0 {
                     continue;
                 }
-                let speed = overhang_speed(&p, path.overhang.get(i).copied().unwrap_or(0.0), speed);
+                let u = path.overhang.get(i).copied().unwrap_or(0.0);
+                let speed = overhang_speed(&p, u, speed);
+                s.fan =
+                    if layer.index < p.fan_off_layers { fan } else { overhang_fan(&p, path.role, u, fan) };
                 s.push(Some([b[0], b[1], layer.top]), None, per_mm * l, speed, Some(bead));
                 s.bead.push(s.at);
                 s.bead_speed = speed;

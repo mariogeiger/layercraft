@@ -203,6 +203,15 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     let max_z = m.number(M, "printable_height")?;
     let max_speed = m.number(M, "machine_max_speed_x")?.min(m.number(M, "machine_max_speed_y")?);
     let (z_hop, lift_radius) = lift(m)?;
+    // The filament's overhang fan, when on: over bridges, and walls past its threshold.
+    let (overhang_fan_speed, overhang_fan_share) =
+        if m.number(Filament, "enable_overhang_bridge_fan").unwrap_or(0.0) > 0.0 {
+            let threshold = m.text(Filament, "overhang_fan_threshold")?;
+            let percent = threshold.trim().trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0);
+            (fraction(m, Filament, "overhang_fan_speed")?.clamp(0.0, 1.0), (percent / 100.0).clamp(0.0, 1.0))
+        } else {
+            (0.0, 0.0)
+        };
     Ok(Settings {
         layering: Layering {
             first_layer_height: m.number(Process, "initial_layer_print_height")?,
@@ -308,6 +317,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,
             fan_speed: fraction(m, Filament, "fan_max_speed")?.clamp(0.0, 1.0),
+            overhang_fan_speed,
+            overhang_fan_share,
             fan_off_layers: m.number(Filament, "close_fan_the_first_x_layers")?.max(0.0) as usize,
             limits: Limits {
                 max_accel: m.number(M, "machine_max_acceleration_x")?,

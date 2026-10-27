@@ -2,6 +2,20 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.4
+
+### Changed
+
+- A wall bead hanging over air runs at the speed of the profile's band it falls in, each band
+  of a quarter closed above (`overhang_1_4_speed` for up to a quarter of the bead over air, to
+  `overhang_4_4_speed`), and `overhang_totally_speed` wholly over air. Interpolated between
+  the bands, the Benchy's lower hull ran faster than the profile asks.
+
+### Added
+
+- The overhang fan: with `enable_overhang_bridge_fan`, a bead hanging over air by at least
+  `overhang_fan_threshold`, and every bridge, runs the fan at `overhang_fan_speed` at least.
+
 ## 0.4.3
 
 ### Fixed
