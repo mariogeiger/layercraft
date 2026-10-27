@@ -2,6 +2,26 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.2
+
+### Added
+
+- A wall slows by the share of its bead that hangs over the layer below: each wall segment
+  of the paths stage carries it (`overhang`), the regions stage keeps the section below each
+  layer (`support`), and motion takes the profile's overhang speeds (`overhang_1_4_speed` to
+  `overhang_4_4_speed`, `overhang_totally_speed`), each held at the middle of its band and
+  linear between. The Benchy's cabin arch, laid at 200 mm/s, came out ragged; its apex now
+  runs at 10 mm/s.
+
+### Fixed
+
+- An inner wall runs only where its bead passes: through a neck or along a cusp narrower than
+  the bead, its loop ran in and back over its own plastic (3 % of the Benchy's walls). The band
+  it leaves is filled with the inside.
+- With one wall on top, an inner wall lying wholly under the layer above stays a loop starting
+  at the seam. Clipped open at an arbitrary point, it sent the nozzle across the part to the
+  outer wall's seam on every layer, retracting, lifting and priming on the visible surface.
+
 ## 0.4.1
 
 ### Fixed
