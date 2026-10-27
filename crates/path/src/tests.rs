@@ -302,3 +302,45 @@ fn a_wall_hangs_the_share_of_its_bead_past_the_layer_below() {
         }
     }
 }
+
+#[test]
+fn a_move_over_what_the_layer_above_covers_stays_down() {
+    // A square ring, 20 mm with a 8 mm hole. Inside the part, under the layer above, the nozzle
+    // goes from bead to bead without leaving: from wall to wall and on into the infill, never
+    // over the hole. On the top layer, nothing covers what oozes: only the links between
+    // neighbouring lines of the surface stay down.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("front", [0.0; 3], [20.0, 6.0, 3.0]),
+            cuboid("back", [0.0, 14.0, 0.0], [20.0, 20.0, 3.0]),
+            cuboid("left", [0.0, 6.0, 0.0], [6.0, 14.0, 3.0]),
+            cuboid("right", [14.0, 6.0, 0.0], [20.0, 14.0, 3.0]),
+        ],
+    };
+    let (_, paths) = paths_of(&mesh);
+    let over_hole = |a: Point, b: Point| {
+        (0..=100).map(|k| k as f64 / 100.0).any(|t| {
+            let p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+            (6.0..=14.0).contains(&p[0]) && (6.0..=14.0).contains(&p[1])
+        })
+    };
+    let moves = |layer: &PathLayer| -> Vec<(Point, Point, bool, Role)> {
+        layer
+            .paths
+            .windows(2)
+            .map(|w| {
+                let end = if w[0].closed { w[0].points[0] } else { *w[0].points.last().unwrap() };
+                (end, w[1].points[0], w[1].travel_inside, w[1].role)
+            })
+            .collect()
+    };
+    let middle = moves(&paths.layers[7]);
+    for &(a, b, inside, _) in &middle {
+        assert!(!(inside && over_hole(a, b)), "{a:?} → {b:?} over the hole");
+    }
+    let down = middle.iter().filter(|m| m.2).count();
+    let around = middle.iter().filter(|m| !m.2 && !over_hole(m.0, m.1)).count();
+    assert_eq!(around, 0, "{down} moves stay down, {around} around the hole leave");
+    let top = moves(paths.layers.last().unwrap());
+    assert!(top.iter().all(|&(_, _, inside, role)| !inside || role == Role::TOP_SURFACE));
+}

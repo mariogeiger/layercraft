@@ -16,8 +16,8 @@
 //! shallower air, as an engraving a layer deep, a strand would lie on the floor and fill it.
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
-//! layer above covers them, and the top surface reaches the outer wall.
-//! Each shape of a layer is split by the parameters at its centre (`layercraft_tune`).
+//! layer above covers them, and the top surface reaches the outer wall. A layer keeps the sections
+//! below and above it, and each shape is split by the parameters at its centre (`layercraft_tune`).
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -87,6 +87,9 @@ pub struct RegionLayer {
     /// layer, which the bed holds.
     #[serde(default)]
     pub support: Option<Region>,
+    /// The section of the layer above, which covers this layer; empty on the last layer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub above: Region,
 }
 
 /// The output of the region stage.
@@ -295,6 +298,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             bridge_on_sparse: Vec::new(),
             sparse: Vec::new(),
             support: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
+            above: next.clone(),
         };
         // Parts whose inner walls run everywhere, when others' stop under the air.
         let mut walls_everywhere: Region = Vec::new();
@@ -430,6 +434,7 @@ fn split_part(
         bridge_on_sparse,
         sparse: difference(&deep, &hanging)?,
         support: None,
+        above: Vec::new(),
     })
 }
 

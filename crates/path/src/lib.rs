@@ -6,7 +6,8 @@
 //! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
 //! wide: side by side over air, where they hang; over sparse infill, where they rest, spaced to
 //! fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the move between
-//! neighbouring lines is marked as staying inside the part, so it needs no retraction. Each
+//! neighbouring lines is marked as staying inside the part, so it needs no retraction, as is
+//! any move over what the layer above covers. Each
 //! island is printed whole — inner walls, outer
 //! wall, then its infill — and islands follow each other nearest first. The lines of a
 //! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
@@ -155,7 +156,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         for (params, part) in order::parts(layer, field)? {
             islands.extend(order::islands(&part, &params)?);
         }
-        let paths = order::sequence(islands, &mut at);
+        let paths = link::hide(order::sequence(islands, &mut at), &link::hidden(layer)?);
         layers.push(PathLayer { index: layer.index, top: layer.top, height: layer.height, paths });
     }
     Ok(Paths { layers })

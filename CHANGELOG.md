@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.6
+
+### Changed
+
+- A move from bead to bead over what the layer above covers, inside the outer wall and off
+  any bridge over air, neither retracts nor lifts: what oozes on the way is buried. Before,
+  only the links between neighbouring infill lines stayed down. The Benchy retracts 1,347
+  times instead of 3,173 (Bambu Studio: 1,772), its moves taking 33.2 min instead of 37.0.
+
 ## 0.4.5
 
 ### Added

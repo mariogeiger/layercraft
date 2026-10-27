@@ -82,6 +82,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         bridge_on_sparse: empty.clone(),
         sparse: empty,
         support: None,
+        above: Vec::new(),
     };
     let c = regions(&Regions { layers: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.

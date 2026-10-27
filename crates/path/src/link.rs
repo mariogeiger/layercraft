@@ -1,14 +1,17 @@
-//! Marking the moves between neighbouring infill lines that stay inside the part, so the nozzle
-//! goes from one line to the next without retracting or lifting. The move lays no plastic: the
-//! area's density stays what the spacing gives, with nothing doubled along its edge.
+//! Marking the moves from bead to bead that stay inside the part, so the nozzle goes on without
+//! retracting or lifting. The move lays no plastic: an area's density stays what its spacing
+//! gives, with nothing doubled along its edge.
 //!
-//! A move qualifies when it is short (a few line spacings, as between neighbouring hatch lines)
-//! and stays inside the area: it may run along its edge, never across a hole or out of a
-//! concave corner.
+//! A move qualifies when it stays inside a region: it may run along its edge, never across a
+//! hole or out of a concave corner. Between neighbouring lines of one infill area, the region is
+//! the area, and the move short: a few line spacings, as between neighbouring hatch lines. Any
+//! move qualifies over the part of the layer that the layer above covers, bridges over air
+//! aside: what oozes on the way is buried there, out of sight.
 
 use crate::Path;
 use crate::Role;
-use layercraft_geom::{Point, Region};
+use layercraft_geom::{GeomError, Point, Region, difference, intersection};
+use layercraft_region::RegionLayer;
 
 /// One infill area of a layer: its role, the region its lines fill, and the longest join.
 pub struct Fill {
@@ -70,6 +73,39 @@ fn inside(region: &Region, a: Point, b: Point) -> bool {
         && covers(region, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
 }
 
+fn end_of(path: &Path) -> Option<Point> {
+    if path.closed { path.points.first().copied() } else { path.points.last().copied() }
+}
+
+/// The part of a layer where a move needs no retraction: inside its outer wall (inside its
+/// areas, with none), covered by the layer above, and not hanging over air.
+pub fn hidden(layer: &RegionLayer) -> Result<Region, GeomError> {
+    let outline = match layer.walls.first() {
+        Some(outer) => outer.clone(),
+        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect(),
+    };
+    difference(&intersection(&outline, &layer.above)?, &layer.bridge)
+}
+
+/// Marks the beads of a layer, in printing order, reached from the bead before by a move over
+/// `hidden`.
+pub fn hide(mut paths: Vec<Path>, hidden: &Region) -> Vec<Path> {
+    let mut end: Option<Point> = None;
+    for path in &mut paths {
+        if let (Some(a), Some(&b)) = (end, path.points.first())
+            && !path.travel_inside
+        {
+            path.travel_inside = inside(hidden, a, b);
+        }
+        end = end_of(path);
+    }
+    paths
+}
+
 /// Marks the lines of `paths` (in printing order, all of `fill`'s role) reached from the line
 /// before by a move inside the area.
 pub fn link(mut paths: Vec<Path>, fill: &Fill) -> Vec<Path> {
@@ -79,7 +115,7 @@ pub fn link(mut paths: Vec<Path>, fill: &Fill) -> Vec<Path> {
             let gap = (b[0] - a[0]).hypot(b[1] - a[1]);
             path.travel_inside = gap <= fill.max_link && (gap < EPS || inside(&fill.reach, a, b));
         }
-        end = if path.closed { path.points.first().copied() } else { path.points.last().copied() };
+        end = end_of(path);
     }
     paths
 }
