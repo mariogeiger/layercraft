@@ -196,6 +196,10 @@ pub struct MotionParams {
     /// How far, in mm, the moves written may stray from the beads traced (0: as traced).
     #[serde(default)]
     pub resolution: f64,
+    /// How the print cools, which decides how long each layer must last; none, the profile's
+    /// `slow_down_layer_time` does.
+    #[serde(default)]
+    pub physics: Option<layercraft_physics::Physics>,
     /// Whether the moves written may be arcs.
     #[serde(default)]
     pub arc_fitting: bool,

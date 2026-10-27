@@ -43,6 +43,7 @@ fn params() -> MotionParams {
         overhang_fan_share: 0.0,
         fan_off_layers: 1,
         resolution: 0.0,
+        physics: None,
         arc_fitting: false,
         limits: Limits { max_accel: 1000.0, jerk: 0.0, max_speed_xy: 1000.0, max_speed_z: 20.0 },
         templates: Templates { start: "; start [who]\n".into(), ..Templates::default() },
@@ -580,4 +581,38 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
     let mut same = traced.clone();
     fit(&mut same, 0.0, true);
     assert_eq!(same, traced);
+}
+
+#[test]
+fn a_small_layer_waits_until_the_next_one_would_not_squeeze_it() {
+    // A ring of outer wall 3 mm across, 9.4 mm of bead at 100 mm/s: 0.09 s a layer. On a column
+    // of them, the physics wants each to last until the next squeezes it by less than the
+    // resolution; a 40 mm ring, 1.3 s already, waits for nothing.
+    let ring = |r: f64| Path {
+        role: Role::OUTER_WALL,
+        width: 0.4,
+        closed: true,
+        points: (0..64)
+            .map(|k| std::f64::consts::TAU * k as f64 / 64.0)
+            .map(|a: f64| [50.0 + r * a.cos(), 50.0 + r * a.sin()])
+            .collect(),
+        travel_inside: false,
+        overhang: Vec::new(),
+    };
+    let p = MotionParams {
+        resolution: 0.012,
+        physics: Some(layercraft_physics::Physics::default()),
+        slow_down_min_speed: 1.0,
+        ..params()
+    };
+    for (r, slowed) in [(1.5, true), (20.0, false)] {
+        let layers = (1..40)
+            .map(|i| PathLayer { index: i, top: 0.2 * (i + 1) as f64, height: 0.2, paths: vec![ring(r)] })
+            .collect();
+        let mut program = compiled(&Paths { layers }, &p);
+        cool(&mut program, &Field::uniform(p.clone())).unwrap();
+        let last = program.layers.last().unwrap();
+        let speed = last.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.speed).fold(f64::MAX, f64::min);
+        assert_eq!(speed < 100.0, slowed, "ring of {r} mm at {speed} mm/s");
+    }
 }

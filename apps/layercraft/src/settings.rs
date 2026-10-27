@@ -171,7 +171,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         Some(v) => v,
         None => m.number(M, "retraction_length")?,
     };
-    let (first_bed_key, _) = plate_keys(&bed_type);
+    let (first_bed_key, bed_key) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
     let filament_diameter = m.number(Filament, "filament_diameter")?;
@@ -322,6 +322,13 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             overhang_fan_share,
             fan_off_layers: m.number(Filament, "close_fan_the_first_x_layers")?.max(0.0) as usize,
             resolution: m.number(Process, "resolution")?,
+            physics: Some(layercraft_physics::Physics {
+                density: m.number(Filament, "filament_density")? * 1000.0,
+                glass_temperature: m.number(Filament, "temperature_vitrification")?,
+                melt_temperature: m.number(Filament, "nozzle_temperature")?,
+                bed_temperature: m.number(Filament, bed_key)?,
+                ..Default::default()
+            }),
             arc_fitting: m.number(Process, "enable_arc_fitting")? > 0.0,
             limits: Limits {
                 max_accel: m.number(M, "machine_max_acceleration_x")?,

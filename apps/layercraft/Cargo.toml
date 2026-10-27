@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+layercraft-physics = { path = "../../crates/physics" }
 clap.workspace = true
 layercraft-geom = { path = "../../crates/geom" }
 layercraft-gcode = { path = "../../crates/gcode" }

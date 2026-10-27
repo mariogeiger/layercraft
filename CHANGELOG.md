@@ -2,6 +2,18 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.5.0-egglog.2 (experimental branch `egglog`)
+
+### Added
+
+- How a print cools (`layercraft-physics`): the plastic's viscosity through its glass
+  transition and its melt (Vogel–Fulcher–Tammann), and the print as a stack of slabs passing
+  heat to each other and the bed and losing it to the air, under the fan or not. Each layer
+  lasts the shortest time after which the next one squeezes it by no more whole resolutions
+  than any longer wait: on the Benchy, the chimney's layers, 0.2 s each, now last about 1.5 s,
+  and the cabin's 0.8 s, about 1.9 s, whatever the profile's cooling switch says. The print
+  takes 32.1 min instead of 31.2.
+
 ## 0.5.0-egglog.1 (experimental branch `egglog`)
 
 ### Added

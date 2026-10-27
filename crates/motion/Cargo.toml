@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+layercraft-physics = { path = "../physics" }
 layercraft-geom = { path = "../geom" }
 layercraft-machine = { path = "../machine" }
 layercraft-path = { path = "../path" }
