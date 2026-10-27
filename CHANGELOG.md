@@ -2,6 +2,12 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.5.0-egglog.3 (experimental branch `egglog`)
+
+### Fixed
+
+- What 0.4.7 fixes: bridge strands over air run from support to support.
+
 ## 0.5.0-egglog.2 (experimental branch `egglog`)
 
 ### Added
@@ -26,6 +32,15 @@ All notable user-visible changes to this project are documented here.
   hatched at the angle the objective prefers, among the layer's, across it and along its
   longest edges. On the Benchy, the dense areas' interior error falls from 514 mm³ to
   370 mm³, their plastic by 1.3 %, and the moves take 31.2 min instead of 33.2.
+
+## 0.4.7
+
+### Fixed
+
+- Bridge strands over air run from support to support: of the directions tried, the one whose
+  strands leave the fewest ends over air wins, then the one whose longest strand is shortest.
+  Before, only the longest strand counted, and a slab 6 mm wide on two posts 20 mm apart was
+  laid across its width, each strand hanging from nothing at both ends.
 
 ## 0.4.6
 

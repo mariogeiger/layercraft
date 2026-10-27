@@ -178,6 +178,29 @@ fn a_bridge_crosses_its_gap_the_short_way() {
     }
 }
 
+#[test]
+fn a_bridge_runs_from_support_to_support() {
+    // A slab 6 mm wide on two posts 20 mm apart, open at its sides: across the width, 6 mm, a
+    // strand would hang from nothing at both ends. Its strands run post to post, along x.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("left", [0.0; 3], [4.0, 6.0, 1.0]),
+            cuboid("right", [24.0, 0.0, 0.0], [28.0, 6.0, 1.0]),
+            cuboid("slab", [0.0, 0.0, 1.0], [28.0, 6.0, 2.0]),
+        ],
+    };
+    let (_, paths) = paths_of(&mesh);
+    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
+    assert!(!strands.is_empty());
+    for s in strands {
+        let (a, b) = (s.points[0], s.points[s.points.len() - 1]);
+        assert!((a[1] - b[1]).abs() < 1e-6, "a strand not along x: {a:?} → {b:?}");
+        // The 20 mm gap and a 0.4 mm bead's width onto each post, plus the infill overlap.
+        let length = polyline_length(&s.points);
+        assert!((20.7..=20.95).contains(&length), "{length}");
+    }
+}
+
 /// The offset across `angle` degrees of each `role` line of `paths`, with its direction along.
 fn sweep_of(paths: &[Path], role: Role, angle: f64) -> Vec<(f64, f64)> {
     let (s, c) = angle.to_radians().sin_cos();

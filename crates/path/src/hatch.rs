@@ -1,6 +1,6 @@
 //! Parallel lines on a fixed grid, clipped to a region.
 
-use layercraft_geom::{GeomError, Polyline, Region, bounds, clip_lines};
+use layercraft_geom::{GeomError, Point, Polyline, Region, bounds, clip_lines, polyline_length};
 
 /// The most hatch lines drawn across one region.
 const MAX_LINES: f64 = 1_000_000.0;
@@ -36,11 +36,17 @@ pub fn hatch(region: &Region, spacing: f64, angle: f64) -> Result<Vec<Polyline>,
 /// The most candidate directions tried for one bridge.
 const MAX_CANDIDATES: usize = 72;
 
-/// The direction, in degrees, whose strands across `region` (`spacing` apart) are shortest at
-/// their longest: a bridge hangs from its two ends, so its weakest strand is its longest. The
-/// optimum of the longest chord lies across an edge of the region, so the directions tried are
-/// those perpendicular to its edges, plus every 15°; ties keep `preferred`.
-pub fn shortest_span_angle(region: &Region, spacing: f64, preferred: f64) -> Result<f64, GeomError> {
+/// The direction, in degrees, for strands across `region`, `spacing` apart. A strand hangs from
+/// its two ends, so it must rest on the layer below at both: the direction chosen leaves the
+/// fewest ends over air (`hangs`), and among those its longest strand, the weakest, is shortest.
+/// Both optima lie across an edge of the region, so the directions tried are those perpendicular
+/// to its edges, plus every 15°; ties keep `preferred`.
+pub fn bridge_angle(
+    region: &Region,
+    spacing: f64,
+    preferred: f64,
+    hangs: impl Fn(Point) -> bool,
+) -> Result<f64, GeomError> {
     let mut candidates = vec![preferred];
     for c in region.iter().flatten() {
         let n = c.len();
@@ -56,14 +62,19 @@ pub fn shortest_span_angle(region: &Region, spacing: f64, preferred: f64) -> Res
             seen.push(a);
         }
     }
-    let mut best = (f64::INFINITY, normalize(preferred));
+    let mut best = ((usize::MAX, f64::INFINITY), normalize(preferred));
     for angle in seen {
-        let longest = hatch(region, spacing, angle)?
+        let lines = hatch(region, spacing, angle)?;
+        let loose = lines
             .iter()
-            .map(|line| layercraft_geom::polyline_length(line))
-            .fold(0.0, f64::max);
-        if longest < best.0 - 1e-6 {
-            best = (longest, angle);
+            .flat_map(|line| [line.first(), line.last()])
+            .flatten()
+            .filter(|&&p| hangs(p))
+            .count();
+        let longest = lines.iter().map(|line| polyline_length(line)).fold(0.0, f64::max);
+        let ((best_loose, best_longest), _) = best;
+        if loose < best_loose || (loose == best_loose && longest < best_longest - 1e-6) {
+            best = ((loose, longest), angle);
         }
     }
     Ok(best.1)
