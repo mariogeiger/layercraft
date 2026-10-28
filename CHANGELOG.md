@@ -2,6 +2,18 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.10
+
+### Changed
+
+- Each piece of a solid area over solid is hatched at the angle that fills it best, of the
+  layer's, across it and along its four longest edges: the least interior error (the void its
+  beads leave and the plastic they push where there is no room, their ends round), then the
+  least plastic, each in whole cubes of the profile's `resolution`. Taken from the `egglog`
+  branch without egglog: the pieces add up, so each is chosen on its own. The Benchy's dense
+  areas fall from 514 mm³ of interior error to 370 mm³ and its moves from 33.2 min to 31.2;
+  it compiles in 22.4 s instead of 20.8.
+
 ## 0.4.9
 
 ### Added

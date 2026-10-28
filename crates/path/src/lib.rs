@@ -22,6 +22,7 @@
     clippy::unreachable
 )]
 
+mod dense;
 mod hatch;
 mod link;
 mod order;
@@ -89,6 +90,10 @@ pub struct PathParams {
     /// go nearest first.
     #[serde(default)]
     pub monotone: Vec<Face>,
+    /// The printer's resolution, in mm: each dense piece is hatched at the angle that fills it
+    /// best to within its quanta; 0 hatches every piece at the layer's angle.
+    #[serde(default)]
+    pub resolution: f64,
 }
 
 /// Why the path stage failed.

@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{area, bead_area, polyline_length};
+use layercraft_geom::{Polyline, Region, area, bead_area, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, split};
@@ -21,6 +21,7 @@ const PATHS: PathParams = PathParams {
     first_layer_width: 0.4,
     bridge_width: 0.4,
     monotone: Vec::new(),
+    resolution: 0.0,
 };
 
 fn region_params() -> RegionParams {
@@ -366,4 +367,42 @@ fn a_move_over_what_the_layer_above_covers_stays_down() {
     assert_eq!(around, 0, "{down} moves stay down, {around} around the hole leave");
     let top = moves(paths.layers.last().unwrap());
     assert!(top.iter().all(|&(_, _, inside, role)| !inside || role == Role::TOP_SURFACE));
+}
+
+#[test]
+fn hatch_lines_leave_their_void_at_the_ends() {
+    // A 10 × 4 mm rectangle hatched along x at the spacing: lines full length, so the void is
+    // the strip their round ends leave, and nothing is pushed outside.
+    let piece: Region = vec![vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [0.0, 4.0]]]];
+    let (s, h, eps) = (0.4, 0.2, 0.001);
+    let lines: Vec<Polyline> =
+        (0..10).map(|k| vec![[0.0, s / 2.0 + s * k as f64], [10.0, s / 2.0 + s * k as f64]]).collect();
+    let (interior, plastic) = dense::rank(&piece, &lines, s, h, eps).unwrap();
+    // At each end, the cap's disc of radius r = s/2, centred c = π·s/8 inside: of the strip
+    // [0, c] × s it covers the half disc less the segment beyond the edge, which it pushes out.
+    let (r, c) = (s / 2.0, std::f64::consts::PI * s / 8.0);
+    let beyond = r * r * (c / r).acos() - c * (r * r - c * c).sqrt();
+    let covered = std::f64::consts::PI * r * r / 2.0 - beyond;
+    let expected = 2.0 * 10.0 * ((c * s - covered) + beyond);
+    let interior = interior as f64 * eps.powi(3) / h;
+    assert!((interior - expected).abs() < 0.02 * expected + 1e-3, "{interior} for {expected}");
+    // The plastic is the beads' sections along their lines.
+    assert!((plastic as f64 * eps.powi(3) - 10.0 * 10.0 * s * h).abs() < 1e-6);
+}
+
+#[test]
+fn a_dense_strip_is_hatched_along_its_length() {
+    // A strip 20 mm long and five beads wide, lying at 30° on the hatch's grid: across it, at
+    // the layer's 45° or 135°, lines are short and end often; along its long edges they run its
+    // length, tile its width exactly and end least.
+    let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let at = |u: f64, v: f64| [u * c - v * s, u * s + v * c];
+    let piece: Region = vec![vec![vec![at(0.0, -0.2), at(20.0, -0.2), at(20.0, 1.8), at(0.0, 1.8)]]];
+    let lines = dense::best_hatch(&piece, 0.4, 0.2, 45.0, 0.012).unwrap();
+    assert!(!lines.is_empty());
+    for line in &lines {
+        let (a, b) = (line[0], line[line.len() - 1]);
+        let angle = (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees().rem_euclid(180.0);
+        assert!((angle - 30.0).abs() < 0.5, "a line at {angle}°");
+    }
 }
