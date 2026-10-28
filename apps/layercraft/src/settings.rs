@@ -10,7 +10,7 @@ use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholder
 use layercraft_path::{Face, PathParams};
 use layercraft_region::RegionParams;
 use layercraft_section::Layering;
-use layercraft_verify::Envelope;
+use layercraft_verify::{Envelope, Toolhead};
 
 /// Everything the stages need, read once.
 pub struct Settings {
@@ -67,6 +67,14 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
 /// on its lift: at 0 the nozzle pulled up a 3 mm string, at 0.6 a 10 mm one, at 1.2 and 2.4 none.
 /// A larger turn only costs time, about `2π·√(r/a)` per lift at its centripetal limit.
 const SPIRAL_LIFT_RADIUS: f64 = 1.2;
+
+/// How much wider the nozzle grows per mm up from its tip, `tan 60°`: a cone wider than any
+/// nozzle's, until the X2D's is measured; the machine description does not give it.
+const NOZZLE_FLARE: f64 = 1.732_050_807_568_877_2;
+
+/// The room kept under the head past the nozzle's tip, in mm: for overhangs that curl up and a
+/// plate not quite flat.
+const HEAD_MARGIN: f64 = 1.0;
 
 /// The hop and the radius of the helix a lift turns; a filament's own lift wins over the
 /// printer's. Bambu's automatic lift is taken as the spiral one.
@@ -330,6 +338,14 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             max_speed,
             filament_diameter,
             max_volumetric_speed,
+            toolhead: Toolhead {
+                tip_radius: nozzle / 2.0,
+                flare: NOZZLE_FLARE,
+                nozzle_height: m.number(M, "nozzle_height")?,
+                head_radius: m.number(M, "extruder_clearance_max_radius")?,
+                gantry_height: m.number(M, "extruder_clearance_height_to_rod")?,
+                margin: HEAD_MARGIN,
+            },
         },
         scope,
         filament_kind: m.text(Filament, "filament_type")?,

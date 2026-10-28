@@ -3,15 +3,36 @@
 //!
 //! Checked for every move, compiled or read from another slicer: finite numbers; the whole
 //! path inside the plate's printable area, an arc's sweep included, and below its printable
-//! height; the nozzle never below the layer it prints (extrusions at the layer's height, other
-//! moves at or above it); layers rising; speeds within the machine's limits, accelerations
-//! positive; filament flowing no faster than the hot end melts it; wipes that move; arcs that
-//! end on their circle, at most a turn; fan between 0 and 1; waits finite and not negative.
-//! The machine's own G-code between layers is the maker's and is not interpreted: after it the
-//! nozzle may be anywhere, so a layer's first move must be a straight travel to a named point.
+//! height; the head never down into what is printed before (`clearance`), the nozzle never
+//! below the lowest layer, and extrusions at their layer's height; speeds within the machine's
+//! limits, accelerations positive; filament flowing no faster than the hot end melts it; wipes
+//! that move; arcs that end on their circle, at most a turn; fan between 0 and 1; waits finite
+//! and not negative. The machine's own G-code between layers is the maker's and is not
+//! interpreted: after it the nozzle may be anywhere, so a layer's first move must be a straight
+//! travel to a named point, checked against the print from where the layer before left it.
 
+mod clearance;
+
+use clearance::{Heights, intrusion, lay};
 use layercraft_motion::{Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
+
+/// The toolhead's underside, about the nozzle's axis, in mm (`clearance`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Toolhead {
+    /// The radius of the nozzle's flat tip.
+    pub tip_radius: f64,
+    /// How much wider the nozzle's cone grows per mm up: the tangent of its half-angle.
+    pub flare: f64,
+    /// How far the nozzle reaches below the rest of the head.
+    pub nozzle_height: f64,
+    /// How far around the nozzle the rest of the head reaches.
+    pub head_radius: f64,
+    /// How high the gantry stands above the tip, past the head.
+    pub gantry_height: f64,
+    /// The room kept under the head, past its tip, for beads that curl up.
+    pub margin: f64,
+}
 
 /// What the machine can safely do.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -23,6 +44,7 @@ pub struct Envelope {
     pub filament_diameter: f64,
     /// The hot end's melt limit, in mm³/s.
     pub max_volumetric_speed: f64,
+    pub toolhead: Toolhead,
 }
 
 /// One unsafe move.
@@ -43,8 +65,9 @@ const MAX_LISTED: usize = 50;
 /// The most filament pulled or pushed in place, in mm.
 const MAX_IN_PLACE: f64 = 20.0;
 
-/// What is wrong with move `m` from `from` on the layer at `z`, if anything.
-fn check(m: &Move, from: Option<[f64; 3]>, z: f64, e: &Envelope) -> Option<String> {
+/// What is wrong with move `m` from `from` on the layer at `z`, over the lowest layer at `bed`,
+/// if anything.
+fn check(m: &Move, from: Option<[f64; 3]>, z: f64, bed: f64, e: &Envelope) -> Option<String> {
     let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
     if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
         return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
@@ -67,8 +90,8 @@ fn check(m: &Move, from: Option<[f64; 3]>, z: f64, e: &Envelope) -> Option<Strin
     if to[2] > e.max_z {
         return Some(format!("move to z = {} is above the printable height", to[2]));
     }
-    if to[2] < z - SLACK {
-        return Some(format!("move to z = {} below the layer at {z}", to[2]));
+    if to[2] < bed - SLACK {
+        return Some(format!("move to z = {} below the lowest layer at {bed}", to[2]));
     }
     let Some(from) = from else {
         // After the machine's own G-code: only a travel to a named point is safe.
@@ -117,29 +140,38 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
             found.push(Violation { layer, index, reason });
         }
     };
-    let mut below: Option<f64> = None;
+    let bed = program.layers.iter().map(|l| l.z).fold(f64::INFINITY, f64::min);
+    let mut heights = Heights::new(envelope.area);
+    // Where the layer before left the nozzle, which the machine's layer change keeps.
+    let mut left: Option<[f64; 3]> = None;
     for (k, layer) in program.layers.iter().enumerate() {
         let z = layer.z;
         if !(z.is_finite() && layer.height.is_finite() && layer.height > 0.0 && z > 0.0) {
             note(k, 0, format!("layer at z = {z} with height {}", layer.height));
         }
-        if below.is_some_and(|b| z <= b) {
-            note(k, 0, format!("layer at z = {z} does not rise above {}", below.unwrap_or(0.0)));
-        }
         if z > envelope.max_z {
             note(k, 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
         }
-        below = Some(z);
         // After the machine's layer change the nozzle may be anywhere.
         let mut at: Option<[f64; 3]> = None;
         for (i, m) in layer.moves.iter().enumerate() {
-            if let Some(reason) = check(m, at, z, envelope) {
+            if let Some(reason) = check(m, at, z, bed, envelope) {
                 note(k, i, reason);
+            }
+            if let Some(from) = at.or(left)
+                && m.to.is_some()
+                && m.to.iter().flatten().all(|v| v.is_finite())
+            {
+                if let Some(depth) = intrusion(&heights, &envelope.toolhead, m, from) {
+                    note(k, i, format!("the head comes {depth:.3} mm down into what is printed"));
+                }
+                lay(&mut heights, m, from);
             }
             if m.to.is_some() {
                 at = m.to;
             }
         }
+        left = at.or(left);
     }
     found
 }
