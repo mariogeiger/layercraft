@@ -24,14 +24,14 @@ OBJECTS = {
     "plaque60_rapide": (lambda: leaning(60), 10, "2", 0.74),
     "plaque45_lente": (lambda: leaning(45), 10, "2", 0.20),
     "plaque60_lente": (lambda: leaning(60), 10, "2", 0.60),
-    # Plate 3: predictions, measured to come.
-    "bloc10_h8": (lambda: tower(10, 40), 10, "3", None),
-    "tour3_h20": (lambda: tower(3, 100), 3, "3", None),
-    "plaque45_t2_h5": (lambda: leaning(45, layers=25), 10, "3", None),
-    "plaque45_t2_h10": (lambda: leaning(45), 10, "3", None),
-    "plaque45_t2_h12": (lambda: leaning(45, layers=60), 10, "3", None),
-    "plaque45_t3_h10": (lambda: leaning(45, t=3.0), 10, "3", None),
-    "plaque30_t2_h10": (lambda: leaning(30, k=1), 10, "3", None),
+    # Plate 3.
+    "bloc10_h8": (lambda: tower(10, 40), 10, "3", 0.1),
+    "tour3_h20": (lambda: tower(3, 100), 3, "3", 0.21),
+    "plaque45_t2_h5": (lambda: leaning(45, layers=25), 10, "3", 0.22),
+    "plaque45_t2_h10": (lambda: leaning(45), 10, "3", 0.22),
+    "plaque45_t2_h12": (lambda: leaning(45, layers=60), 10, "3", 0.116),
+    "plaque45_t3_h10": (lambda: leaning(45, t=3.0), 10, "3", 0.115),
+    "plaque30_t2_h10": (lambda: leaning(30, k=1), 10, "3", 0.16),
 }
 
 HERE = os.path.dirname(os.path.abspath(__file__))

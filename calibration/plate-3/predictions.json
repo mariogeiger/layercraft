@@ -1,0 +1,111 @@
+{
+ "made": "2026-10-28T09:17+01:00, before the print",
+ "by": "calibration/sim/run_all.py",
+ "runs": [
+  {
+   "F_N": 6.0,
+   "h_air_W_m2K": 60,
+   "settings": "{'mat': {'alpha': 7e-05}}",
+   "top_excess_mm": {
+    "bloc10_h8": {
+     "after_cooling": 0.007,
+     "at_release": 0.031
+    },
+    "tour3_h20": {
+     "after_cooling": 0.202,
+     "at_release": 0.279
+    },
+    "plaque45_t2_h5": {
+     "after_cooling": 0.055,
+     "at_release": 0.096
+    },
+    "plaque45_t2_h10": {
+     "after_cooling": 0.368,
+     "at_release": 0.375
+    },
+    "plaque45_t2_h12": {
+     "after_cooling": 0.482,
+     "at_release": 0.425
+    },
+    "plaque45_t3_h10": {
+     "after_cooling": 0.296,
+     "at_release": 0.292
+    },
+    "plaque30_t2_h10": {
+     "after_cooling": 0.321,
+     "at_release": 0.332
+    }
+   }
+  },
+  {
+   "F_N": 6.0,
+   "h_air_W_m2K": 150,
+   "settings": "{'mat': {'alpha': 7e-05}}",
+   "top_excess_mm": {
+    "bloc10_h8": {
+     "after_cooling": -0.008,
+     "at_release": -0.002
+    },
+    "tour3_h20": {
+     "after_cooling": 0.342,
+     "at_release": 0.389
+    },
+    "plaque45_t2_h5": {
+     "after_cooling": 0.008,
+     "at_release": 0.02
+    },
+    "plaque45_t2_h10": {
+     "after_cooling": 0.063,
+     "at_release": 0.144
+    },
+    "plaque45_t2_h12": {
+     "after_cooling": 0.33,
+     "at_release": 0.379
+    },
+    "plaque45_t3_h10": {
+     "after_cooling": 0.051,
+     "at_release": 0.056
+    },
+    "plaque30_t2_h10": {
+     "after_cooling": 0.03,
+     "at_release": 0.059
+    }
+   }
+  },
+  {
+   "F_N": 10.0,
+   "h_air_W_m2K": 150,
+   "settings": "{'mat': {'E_r': 3500.0, 'eta_melt': 1e+20, 'eta_glass': 1e+20}}",
+   "top_excess_mm": {
+    "bloc10_h8": {
+     "after_cooling": 0.0,
+     "at_release": 0.0
+    },
+    "tour3_h20": {
+     "after_cooling": 0.006,
+     "at_release": 0.006
+    },
+    "plaque45_t2_h5": {
+     "after_cooling": 0.031,
+     "at_release": 0.031
+    },
+    "plaque45_t2_h10": {
+     "after_cooling": 0.202,
+     "at_release": 0.202
+    },
+    "plaque45_t2_h12": {
+     "after_cooling": 0.327,
+     "at_release": 0.327
+    },
+    "plaque45_t3_h10": {
+     "after_cooling": 0.071,
+     "at_release": 0.071
+    },
+    "plaque30_t2_h10": {
+     "after_cooling": 0.069,
+     "at_release": 0.069
+    }
+   }
+  }
+ ]
+}

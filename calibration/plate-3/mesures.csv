@@ -1,14 +1,14 @@
-objet,mesure,nominal (mm),mesuré (mm)
-bloc 10 h8 (gauche),hauteur,8,
-"bloc 10 h8 dessus à 0,8 (droite)",hauteur,8,
-tour 3×3,hauteur,20,
-plaque 45° t2 h5,hauteur du sommet (au-dessus du plateau),6,
-plaque 45° t2 h5,"épaisseur entre les faces, à mi-hauteur (z ≈ 3.5)",2,
-plaque 45° t2 h10,hauteur du sommet (au-dessus du plateau),11,
-plaque 45° t2 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",2,
-plaque 45° t2 h12,hauteur du sommet (au-dessus du plateau),13,
-plaque 45° t2 h12,"épaisseur entre les faces, à mi-hauteur (z ≈ 7)",2,
-plaque 45° t3 h10,hauteur du sommet (au-dessus du plateau),11,
-plaque 45° t3 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",3,
-plaque 30° t2 h10,hauteur du sommet (au-dessus du plateau),11,
-plaque 30° t2 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",2,
+objet,mesure,nominal (mm),mesuré (mm),lectures (mm),remarque
+bloc 10 h8 (gauche),hauteur,8,8.1,,
+"bloc 10 h8 dessus à 0,8 (droite)",hauteur,8,8.1,,
+tour 3×3,hauteur,20,20.21,,tour déformée au-dessus de 13 mm
+plaque 45° t2 h5,hauteur du sommet (au-dessus du plateau),6,6.22,,
+plaque 45° t2 h5,"épaisseur entre les faces, à mi-hauteur (z ≈ 3.5)",2,2.02,,
+plaque 45° t2 h10,hauteur du sommet (au-dessus du plateau),11,11.22,,
+plaque 45° t2 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",2,2.06,,
+plaque 45° t2 h12,hauteur du sommet (au-dessus du plateau),13,13.116,13.08 13.2 13.1 13.15 13.05,plusieurs lectures du même point : elles fluctuent
+plaque 45° t2 h12,"épaisseur entre les faces, à mi-hauteur (z ≈ 7)",2,2.08,,
+plaque 45° t3 h10,hauteur du sommet (au-dessus du plateau),11,11.115,11.13 11.12 11.07 11.14,plusieurs lectures du même point : elles fluctuent
+plaque 45° t3 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",3,3.05,,
+plaque 30° t2 h10,hauteur du sommet (au-dessus du plateau),11,11.16,,
+plaque 30° t2 h10,"épaisseur entre les faces, à mi-hauteur (z ≈ 6)",2,2.19,,

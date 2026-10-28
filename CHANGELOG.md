@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.9
+
+### Added
+
+- The measurements of calibration plate 3 and the predictions made for it before it was printed
+  (`calibration/plate-3/`). Plates leaning at 45° and 30° rise 0.12 to 0.22 mm above their
+  design whatever their height (5 to 12 mm) and thickness (2 or 3 mm): no elastic ratchet shows,
+  and the nozzle pushes with at most about 1.5 N. A top surface laid at 0.8 of the flow leaves a
+  block as tall (8.10 mm for 8.00), so its excess is not the last layer's plastic.
+
 ## 0.4.8
 
 ### Added
