@@ -301,12 +301,12 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
         l.points.iter().map(|p| project(d, p)).sum::<f64>() / l.points.len().max(1) as f64
     };
     let nearest = |l: &Path| l.points.iter().map(|p| distance2(*at, *p)).fold(f64::MAX, f64::min);
-    let first = lines.iter().min_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
-    let last = lines.iter().max_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
-    if let (Some(first), Some(last)) = (first, last)
+    lines.sort_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
+    if let (Some(first), Some(last)) = (lines.first(), lines.last())
         && nearest(last) < nearest(first)
     {
         across = [-across[0], -across[1]];
+        lines.sort_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
     }
     let span = |l: &Path| {
         l.points
@@ -314,7 +314,6 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
             .map(|p| project(along, p))
             .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
     };
-    lines.sort_by(|x, y| offset_of(across, x).total_cmp(&offset_of(across, y)));
     let mut left: Vec<Option<Path>> = lines.into_iter().map(Some).collect();
     while let Some(start) = left.iter().position(Option::is_some) {
         let mut next = Some(start);

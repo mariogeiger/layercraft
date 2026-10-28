@@ -2,6 +2,25 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.11
+
+### Changed
+
+- The active code drops from 7,782 lines to 7,448, with the same output: Benchy's sections,
+  regions, paths, program and G-code, a tuned cube's and a merged plate's are bit for bit those
+  of 0.4.10. The plane's geometry (a contour's edges, the even-odd test, the distance to a
+  segment, a disc's area) and a layer's infill areas are each written once; the settings'
+  percentages and the filament's own values over the printer's are read by one rule each; the
+  lints come from the workspace alone.
+- The settings read a malformed percentage, or a missing filament retraction, as the rule for
+  a well-formed one does, rather than through a fallback of their own.
+
+### Removed
+
+- `layercraft_mesh::write_3mf`, `solids::rounded_rectangle` and `solids::regular_polygon`,
+  `layercraft_gcode::feature_name` and `layercraft_view::ROLES`: only tests used them, or they
+  repeated another name (`Role::name`, `Role::NAMED`).
+
 ## 0.4.10
 
 ### Changed
