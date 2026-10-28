@@ -1,0 +1,77 @@
+{
+ "printed": "2026-10-28T00:18+01:00",
+ "layercraft": "0.4.7 (331cd47)",
+ "compile": "layercraft compile calib-2.3mf --tune tune.json --colour '#9D432C'",
+ "filament": "PLA #9D432C, AMS slot 2",
+ "machine": "x2d imported from Bambu Studio; slow_down_for_layer_cooling = 0",
+ "bed_offset": [
+  86.0,
+  85.6
+ ],
+ "boxes": {
+  "bloc10_h4": [
+   0,
+   0,
+   10,
+   10
+  ],
+  "bloc10_h12": [
+   16,
+   0,
+   26,
+   10
+  ],
+  "bloc10_h20": [
+   32,
+   0,
+   42,
+   10
+  ],
+  "bloc3_h20": [
+   48,
+   3.5,
+   51,
+   6.5
+  ],
+  "pont_S20": [
+   0,
+   30,
+   28,
+   36
+  ],
+  "pont_S40": [
+   36,
+   30,
+   84,
+   36
+  ],
+  "plaque45_rapide": [
+   0,
+   50,
+   16.83,
+   60
+  ],
+  "plaque60_rapide": [
+   22.83,
+   50,
+   48.15,
+   60
+  ],
+  "plaque45_lente": [
+   0,
+   75,
+   16.83,
+   85
+  ],
+  "plaque60_lente": [
+   22.83,
+   75,
+   48.15,
+   85
+  ]
+ },
+ "notes": [
+  "a first try with twice as many parts (2026-10-27T23:28, slot 1) was cancelled at layer 26: leaning plates without pads tore off the bed (photos/first-try-paused.jpg)",
+  "the 60 degree plates bent under the nozzle at every pass"
+ ]
+}

@@ -2,6 +2,13 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.5.0-egglog.4 (experimental branch `egglog`)
+
+### Added
+
+- What 0.4.8 adds: `calibration/`, the calibration plates, their measurements and the models
+  they test.
+
 ## 0.5.0-egglog.3 (experimental branch `egglog`)
 
 ### Fixed
@@ -32,6 +39,16 @@ All notable user-visible changes to this project are documented here.
   hatched at the angle the objective prefers, among the layer's, across it and along its
   longest edges. On the Benchy, the dense areas' interior error falls from 514 mm³ to
   370 mm³, their plastic by 1.3 %, and the moves take 31.2 min instead of 33.2.
+
+## 0.4.8
+
+### Added
+
+- `calibration/`: the caliper calibration plates printed so far, each with the script that
+  generates its 3MF, its `tune.json`, the measurements (`mesures.csv`), the photos, how and when
+  it was printed (`plate.json`) and when each object was printed, layer by layer (`timing.json`).
+  `calibration/sim/` holds the models they test: the elastic ratchet of a part bent by the
+  nozzle, and a layer-by-layer simulation of a part's heat and stresses.
 
 ## 0.4.7
 

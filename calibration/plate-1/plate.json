@@ -1,0 +1,35 @@
+{
+ "printed": "2026-10-27T22:38+01:00",
+ "layercraft": "branch egglog, 0.5.0-egglog.2 (8b7d58f)",
+ "compile": "layercraft compile overhang-calib.3mf --tune tune.json --colour '#0A2989'",
+ "filament": "PLA #0A2989, AMS slot 1",
+ "machine": "x2d imported from Bambu Studio; slow_down_for_layer_cooling = 0",
+ "bed_offset": [
+  0.0,
+  0.0
+ ],
+ "boxes": {
+  "pilier3": [
+   74.0,
+   152.0,
+   77.5,
+   155.5
+  ],
+  "pilier5": [
+   88.5,
+   152.0,
+   94.0,
+   157.5
+  ],
+  "pilier8": [
+   105.0,
+   152.0,
+   113.5,
+   160.5
+  ]
+ },
+ "notes": [
+  "the bridges' first strands ran across the 6 mm width: a bug, fixed in 0.4.7",
+  "a ledge's lip thickness could not be measured with calipers; the ledges were dropped from later plates"
+ ]
+}

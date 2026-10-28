@@ -910,7 +910,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "clap",
  "layercraft-gcode",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-choose"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "egglog",
  "layercraft-cost",
@@ -942,11 +942,11 @@ dependencies = [
 
 [[package]]
 name = "layercraft-cost"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 
 [[package]]
 name = "layercraft-gcode"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-motion",
  "layercraft-path",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-geom"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "i_overlay",
  "i_triangle",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-machine"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-mesh"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "quick-xml",
  "serde",
@@ -980,7 +980,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-motion"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-geom",
  "layercraft-machine",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-package"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "md-5",
  "png",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-path"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-choose",
  "layercraft-cost",
@@ -1017,14 +1017,14 @@ dependencies = [
 
 [[package]]
 name = "layercraft-physics"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "layercraft-region"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-section"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -1045,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-tune"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-verify"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-motion",
  "layercraft-path",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-view"
-version = "0.5.0-egglog.3"
+version = "0.5.0-egglog.4"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",

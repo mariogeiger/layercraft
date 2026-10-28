@@ -1,0 +1,23 @@
+objet,mesure,nominal (mm),mesuré (mm),remarque
+bridge S5,épaisseur du tablier au milieu,1.0,1.50,brins posés en travers de la largeur (bug corrigé en 0.4.7)
+bridge S10,épaisseur du tablier au milieu,1.0,1.09,sans les fils qui pendent tout du long
+bridge S20,épaisseur du tablier au milieu,1.0,1.73,
+bridge S30,épaisseur du tablier au milieu,1.0,1.79,
+pillar 3,hauteur totale,20.0,20.27,
+pillar 3,largeur en bas,3.0,3.10-3.16,étendue des lectures
+pillar 3,largeur en haut,3.0,3.13-3.17,étendue des lectures
+pillar 5,hauteur totale,20.0,20.27,
+pillar 5,largeur en bas,5.0,5.06-5.16,étendue des lectures
+pillar 5,largeur en haut,5.0,5.02-5.09,étendue des lectures
+pillar 8,hauteur totale,20.0,20.17,
+pillar 8,largeur en bas,8.0,8.04-8.17,étendue des lectures
+pillar 8,largeur en haut,8.0,8.01-8.12,étendue des lectures
+ledge (bloc en L) n°1,hauteur,8.0,8.22,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°2,hauteur,8.0,8.10,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°3,hauteur,8.0,8.09,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°4,hauteur,8.0,8.10,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°5,hauteur,8.0,8.11,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°6,hauteur,8.0,8.11,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°7,hauteur,8.0,8.10,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°8,hauteur,8.0,8.11,"quelques blocs, ordre non noté"
+ledge (bloc en L) n°9,hauteur,8.0,8.10,"quelques blocs, ordre non noté"

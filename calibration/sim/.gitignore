@@ -1,0 +1,7 @@
+__pycache__/
+*.mp4
+*.gif
+*.png
+all_*.json
+out_*.json
+runs.json
