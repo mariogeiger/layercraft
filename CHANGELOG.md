@@ -2,6 +2,26 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.13
+
+### Changed
+
+- A strip of the infill too thin for two dense lines takes one bead along its centre line, as
+  wide as the strip is thick, where lines across it were short and all ends. The strips are
+  what an opening by the solid line spacing takes from the laid areas together (top surface,
+  solid and sparse), so a strip runs on through them, each stretch of its bead in its own
+  area's role, sparse infill's dense. A bead runs from end to end of its strip, holds the
+  strip's plastic however thin, and changes width only where the strip's thickness changes
+  by more than the printer's resolution. Over the Benchy's layers, its dense beads overlap on
+  538 mm² instead of 1,271 and leave 951 mm² unfilled instead of 984; it prints in 27.2 min
+  instead of 31.2.
+
+### Added
+
+- `layercraft_geom::chordal_axis`: the centre lines of a region's strips with its thickness
+  along them (`Centreline`), from a constrained Delaunay triangulation, their ends run on to
+  the boundary; and `layercraft_geom::opening`, moved from the region crate.
+
 ## 0.4.12
 
 ### Changed

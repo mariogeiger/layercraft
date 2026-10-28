@@ -145,3 +145,55 @@ fn triangles_cover_a_region_with_holes_exactly() {
     assert!(close(total, 73.0), "{total}");
     assert!(triangulate(&Vec::new()).unwrap().1.is_empty());
 }
+
+fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
+    vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+}
+
+#[test]
+fn a_strip_has_one_centre_line_as_thick_as_it_is_wide() {
+    let lines = chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 0.5)]], 0.25, 1e-3).unwrap();
+    assert_eq!(lines.len(), 1);
+    let line = &lines[0];
+    assert!(!line.closed);
+    // Straight down the middle, as thick as the strip all along, its ends run on to the strip's.
+    for (p, t) in line.points.iter().zip(&line.thickness) {
+        assert!((p[1] - 0.25).abs() < 1e-6, "{p:?} off the centre line");
+        assert!((t - 0.5).abs() < 1e-6, "thickness {t} at {p:?}");
+    }
+    let xs: Vec<f64> = line.points.iter().map(|p| p[0]).collect();
+    let (lo, hi) = (xs.iter().copied().fold(f64::MAX, f64::min), xs.iter().copied().fold(f64::MIN, f64::max));
+    assert!(lo.abs() < 1e-6 && (hi - 10.0).abs() < 1e-6, "the line spans the strip: {lo}..{hi}");
+}
+
+#[test]
+fn a_wedge_has_its_centre_line_to_its_tip() {
+    // A thin isosceles wedge, 0.6 mm at its base, 6 mm long: the line runs to the tip, thinning
+    // with it.
+    let wedge = vec![vec![vec![[0.0, 0.0], [6.0, 0.3], [0.0, 0.6]]]];
+    let lines = chordal_axis(&wedge, 0.1, 1e-3).unwrap();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let line = &lines[0];
+    for (p, t) in line.points.iter().zip(&line.thickness) {
+        assert!((p[1] - 0.3).abs() < 0.02, "{p:?} off the centre line");
+        // The inscribed disc at x: the half angle's sine times the distance to the tip, twice.
+        let expected = 2.0 * (6.0 - p[0]) * (0.3f64).atan2(6.0).sin();
+        assert!(*t <= 0.6 + 1e-6 && (t - expected).abs() < 0.05, "thickness {t} at {p:?}, not {expected}");
+    }
+    let hi = line.points.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+    assert!(hi > 5.9, "the line stops at {hi}, short of the tip");
+}
+
+#[test]
+fn a_ring_has_a_closed_centre_line() {
+    let mut hole = rect(0.4, 0.4, 9.6, 9.6);
+    hole.reverse();
+    let lines = chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 10.0), hole]], 0.2, 1e-3).unwrap();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].closed);
+    for (p, t) in lines[0].points.iter().zip(&lines[0].thickness) {
+        let d = [p[0] - 0.2, 9.8 - p[0], p[1] - 0.2, 9.8 - p[1]].iter().fold(f64::MAX, |m, v| m.min(v.abs()));
+        assert!(d < 1e-6, "{p:?} off the ring's middle");
+        assert!(*t > 0.3 && *t < 0.6, "thickness {t} at {p:?}");
+    }
+}

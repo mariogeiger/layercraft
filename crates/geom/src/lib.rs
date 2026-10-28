@@ -7,13 +7,15 @@
 //! Results lie on a nanometre lattice (`GRID_MM`) and keep no contour thinner than a
 //! micrometre (`RESOLUTION_MM`).
 
+mod axis;
 mod bead;
 mod ops;
 
+pub use axis::{Centreline, chordal_axis};
 pub use bead::{bead_area, bead_spacing, disc_area};
 
 pub use ops::{
-    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, triangulate, union,
+    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, opening, triangulate, union,
     union_contours, winding_region,
 };
 

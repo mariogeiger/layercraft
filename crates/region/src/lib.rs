@@ -20,7 +20,7 @@
 //! below and above it, and each shape is split by the parameters at its centre (`layercraft_tune`).
 
 use layercraft_geom::{
-    GeomError, Region, Shape, bead_spacing, difference, intersection, offset, signed_area, union,
+    GeomError, Region, Shape, bead_spacing, difference, intersection, offset, opening, signed_area, union,
 };
 use layercraft_section::{Layer, Sections};
 use layercraft_tune::{Field, TuneError, centre};
@@ -171,15 +171,6 @@ fn walls_depth(w: Widths, n: usize, h: f64) -> f64 {
         0 => 0.0,
         n => w.outer / 2.0 + outer / 2.0 + (n - 1) as f64 * inner,
     }
-}
-
-/// The region without its parts narrower than `2r`: shrunk by `r`, then grown back.
-fn opening(region: &Region, r: f64) -> Result<Region, GeomError> {
-    if r <= 0.0 || region.is_empty() {
-        return Ok(region.clone());
-    }
-    let core = offset(region, -r)?;
-    intersection(&offset(&core, r)?, region)
 }
 
 /// What the beads `2r` wide along the boundary of `centre` cover.

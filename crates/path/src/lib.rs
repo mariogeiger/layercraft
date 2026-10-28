@@ -15,6 +15,7 @@
 //! past the layer below (`overhang`). Each island is traced by the parameters at its centre.
 
 mod dense;
+mod gap;
 mod hatch;
 mod link;
 mod order;

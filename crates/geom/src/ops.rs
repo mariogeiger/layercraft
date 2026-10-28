@@ -41,7 +41,7 @@ fn to_lattice(p: &Point) -> Lattice {
     IntPoint::new((p[0] * STEPS).round() as i64, (p[1] * STEPS).round() as i64)
 }
 
-fn from_lattice(q: &Lattice) -> Point {
+pub(crate) fn from_lattice(q: &Lattice) -> Point {
     [q.x as f64 / STEPS, q.y as f64 / STEPS]
 }
 
@@ -49,7 +49,7 @@ fn contours_to_lattice(contours: &[Vec<Point>]) -> Vec<Vec<Lattice>> {
     contours.iter().map(|c| c.iter().map(to_lattice).collect()).collect()
 }
 
-fn region_to_lattice(region: &Region) -> Vec<Vec<Vec<Lattice>>> {
+pub(crate) fn region_to_lattice(region: &Region) -> Vec<Vec<Vec<Lattice>>> {
     region.iter().map(|shape| contours_to_lattice(shape)).collect()
 }
 
@@ -159,6 +159,15 @@ pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, 
     let paths = contours_to_lattice(lines);
     let pieces = region_to_lattice(region).clip_paths(&paths, FillRule::NonZero, rule);
     Ok(pieces.iter().map(|p| p.iter().map(from_lattice).collect()).collect())
+}
+
+/// The region without its parts narrower than `2r`: shrunk by `r`, then grown back.
+pub fn opening(region: &Region, r: f64) -> Result<Region, GeomError> {
+    if r <= 0.0 || region.is_empty() {
+        return Ok(region.clone());
+    }
+    let core = offset(region, -r)?;
+    intersection(&offset(&core, r)?, region)
 }
 
 /// Triangles covering the region exactly, without overlap: their corners, on the lattice, and

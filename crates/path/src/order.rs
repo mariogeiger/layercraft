@@ -1,13 +1,14 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
 use crate::dense::best_hatch;
+use crate::gap::{gap_fill, strips};
 use crate::hatch::{bridge_angle, hatch};
 use crate::link::{Fill, link};
 use crate::overhang::{Below, overhang};
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{
-    Contour, GRID_MM, Point, bead_spacing, clip_lines, disc_area, edges, encloses, offset, polyline_length,
-    signed_area, union,
+    Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, disc_area, edges, encloses, intersection,
+    offset, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -18,6 +19,8 @@ pub struct Island {
     /// The outer boundary that decides which beads belong here.
     outline: Contour,
     walls: Vec<(usize, Path)>,
+    /// The beads along the strips too thin for infill lines.
+    gaps: Vec<Path>,
     infill: Vec<Path>,
     /// The infill areas of the part of the layer the island belongs to, for joining its lines.
     fills: Rc<Vec<Fill>>,
@@ -100,6 +103,33 @@ pub fn parts(
     Ok(groups.into_iter().zip(parts).collect())
 }
 
+/// A region's shapes, each with its bounding box, for asking which points it holds.
+struct Areas<'a> {
+    shapes: Vec<([f64; 4], &'a [Contour])>,
+}
+
+impl<'a> Areas<'a> {
+    fn new(region: &'a Region) -> Areas<'a> {
+        let bound = |shape: &[Contour]| {
+            shape.iter().flatten().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            })
+        };
+        Areas { shapes: region.iter().map(|shape| (bound(shape), shape.as_slice())).collect() }
+    }
+
+    /// Whether `p` lies in one of the shapes, by the even-odd rule over its contours.
+    fn hold(&self, p: Point) -> bool {
+        self.shapes.iter().any(|(b, shape)| {
+            b[0] <= p[0]
+                && p[0] <= b[2]
+                && b[1] <= p[1]
+                && p[1] <= b[3]
+                && encloses(shape.iter().flat_map(|c| edges(c)), p)
+        })
+    }
+}
+
 fn distance2(a: Point, b: Point) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
@@ -140,7 +170,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 .filter(|_| walled)
                 .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
                 .collect();
-            Some(Island { outline, walls, infill: Vec::new(), fills: Rc::default() })
+            Some(Island { outline, walls, gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() })
         })
         .collect();
     let home = |islands: &[Island], p: Point| -> Option<usize> {
@@ -208,12 +238,31 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         (Role::INTERNAL_BRIDGE, &layer.bridge_on_sparse, p.bridge_width, resting),
         (Role::SPARSE, &layer.sparse, w(p.sparse_width), sparse_spacing),
     ];
+    // A strip of the laid areas narrower than two dense lines takes one bead along it, whichever
+    // areas it runs through, sparse infill's too, and each stretch of it the role of its area;
+    // a bridge's strands hang across whatever they span.
+    let s = bead_spacing(solid, h);
+    let laid = union(&union(&layer.top_surface, &layer.solid)?, &layer.sparse)?;
+    let (thin, wide) = strips(&laid, s)?;
+    let (tops, solids) = (Areas::new(&layer.top_surface), Areas::new(&layer.solid));
+    let dense = if first { Role::BOTTOM_SURFACE } else { Role::SOLID };
+    let role_at = |q: Point| {
+        if tops.hold(q) {
+            Role::TOP_SURFACE
+        } else if solids.hold(q) {
+            dense
+        } else {
+            Role::SOLID
+        }
+    };
+    let gaps = gap_fill(&thin, role_at, s, h, p.resolution)?;
     let mut areas = Vec::new();
     for (role, region, width, spacing) in fills {
+        let region = if role.strand() { region.clone() } else { intersection(region, &wide)? };
         if region.is_empty() {
             continue;
         }
-        let reach = offset(region, p.infill_wall_overlap * width)?;
+        let reach = offset(&region, p.infill_wall_overlap * width)?;
         // Each bridge crosses its own gap the short way; every other fill follows the layer.
         let mut lines = Vec::new();
         // Over air, from edge to edge; over sparse infill, across its lines, which the layer's
@@ -248,6 +297,12 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 max_link: 3.0 * spacing,
                 monotone: role.kind == Kind::Solid && p.monotone.contains(&role.face),
             }),
+        }
+    }
+    for gap in gaps {
+        let Some(&start) = gap.points.first() else { continue };
+        if let Some(island) = home(&islands, start).and_then(|i| islands.get_mut(i)) {
+            island.gaps.push(gap);
         }
     }
     let fills = Rc::new(areas);
@@ -338,8 +393,8 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
 }
 
 /// The layer's beads in printing order: island by island, nearest first; within an island the
-/// walls, then each infill area's lines, in sweeps for a monotone area and nearest first
-/// otherwise, joined where they can be.
+/// walls, then the beads along its strips, against them, then each infill area's lines, in
+/// sweeps for a monotone area and nearest first otherwise, joined where they can be.
 pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
     let mut out = Vec::new();
     while !islands.is_empty() {
@@ -362,6 +417,7 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
             walls.push(path);
         }
         chain(walls, at, &mut out);
+        chain(island.gaps, at, &mut out);
         let mut infill = island.infill;
         for fill in island.fills.iter() {
             let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);

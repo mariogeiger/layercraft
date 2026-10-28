@@ -406,3 +406,40 @@ fn a_dense_strip_is_hatched_along_its_length() {
         assert!((angle - 30.0).abs() < 0.5, "a line at {angle}°");
     }
 }
+
+#[test]
+fn a_strip_too_thin_for_two_lines_takes_one_bead_along_it() {
+    // A square ring 10 mm across and 2 mm thick: within its walls a band about half a millimetre
+    // wide runs round it. Lines across it would be short, all ends; one bead along its centre
+    // line, as wide as the band is thick, fills it.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("front", [0.0; 3], [10.0, 2.0, 3.0]),
+            cuboid("back", [0.0, 8.0, 0.0], [10.0, 10.0, 3.0]),
+            cuboid("left", [0.0, 2.0, 0.0], [2.0, 8.0, 3.0]),
+            cuboid("right", [8.0, 2.0, 0.0], [10.0, 8.0, 3.0]),
+        ],
+    };
+    let (regions, paths) = paths_of(&mesh);
+    let i = 7;
+    let band = &regions.layers[i].sparse;
+    assert!(area(band) > 0.0);
+    let beads: Vec<&Path> = paths.layers[i].paths.iter().filter(|p| p.role.kind != Kind::Wall).collect();
+    assert!(beads.iter().all(|p| p.role == Role::SOLID), "{beads:?}");
+    for bead in &beads {
+        for q in &bead.points {
+            let d = (q[0] - 5.0).abs().max((q[1] - 5.0).abs());
+            assert!((d - 4.0).abs() < 0.02, "{q:?} off the band's centre line");
+        }
+    }
+    let plastic: f64 = beads
+        .iter()
+        .map(|p| {
+            let mut points = p.points.clone();
+            points.extend(p.points.first().filter(|_| p.closed));
+            polyline_length(&points) * bead_area(p.width, 0.2)
+        })
+        .sum();
+    let slab = area(band) * 0.2;
+    assert!((plastic / slab - 1.0).abs() < 0.03, "{plastic} mm³ of beads for a {slab} mm³ band");
+}
