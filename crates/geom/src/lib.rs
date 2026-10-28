@@ -8,10 +8,12 @@
 //! micrometre (`RESOLUTION_MM`).
 
 mod axis;
+mod bands;
 mod bead;
 mod ops;
 
 pub use axis::{Centreline, chordal_axis};
+pub use bands::{Bands, ON_EDGE_MM};
 pub use bead::{bead_area, bead_spacing, disc_area};
 
 pub use ops::{

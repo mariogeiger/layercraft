@@ -2,6 +2,28 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.15
+
+### Changed
+
+- Within an island, the walls of each depth, the beads along its strips, the lines of each
+  infill area not laid in sweeps and the infill left over follow the tour that retracts least
+  often, then travels least, where they went nearest first. Nearest first lays the tour out;
+  2-opt (a run of it reversed, each open path in it laid the other way) and Or-opt (a run of up
+  to three paths moved elsewhere, either way round) then improve it until neither can. A move
+  retracts unless it stays over what the layer above covers or joins neighbouring lines of an
+  area. On the Benchy, retractions fall from 1026 to 735, travel from 28.5 to 26.9 m, and the
+  print from 32 min 30 s to 31 min 48 s; it compiles in the same time.
+- Whether a move stays inside a region is found from the edges near it only, filed by
+  horizontal band, where every edge of the region was looked at, three times.
+
+### Fixed
+
+- A move that leaves a region through one of its corners no longer counts as staying inside:
+  it crosses no edge there, and only its middle was checked.
+- An open bead laid from its far end keeps each segment's overhang: the order reversed its
+  points and not their fractions.
+
 ## 0.4.14
 
 ### Changed

@@ -443,3 +443,53 @@ fn a_strip_too_thin_for_two_lines_takes_one_bead_along_it() {
     let slab = area(band) * 0.2;
     assert!((plastic / slab - 1.0).abs() < 0.03, "{plastic} mm³ of beads for a {slab} mm³ band");
 }
+
+fn dot(x: f64) -> Path {
+    Path::new(Role::SOLID, 0.4, false, vec![[x, 0.0]])
+}
+
+#[test]
+fn a_tour_moves_a_path_rather_than_zigzag() {
+    // Nearest first goes 1, −2, 4, −8: 22 mm; the least, one way or another, is 16.
+    let mut at = [0.0, 0.0];
+    let mut out = Vec::new();
+    tour::tour([1.0, -2.0, 4.0, -8.0].map(dot).to_vec(), &mut at, &mut out, &|_, _| true);
+    let travel = out
+        .iter()
+        .fold((0.0, 0.0), |(sum, x): (f64, f64), p| (sum + (p.points[0][0] - x).abs(), p.points[0][0]));
+    assert_eq!(travel, (16.0, at[0]));
+}
+
+#[test]
+fn a_tour_goes_farther_to_keep_its_moves_hidden() {
+    // The move between 1 and 2 retracts: 1, 3, 2 goes 4 mm without it, not 1, 2, 3 in 3 mm.
+    let leaves = |a: Point, b: Point| (a[0] - b[0]).abs() == 1.0 && a[0].min(b[0]) == 1.0;
+    let mut at = [0.0, 0.0];
+    let mut out = Vec::new();
+    tour::tour([1.0, 2.0, 3.0].map(dot).to_vec(), &mut at, &mut out, &|a, b| !leaves(a, b));
+    let xs: Vec<f64> = out.iter().map(|p| p.points[0][0]).collect();
+    assert_eq!(xs, [1.0, 3.0, 2.0]);
+}
+
+#[test]
+fn a_tour_lays_open_paths_either_way_and_loops_from_their_start() {
+    // Two strokes side by side: the second laid back toward the first's end.
+    let stroke = |y: f64| Path::new(Role::SOLID, 0.4, false, vec![[0.0, y], [10.0, y]]);
+    let mut at = [0.0, 0.0];
+    let mut out = Vec::new();
+    tour::tour(vec![stroke(1.0), stroke(0.0)], &mut at, &mut out, &|_, _| true);
+    assert_eq!(out[0].points, [[0.0, 0.0], [10.0, 0.0]]);
+    assert_eq!(out[1].points, [[10.0, 1.0], [0.0, 1.0]]);
+    let mut ring = Path::new(Role::OUTER_WALL, 0.4, true, vec![[5.0, 0.0], [6.0, 1.0], [5.0, 1.0]]);
+    ring.reverse();
+    assert_eq!(ring.points, [[5.0, 0.0], [6.0, 1.0], [5.0, 1.0]]);
+}
+
+#[test]
+fn a_reversed_bead_keeps_each_segment_overhang() {
+    let mut bead = Path::new(Role::OVERHANG_WALL, 0.4, false, vec![[0.0, 0.0], [1.0, 0.0], [3.0, 0.0]]);
+    bead.overhang = vec![0.0, 0.5];
+    bead.reverse();
+    assert_eq!(bead.points, [[3.0, 0.0], [1.0, 0.0], [0.0, 0.0]]);
+    assert_eq!(bead.overhang, [0.5, 0.0]);
+}

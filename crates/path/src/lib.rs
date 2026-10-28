@@ -7,10 +7,10 @@
 //! wide: side by side over air, where they hang; over sparse infill, where they rest, spaced to
 //! fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the move between
 //! neighbouring lines is marked as staying inside the part, so it needs no retraction, as is
-//! any move over what the layer above covers. Each
-//! island is printed whole — inner walls, outer
-//! wall, then its infill — and islands follow each other nearest first. The lines of a
-//! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
+//! any move over what the layer above covers. Each island is printed whole — inner walls, outer
+//! wall, then its infill — and islands follow each other nearest first. Within an island, the
+//! beads of each kind follow the tour that retracts least often, then travels least;
+//! the lines of a `monotone` role are laid in sweeps instead, each against the one before. The first layer's beads
 //! are all `first_layer_width` wide. Each wall segment carries the share of its bead that hangs
 //! past the layer below (`overhang`). Each island is traced by the parameters at its centre.
 
@@ -21,10 +21,11 @@ mod link;
 mod order;
 mod overhang;
 mod role;
+mod tour;
 
 pub use role::{Face, Kind, Role, Support};
 
-use layercraft_geom::{GeomError, Point};
+use layercraft_geom::{Bands, GeomError, Point};
 use layercraft_region::Regions;
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,15 @@ impl Path {
     /// Where the nozzle leaves the bead: back at its start when it is closed.
     pub fn end(&self) -> Option<Point> {
         if self.closed { self.points.first() } else { self.points.last() }.copied()
+    }
+
+    /// An open bead laid the other way, from its end, each segment's overhang with it; a loop
+    /// keeps its way round and its start.
+    pub fn reverse(&mut self) {
+        if !self.closed {
+            self.points.reverse();
+            self.overhang.reverse();
+        }
     }
 }
 
@@ -92,7 +102,7 @@ pub struct PathParams {
     pub bridge_width: f64,
     /// The faces whose dense lines are laid in sweeps across their area, each against the one
     /// before and all the same way, so the surface looks the same everywhere; the other lines
-    /// go nearest first.
+    /// follow the cheapest tour.
     #[serde(default)]
     pub monotone: Vec<Face>,
     /// The printer's resolution, in mm: each dense piece is hatched at the angle that fills it
@@ -147,7 +157,8 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         for (params, part) in order::parts(layer, field)? {
             islands.extend(order::islands(&part, &params)?);
         }
-        let paths = link::hide(order::sequence(islands, &mut at), &link::hidden(layer)?);
+        let hidden = Bands::new(&link::hidden(layer)?);
+        let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
         layers.push(PathLayer { index: layer.index, top: layer.top, height: layer.height, paths });
     }
     Ok(Paths { layers })

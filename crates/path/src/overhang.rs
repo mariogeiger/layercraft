@@ -8,7 +8,7 @@
 //! `w · STEP` long, so the fraction changes where the overhang does. Distances matter only within
 //! a bead, so each point looks only at the edges filed in the grid cells, a bead wide, around it.
 
-use layercraft_geom::{Point, RESOLUTION_MM, Region, edges, encloses, segment_distance};
+use layercraft_geom::{Bands, Point, RESOLUTION_MM, Region, edges, segment_distance};
 use std::collections::HashMap;
 
 /// The most a segment's fraction may change along it before it is halved.
@@ -21,8 +21,8 @@ const MAX_SAMPLES: usize = 1_000_000;
 pub struct Below {
     edges: Vec<(Point, Point)>,
     cells: HashMap<(i64, i64), Vec<usize>>,
-    /// The edges by the rows of cells their height spans, for rays along x.
-    rows: HashMap<i64, Vec<usize>>,
+    /// The edges by band, for whether a point lies inside.
+    bands: Bands,
     /// The cell's side, a bead's width.
     cell: f64,
 }
@@ -34,12 +34,7 @@ impl Below {
         let index = |v: f64| (v / cell).floor() as i64;
         let edges: Vec<(Point, Point)> = below.iter().flatten().flat_map(|c| edges(c)).collect();
         let mut cells: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-        let mut rows: HashMap<i64, Vec<usize>> = HashMap::new();
         for (k, &(a, b)) in edges.iter().enumerate() {
-            let (y0, y1) = (index(a[1].min(b[1])), index(a[1].max(b[1])));
-            for y in y0..=y1.min(y0.saturating_add(MAX_SAMPLES as i64)) {
-                rows.entry(y).or_default().push(k);
-            }
             // Samples half a cell apart, each filing the edge in its cell and the eight around
             // it: every cell the edge passes through, and its neighbours.
             let samples =
@@ -57,17 +52,11 @@ impl Below {
                 }
             }
         }
-        Below { edges, cells, rows, cell }
+        Below { edges, cells, bands: Bands::new(below), cell }
     }
 
     fn index(&self, v: f64) -> i64 {
         (v / self.cell).floor() as i64
-    }
-
-    /// Whether `p` lies inside the section: the edges a ray from it to +x crosses, odd.
-    fn holds(&self, p: Point) -> bool {
-        let row = self.rows.get(&self.index(p[1])).into_iter().flatten();
-        encloses(row.filter_map(|&k| self.edges.get(k).copied()), p)
     }
 
     /// The distance from `p` to the section's edge, when under one cell; past it, one cell.
@@ -80,7 +69,7 @@ impl Below {
     /// The fraction of a bead `width` wide centred at `p` that hangs over air.
     pub fn fraction(&self, p: Point, width: f64) -> f64 {
         let d = self.near_distance(p).min(width);
-        let signed = if self.holds(p) { -d } else { d };
+        let signed = if self.bands.encloses(p) { -d } else { d };
         // How far the bead reaches past the edge, a resolution's rounding from either end snapped.
         let reach = signed + width / 2.0;
         if reach <= RESOLUTION_MM {

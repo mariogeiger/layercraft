@@ -197,3 +197,22 @@ fn a_ring_has_a_closed_centre_line() {
         assert!(*t > 0.3 && *t < 0.6, "thickness {t} at {p:?}");
     }
 }
+
+#[test]
+fn a_segment_lies_in_a_region_along_its_edge_but_not_across_its_hole() {
+    let ring = vec![vec![square(0.0, 0.0, 10.0), square(4.0, 4.0, 2.0).into_iter().rev().collect()]];
+    let bands = Bands::new(&ring);
+    assert!(bands.encloses([1.0, 1.0]) && !bands.encloses([5.0, 5.0]) && !bands.encloses([11.0, 1.0]));
+    assert!(bands.covers([10.0, 3.0]) && bands.covers([4.0, 5.0]) && !bands.covers([5.0, 5.0]));
+    assert!(bands.holds([1.0, 1.0], [9.0, 2.0]));
+    assert!(bands.holds([0.0, 0.0], [10.0, 0.0]), "along the edge");
+    assert!(bands.holds([4.0, 1.0], [4.0, 9.0]), "along the hole's side");
+    assert!(!bands.holds([1.0, 5.0], [9.0, 5.0]), "across the hole");
+    assert!(!bands.holds([9.0, 1.0], [11.0, 1.0]), "out of the side");
+    // Through a corner and out: its middle lies inside, the piece past the corner does not.
+    assert!(!bands.holds([7.0, 7.0], [11.0, 11.0]));
+    // Along the hole's diagonal, through two of its corners: the piece between runs inside it.
+    assert!(!bands.holds([2.0, 8.0], [8.0, 2.0]));
+    assert!(bands.holds([2.0, 8.0], [4.0, 6.0]) && bands.holds([6.0, 4.0], [8.0, 2.0]));
+    assert!(bands.holds([3.0, 7.0], [5.0, 7.0]), "touching the hole's corner");
+}

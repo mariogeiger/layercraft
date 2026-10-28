@@ -3,12 +3,13 @@
 use crate::dense::best_hatch;
 use crate::gap::{gap_fill, strips};
 use crate::hatch::{bridge_angle, hatch};
-use crate::link::{Fill, link};
+use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
+use crate::tour::tour;
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{
-    Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, disc_area, edges, encloses, intersection,
-    offset, polyline_length, signed_area, union,
+    Bands, Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, disc_area, edges, encloses,
+    intersection, offset, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -312,42 +313,17 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     Ok(islands)
 }
 
-/// Orders open paths nearest first from `at`, reversing any that is nearer by its far end.
-fn chain(mut paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>) {
-    while !paths.is_empty() {
-        let mut best = (f64::MAX, 0, false);
-        for (i, path) in paths.iter().enumerate() {
-            let (Some(&a), Some(&b)) = (path.points.first(), path.points.last()) else { continue };
-            let (da, db) = (distance2(*at, a), if path.closed { f64::MAX } else { distance2(*at, b) });
-            if da < best.0 {
-                best = (da, i, false);
-            }
-            if db < best.0 {
-                best = (db, i, true);
-            }
-        }
-        let mut path = paths.swap_remove(best.1);
-        if best.2 {
-            path.points.reverse();
-        }
-        if let Some(end) = path.end() {
-            *at = end;
-        }
-        out.push(path);
-    }
-}
-
 /// Lays parallel lines in sweeps across their area, each line against the one before and all
 /// sweeps the same way: from the side nearer the nozzle, each sweep takes the next line across
 /// that overlaps the last one along their direction and lies within `reach`, and a new sweep
 /// starts at the first line left. Each line starts where the last one ended.
 fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) {
     let Some((a, b)) = lines.first().and_then(|l| Some((*l.points.first()?, *l.points.last()?))) else {
-        return chain(lines, at, out);
+        return tour(lines, at, out, &|_, _| true);
     };
     let length = (b[0] - a[0]).hypot(b[1] - a[1]);
     if length <= 0.0 {
-        return chain(lines, at, out);
+        return tour(lines, at, out, &|_, _| true);
     }
     let along = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
     let mut across = [-along[1], along[0]];
@@ -376,7 +352,7 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
             if let (Some(&s), Some(&e)) = (line.points.first(), line.points.last())
                 && distance2(*at, e) < distance2(*at, s)
             {
-                line.points.reverse();
+                line.reverse();
             }
             let (offset, (lo, hi)) = (offset_of(across, &line), span(&line));
             if let Some(end) = line.end() {
@@ -394,8 +370,10 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
 
 /// The layer's beads in printing order: island by island, nearest first; within an island the
 /// walls, then the beads along its strips, against them, then each infill area's lines, in
-/// sweeps for a monotone area and nearest first otherwise, joined where they can be.
-pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
+/// sweeps for a monotone area and in the cheapest tour otherwise, joined where they can be.
+/// Each tour keeps its moves over `hidden` where it can.
+pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec<Path> {
+    let hides = |a: Point, b: Point| hides(hidden, a, b);
     let mut out = Vec::new();
     while !islands.is_empty() {
         let near = islands
@@ -411,26 +389,27 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point) -> Vec<Path> {
         let mut depth = None;
         for (k, path) in island.walls {
             if depth != Some(k) && !walls.is_empty() {
-                chain(std::mem::take(&mut walls), at, &mut out);
+                tour(std::mem::take(&mut walls), at, &mut out, &hides);
             }
             depth = Some(k);
             walls.push(path);
         }
-        chain(walls, at, &mut out);
-        chain(island.gaps, at, &mut out);
+        tour(walls, at, &mut out, &hides);
+        tour(island.gaps, at, &mut out, &hides);
         let mut infill = island.infill;
         for fill in island.fills.iter() {
             let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);
             infill = rest;
             let mut ordered = Vec::new();
+            let reach = Bands::new(&fill.reach);
             if fill.monotone {
                 sweep(mine, fill.max_link, at, &mut ordered);
             } else {
-                chain(mine, at, &mut ordered);
+                tour(mine, at, &mut ordered, &|a, b| hides(a, b) || joins(fill, &reach, a, b));
             }
-            out.extend(link(ordered, fill));
+            out.extend(link(ordered, fill, &reach));
         }
-        chain(infill, at, &mut out);
+        tour(infill, at, &mut out, &hides);
     }
     out
 }
