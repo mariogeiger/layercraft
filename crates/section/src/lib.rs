@@ -47,29 +47,14 @@ pub struct Sections {
 }
 
 /// Why the section stage failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SectionError {
+    #[error("bad layer heights: {0}")]
     BadLayering(String),
-    Geometry(GeomError),
+    #[error("section geometry: {0}")]
+    Geometry(#[from] GeomError),
+    #[error("the mesh has no vertex")]
     EmptyMesh,
-}
-
-impl std::fmt::Display for SectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SectionError::BadLayering(e) => write!(f, "bad layer heights: {e}"),
-            SectionError::Geometry(e) => write!(f, "section geometry: {e}"),
-            SectionError::EmptyMesh => write!(f, "the mesh has no vertex"),
-        }
-    }
-}
-
-impl std::error::Error for SectionError {}
-
-impl From<GeomError> for SectionError {
-    fn from(e: GeomError) -> Self {
-        SectionError::Geometry(e)
-    }
 }
 
 /// The layer slabs `(top, height)` from z = 0 up to `height`.

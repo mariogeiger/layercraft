@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 layercraft-motion = { path = "../motion" }
 layercraft-path = { path = "../path" }
+thiserror.workspace = true
 
 
 [lints]

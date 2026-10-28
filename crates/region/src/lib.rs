@@ -116,33 +116,14 @@ pub struct Regions {
 }
 
 /// Why the region stage failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RegionError {
+    #[error("bad region parameters: {0}")]
     BadParams(String),
-    Geometry(GeomError),
-}
-
-impl std::fmt::Display for RegionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RegionError::BadParams(e) => write!(f, "bad region parameters: {e}"),
-            RegionError::Geometry(e) => write!(f, "region geometry: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for RegionError {}
-
-impl From<TuneError> for RegionError {
-    fn from(e: TuneError) -> Self {
-        RegionError::BadParams(e.to_string())
-    }
-}
-
-impl From<GeomError> for RegionError {
-    fn from(e: GeomError) -> Self {
-        RegionError::Geometry(e)
-    }
+    #[error("bad region parameters: {0}")]
+    Tune(#[from] TuneError),
+    #[error("region geometry: {0}")]
+    Geometry(#[from] GeomError),
 }
 
 fn check(params: &RegionParams) -> Result<(), RegionError> {

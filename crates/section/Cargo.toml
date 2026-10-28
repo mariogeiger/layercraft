@@ -9,6 +9,7 @@ repository.workspace = true
 layercraft-geom = { path = "../geom" }
 layercraft-mesh = { path = "../mesh" }
 serde.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

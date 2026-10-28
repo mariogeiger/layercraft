@@ -14,19 +14,12 @@ use layercraft_motion::{Arc, Bead, Layer, Move, Program};
 use layercraft_path::Role;
 
 /// Why G-code could not be read.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("G-code line {line}: {reason}")]
 pub struct ReadError {
     pub line: usize,
     pub reason: String,
 }
-
-impl std::fmt::Display for ReadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "G-code line {}: {}", self.line, self.reason)
-    }
-}
-
-impl std::error::Error for ReadError {}
 
 /// Machine commands that belong to the frame: progress, notices, auxiliary fans, chamber,
 /// detectors, power-loss recovery, and the printer's conditional flags.

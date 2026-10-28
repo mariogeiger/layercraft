@@ -14,6 +14,7 @@ layercraft-path = { path = "../path" }
 layercraft-region = { path = "../region" }
 layercraft-section = { path = "../section" }
 serde_json.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

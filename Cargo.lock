@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "clap",
  "layercraft-gcode",
@@ -341,41 +341,45 @@ dependencies = [
 
 [[package]]
 name = "layercraft-gcode"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-motion",
  "layercraft-path",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-geom"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "i_overlay",
  "i_triangle",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-machine"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-mesh"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "quick-xml",
  "serde",
+ "thiserror",
  "zip",
 ]
 
 [[package]]
 name = "layercraft-motion"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-geom",
  "layercraft-machine",
@@ -383,20 +387,22 @@ dependencies = [
  "layercraft-tune",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-package"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "md-5",
  "png",
+ "thiserror",
  "zip",
 ]
 
 [[package]]
 name = "layercraft-path"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -405,11 +411,12 @@ dependencies = [
  "layercraft-tune",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-region"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -417,28 +424,31 @@ dependencies = [
  "layercraft-tune",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-section"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
  "serde",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-tune"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "layercraft-verify"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-motion",
  "layercraft-path",
@@ -447,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "layercraft-view"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "layercraft-geom",
  "layercraft-mesh",
@@ -457,6 +467,7 @@ dependencies = [
  "layercraft-region",
  "layercraft-section",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -653,6 +664,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "thiserror"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "2.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

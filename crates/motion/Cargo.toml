@@ -11,6 +11,7 @@ layercraft-machine = { path = "../machine" }
 layercraft-path = { path = "../path" }
 layercraft-tune = { path = "../tune" }
 serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

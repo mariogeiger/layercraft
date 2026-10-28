@@ -196,27 +196,14 @@ pub struct MotionParams {
 }
 
 /// Why the motion stage failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum MotionError {
+    #[error("bad motion parameters: {0}")]
     BadParams(String),
+    #[error("bad motion parameters: {0}")]
+    Tune(#[from] TuneError),
+    #[error("the machine's {0} G-code: {1}")]
     Template(String, TemplateError),
-}
-
-impl std::fmt::Display for MotionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MotionError::BadParams(e) => write!(f, "bad motion parameters: {e}"),
-            MotionError::Template(which, e) => write!(f, "the machine's {which} G-code: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for MotionError {}
-
-impl From<TuneError> for MotionError {
-    fn from(e: TuneError) -> Self {
-        MotionError::BadParams(e.to_string())
-    }
 }
 
 #[cfg(test)]

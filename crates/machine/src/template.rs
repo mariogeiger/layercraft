@@ -14,16 +14,9 @@ use std::collections::BTreeMap;
 pub type Scope = BTreeMap<String, Value>;
 
 /// Why a template could not be expanded.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("template: {0}")]
 pub struct TemplateError(pub String);
-
-impl std::fmt::Display for TemplateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "template: {}", self.0)
-    }
-}
-
-impl std::error::Error for TemplateError {}
 
 fn err<T>(msg: impl Into<String>) -> Result<T, TemplateError> {
     Err(TemplateError(msg.into()))

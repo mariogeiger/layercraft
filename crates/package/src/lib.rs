@@ -62,16 +62,9 @@ pub struct Plate {
 }
 
 /// Why the package could not be written.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("cannot write the package: {0}")]
 pub struct PackageError(pub String);
-
-impl std::fmt::Display for PackageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "cannot write the package: {}", self.0)
-    }
-}
-
-impl std::error::Error for PackageError {}
 
 fn fail(e: impl std::fmt::Display) -> PackageError {
     PackageError(e.to_string())

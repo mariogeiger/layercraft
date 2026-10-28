@@ -54,16 +54,9 @@ pub struct Tuning {
 }
 
 /// Why parameters could not be resolved.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("tuning: {0}")]
 pub struct TuneError(pub String);
-
-impl std::fmt::Display for TuneError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tuning: {}", self.0)
-    }
-}
-
-impl std::error::Error for TuneError {}
 
 impl Tuning {
     /// Checks that every override sets only stages named in `stages`.

@@ -42,26 +42,17 @@ pub struct Machine {
 }
 
 /// Why a machine description cannot be used.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum MachineError {
+    #[error("the machine description has no `{0}`")]
     Missing(String),
+    #[error("setting `{0}` is not a number: {1}")]
     NotANumber(String, String),
+    #[error("cannot import the machine: {0}")]
     Import(String),
+    #[error("not supported yet: {0}")]
     Unsupported(String),
 }
-
-impl std::fmt::Display for MachineError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MachineError::Missing(k) => write!(f, "the machine description has no `{k}`"),
-            MachineError::NotANumber(k, v) => write!(f, "setting `{k}` is not a number: {v}"),
-            MachineError::Import(e) => write!(f, "cannot import the machine: {e}"),
-            MachineError::Unsupported(e) => write!(f, "not supported yet: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for MachineError {}
 
 impl Machine {
     fn table(&self, kind: Kind) -> &BTreeMap<String, Value> {

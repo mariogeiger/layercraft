@@ -9,6 +9,7 @@ repository.workspace = true
 i_overlay.workspace = true
 i_triangle.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

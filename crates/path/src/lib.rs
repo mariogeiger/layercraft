@@ -101,33 +101,14 @@ pub struct PathParams {
 }
 
 /// Why the path stage failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PathError {
+    #[error("bad path parameters: {0}")]
     BadParams(String),
-    Geometry(GeomError),
-}
-
-impl std::fmt::Display for PathError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PathError::BadParams(e) => write!(f, "bad path parameters: {e}"),
-            PathError::Geometry(e) => write!(f, "path geometry: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for PathError {}
-
-impl From<TuneError> for PathError {
-    fn from(e: TuneError) -> Self {
-        PathError::BadParams(e.to_string())
-    }
-}
-
-impl From<GeomError> for PathError {
-    fn from(e: GeomError) -> Self {
-        PathError::Geometry(e)
-    }
+    #[error("bad path parameters: {0}")]
+    Tune(#[from] TuneError),
+    #[error("path geometry: {0}")]
+    Geometry(#[from] GeomError),
 }
 
 pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {

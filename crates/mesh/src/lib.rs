@@ -28,33 +28,18 @@ pub struct Mesh {
     pub bodies: Vec<Body>,
 }
 
-/// Why a mesh could not be read or written.
-#[derive(Debug)]
+/// Why a mesh could not be read.
+#[derive(Debug, thiserror::Error)]
 pub enum MeshError {
-    Io(std::io::Error),
+    #[error("cannot read the mesh file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("not a valid 3MF archive: {0}")]
     Zip(String),
+    #[error("the 3MF model is not valid XML: {0}")]
     Xml(String),
     /// The file is readable but its content breaks the 3MF rules.
+    #[error("invalid 3MF model: {0}")]
     Invalid(String),
-}
-
-impl std::fmt::Display for MeshError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MeshError::Io(e) => write!(f, "cannot read the mesh file: {e}"),
-            MeshError::Zip(e) => write!(f, "not a valid 3MF archive: {e}"),
-            MeshError::Xml(e) => write!(f, "the 3MF model is not valid XML: {e}"),
-            MeshError::Invalid(e) => write!(f, "invalid 3MF model: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for MeshError {}
-
-impl From<std::io::Error> for MeshError {
-    fn from(e: std::io::Error) -> Self {
-        MeshError::Io(e)
-    }
 }
 
 impl Body {

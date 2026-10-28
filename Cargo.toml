@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*"]
 
 [workspace.package]
-version = "0.4.11"
+version = "0.4.12"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mariogeiger/layercraft"
@@ -26,6 +26,7 @@ i_overlay = "9.1"
 i_triangle = "0.50"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
 zip = { version = "9.1", default-features = false, features = ["deflate"] }
 quick-xml = "0.42"
 md-5 = "0.11"

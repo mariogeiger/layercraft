@@ -55,33 +55,18 @@ pub struct Complex<const V: usize, const E: usize, const F: usize> {
 pub const MAX_POINTS: usize = i32::MAX as usize;
 
 /// Why a complex could not be built.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ViewError {
     /// More than `MAX_POINTS` points.
+    #[error("the view holds more than {MAX_POINTS} points")]
     TooLarge,
     /// The stage refers to something it does not hold.
+    #[error("invalid stage: {0}")]
     Invalid(String),
+    #[error("view geometry: {0}")]
     Geometry(layercraft_geom::GeomError),
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for ViewError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ViewError::TooLarge => write!(f, "the view holds more than {MAX_POINTS} points"),
-            ViewError::Invalid(e) => write!(f, "invalid stage: {e}"),
-            ViewError::Geometry(e) => write!(f, "view geometry: {e}"),
-            ViewError::Io(e) => write!(f, "cannot write the view: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ViewError {}
-
-impl From<std::io::Error> for ViewError {
-    fn from(e: std::io::Error) -> Self {
-        ViewError::Io(e)
-    }
+    #[error("cannot write the view: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl<const V: usize, const E: usize, const F: usize> Complex<V, E, F> {

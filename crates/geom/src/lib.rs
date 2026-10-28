@@ -32,27 +32,18 @@ pub type Polyline = Vec<Point>;
 pub const LIMIT_MM: f64 = 100_000.0;
 
 /// Why a geometric operation refused its input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum GeomError {
     /// A coordinate or distance was NaN or infinite.
+    #[error("a coordinate is not finite")]
     NonFinite,
     /// A coordinate or distance was beyond `LIMIT_MM`.
+    #[error("coordinate {0} mm is beyond {LIMIT_MM} mm")]
     OutOfRange(f64),
     /// The overlay engine refused the input on its lattice.
+    #[error("the overlay engine refused the input: {0}")]
     Engine(String),
 }
-
-impl std::fmt::Display for GeomError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GeomError::NonFinite => write!(f, "a coordinate is not finite"),
-            GeomError::OutOfRange(v) => write!(f, "coordinate {v} mm is beyond {LIMIT_MM} mm"),
-            GeomError::Engine(e) => write!(f, "the overlay engine refused the input: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for GeomError {}
 
 /// Checks that a value is finite and within `LIMIT_MM`.
 pub fn check_value(v: f64) -> Result<f64, GeomError> {
