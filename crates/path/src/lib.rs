@@ -45,6 +45,11 @@ pub struct Path {
 }
 
 impl Path {
+    /// A bead along `points`, reached by an ordinary move and hanging nowhere.
+    pub fn new(role: Role, width: f64, closed: bool, points: Vec<Point>) -> Path {
+        Path { role, width, closed, points, travel_inside: false, overhang: Vec::new() }
+    }
+
     /// Where the nozzle leaves the bead: back at its start when it is closed.
     pub fn end(&self) -> Option<Point> {
         if self.closed { self.points.first() } else { self.points.last() }.copied()

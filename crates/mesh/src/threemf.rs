@@ -7,7 +7,7 @@
 use crate::{Body, Mesh, MeshError, Vertex};
 use quick_xml::events::{BytesStart, Event};
 use std::collections::HashMap;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek};
 
 /// The largest model part read, in bytes.
 const MAX_PART_BYTES: u64 = 1 << 30;
@@ -262,44 +262,4 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Result<Mesh, MeshError> {
         mesh.bodies.push(body);
     }
     Ok(mesh)
-}
-
-/// Writes a mesh as a minimal 3MF package: one object and one build item per body.
-pub fn write_3mf<W: Write + Seek>(mesh: &Mesh, writer: W) -> Result<(), MeshError> {
-    let zip_err = |e: zip::result::ZipError| MeshError::Zip(e.to_string());
-    let mut zip = zip::ZipWriter::new(writer);
-    let options = zip::write::SimpleFileOptions::default();
-    zip.start_file("[Content_Types].xml", options).map_err(zip_err)?;
-    zip.write_all(br#"<?xml version="1.0" encoding="UTF-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#)?;
-    zip.start_file("_rels/.rels", options).map_err(zip_err)?;
-    write!(
-        zip,
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="{MODEL_REL}"/></Relationships>"#
-    )?;
-    zip.start_file("3D/3dmodel.model", options).map_err(zip_err)?;
-    let mut xml = String::from(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\"><resources>",
-    );
-    for (i, body) in mesh.bodies.iter().enumerate() {
-        let name = quick_xml::escape::escape(body.name.as_str());
-        xml.push_str(&format!("<object id=\"{}\" type=\"model\" name=\"{name}\"><mesh><vertices>", i + 1));
-        for v in &body.vertices {
-            xml.push_str(&format!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]));
-        }
-        xml.push_str("</vertices><triangles>");
-        for t in &body.triangles {
-            xml.push_str(&format!("<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>", t[0], t[1], t[2]));
-        }
-        xml.push_str("</triangles></mesh></object>");
-    }
-    xml.push_str("</resources><build>");
-    for i in 0..mesh.bodies.len() {
-        xml.push_str(&format!("<item objectid=\"{}\"/>", i + 1));
-    }
-    xml.push_str("</build></model>");
-    zip.write_all(xml.as_bytes())?;
-    zip.finish().map_err(zip_err)?;
-    Ok(())
 }

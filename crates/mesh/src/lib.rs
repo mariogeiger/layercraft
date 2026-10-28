@@ -1,4 +1,4 @@
-//! Triangle meshes in millimetres, read from and written to 3MF (the input of the compiler).
+//! Triangle meshes in millimetres, read from 3MF (the input of the compiler).
 //!
 //! A `Mesh` is a list of bodies placed in the printer's frame; each body is an indexed triangle
 //! set whose triangles face outward (counterclockwise seen from outside). 3MF files are hostile
@@ -7,7 +7,7 @@
 pub mod solids;
 mod threemf;
 
-pub use threemf::{read_3mf, write_3mf};
+pub use threemf::read_3mf;
 
 use serde::{Deserialize, Serialize};
 

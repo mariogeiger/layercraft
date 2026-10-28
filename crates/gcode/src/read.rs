@@ -47,7 +47,8 @@ struct Raw {
     bead: Option<Bead>,
 }
 
-fn word(code: &str, letter: char) -> Option<f64> {
+/// The number a G-code command gives after `letter`.
+pub(crate) fn word(code: &str, letter: char) -> Option<f64> {
     code.split_whitespace().skip(1).find_map(|w| w.strip_prefix(letter)?.parse().ok())
 }
 

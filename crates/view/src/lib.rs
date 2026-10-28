@@ -11,7 +11,7 @@ mod stages;
 mod tests;
 
 pub use ply::{Complex, Kind, MAX_POINTS, Property, Table, ViewError, float, int};
-pub use stages::{ROLES, mesh, paths, program, regions, role_name, sections};
+pub use stages::{mesh, paths, program, regions, role_name, sections};
 
 use layercraft_motion::{Bead, Program};
 use layercraft_package::Image;
@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value {
     let mut commands = Vec::new();
     for layer in paths.layers.iter().filter(|l| layers.contains(&l.index)) {
-        for role in ROLES {
+        for role in Role::NAMED {
             let beads: Vec<_> =
                 layer.paths.iter().filter(|p| p.role == role && p.points.len() >= 2).collect();
             if beads.is_empty() {

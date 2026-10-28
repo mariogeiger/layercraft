@@ -24,9 +24,6 @@ use layercraft_path::{Paths, Role};
 use layercraft_region::Regions;
 use layercraft_section::Sections;
 
-/// The roles a legend names, in the order of their codes.
-pub const ROLES: [Role; 10] = Role::NAMED;
-
 /// A role's name in a legend.
 pub fn role_name(role: Role) -> String {
     role.name().to_lowercase()
@@ -41,7 +38,7 @@ fn role_code(role: Role) -> f64 {
 
 fn role_comment() -> String {
     let codes: Vec<String> =
-        ROLES.iter().enumerate().map(|(i, r)| format!("{i} {}", role_name(*r))).collect();
+        Role::NAMED.iter().enumerate().map(|(i, r)| format!("{i} {}", role_name(*r))).collect();
     format!("role: {}", codes.join(", "))
 }
 
@@ -141,14 +138,9 @@ pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
                 polyline(&mut c, contour, true, z, [index, role])?;
             }
         }
-        let areas = [
-            (&layer.top_surface, Role::TOP_SURFACE),
-            (&layer.solid, if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID }),
-            (&layer.bridge, Role::BRIDGE),
-            (&layer.bridge_on_sparse, Role::INTERNAL_BRIDGE),
-            (&layer.sparse, Role::SPARSE),
-        ];
-        for (area, role) in areas {
+        let solid = if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID };
+        let roles = [Role::TOP_SURFACE, solid, Role::BRIDGE, Role::INTERNAL_BRIDGE, Role::SPARSE];
+        for (area, role) in layer.infill().into_iter().zip(roles) {
             fill(&mut c, area, z, [index, role_code(role)])?;
         }
     }

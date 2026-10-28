@@ -1,7 +1,7 @@
 //! 3MF round trips and hostile packages.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use super::solids::{cuboid, prism, regular_polygon};
+use super::solids::{cuboid, prism};
 use super::*;
 use std::io::{Cursor, Write};
 
@@ -15,6 +15,38 @@ fn package(model: &str) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
+/// The 3MF model of a mesh: one object and one build item per body.
+fn model_of(mesh: &Mesh) -> String {
+    let mut xml = String::from(r#"<model unit="millimeter"><resources>"#);
+    for (i, body) in mesh.bodies.iter().enumerate() {
+        let name = quick_xml::escape::escape(body.name.as_str());
+        xml += &format!(r#"<object id="{}" name="{name}"><mesh><vertices>"#, i + 1);
+        for v in &body.vertices {
+            xml += &format!(r#"<vertex x="{}" y="{}" z="{}"/>"#, v[0], v[1], v[2]);
+        }
+        xml += "</vertices><triangles>";
+        for t in &body.triangles {
+            xml += &format!(r#"<triangle v1="{}" v2="{}" v3="{}"/>"#, t[0], t[1], t[2]);
+        }
+        xml += "</triangles></mesh></object>";
+    }
+    xml += "</resources><build>";
+    for i in 0..mesh.bodies.len() {
+        xml += &format!(r#"<item objectid="{}"/>"#, i + 1);
+    }
+    xml + "</build></model>"
+}
+
+/// A regular polygon of `sides` sides inscribed in the circle of `radius` around `centre`.
+fn regular_polygon(centre: [f64; 2], radius: f64, sides: usize) -> Vec<[f64; 2]> {
+    (0..sides)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / sides as f64;
+            [centre[0] + radius * a.cos(), centre[1] + radius * a.sin()]
+        })
+        .collect()
+}
+
 #[test]
 fn analytic_volumes() {
     assert!((cuboid("c", [0.0; 3], [2.0, 3.0, 4.0]).volume() - 24.0).abs() < 1e-12);
@@ -26,9 +58,7 @@ fn analytic_volumes() {
 #[test]
 fn round_trip_keeps_geometry() {
     let mesh = Mesh { bodies: vec![cuboid("a <&> b", [0.0; 3], [1.0, 2.0, 3.0])] };
-    let mut bytes = Cursor::new(Vec::new());
-    write_3mf(&mesh, &mut bytes).unwrap();
-    let back = read_3mf(Cursor::new(bytes.into_inner())).unwrap();
+    let back = read_3mf(Cursor::new(package(&model_of(&mesh)))).unwrap();
     assert_eq!(back, mesh);
 }
 

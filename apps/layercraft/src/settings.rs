@@ -32,25 +32,29 @@ fn fraction(m: &Machine, kind: Kind, key: &str) -> Result<f64, MachineError> {
     Ok(m.number(kind, key)? / 100.0)
 }
 
+/// A setting that may be a percentage of `whole`; a plain number stands for itself.
+fn share_of(m: &Machine, kind: Kind, key: &str, whole: f64) -> Result<f64, MachineError> {
+    let v = m.number(kind, key)?;
+    Ok(if m.text(kind, key)?.trim().ends_with('%') { v / 100.0 * whole } else { v })
+}
+
+/// A filament's own value of a setting, or the printer's where the filament has none (`nil`).
+fn filament_or(m: &Machine, filament_key: &str, machine_key: &str) -> Result<f64, MachineError> {
+    match m.get(Kind::Filament, filament_key).ok().and_then(|v| v.number()) {
+        Some(v) => Ok(v),
+        None => m.number(Kind::Machine, machine_key),
+    }
+}
+
 fn width(m: &Machine, key: &str, nozzle: f64) -> Result<f64, MachineError> {
-    let raw = m.get(Kind::Process, key)?.render();
-    let w = if let Some(percent) = raw.trim().strip_suffix('%') {
-        percent.trim().parse::<f64>().unwrap_or(0.0) / 100.0 * nozzle
-    } else {
-        m.number(Kind::Process, key)?
-    };
+    let w = share_of(m, Kind::Process, key, nozzle)?;
     if w > 0.0 { Ok(w) } else { m.number(Kind::Process, "line_width") }
 }
 
 fn accel(m: &Machine, key: &str) -> Result<f64, MachineError> {
     let default = m.number(Kind::Process, "default_acceleration")?;
     // A role without an acceleration of its own moves at the default one.
-    let Ok(raw) = m.get(Kind::Process, key).map(|v| v.render()) else { return Ok(default) };
-    let a = if let Some(percent) = raw.trim().strip_suffix('%') {
-        percent.trim().parse::<f64>().unwrap_or(100.0) / 100.0 * default
-    } else {
-        m.number(Kind::Process, key)?
-    };
+    let a = share_of(m, Kind::Process, key, default).unwrap_or(default);
     Ok(if a > 0.0 { a } else { default })
 }
 
@@ -68,10 +72,7 @@ const SPIRAL_LIFT_RADIUS: f64 = 1.2;
 /// printer's. Bambu's automatic lift is taken as the spiral one.
 fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
     use Kind::{Filament, Machine as M};
-    let z_hop = match m.get(Filament, "filament_z_hop").ok().and_then(|v| v.number()) {
-        Some(h) => h,
-        None => m.number(M, "z_hop")?,
-    };
+    let z_hop = filament_or(m, "filament_z_hop", "z_hop")?;
     let kind = match m.text(Filament, "filament_z_hop_types").ok().filter(|t| t != "nil") {
         Some(t) => t,
         None => m.text(M, "z_hop_types").unwrap_or_else(|_| "Normal Lift".into()),
@@ -167,10 +168,6 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     let outer = width(m, "outer_wall_line_width", nozzle)?;
     let inner = width(m, "inner_wall_line_width", nozzle)?;
     let sparse_width = width(m, "sparse_infill_line_width", nozzle)?;
-    let retract = match m.get(Filament, "filament_retraction_length")?.number() {
-        Some(v) => v,
-        None => m.number(M, "retraction_length")?,
-    };
     let (first_bed_key, _) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
@@ -206,9 +203,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     // The filament's overhang fan, when on: over bridges, and walls past its threshold.
     let (overhang_fan_speed, overhang_fan_share) =
         if m.number(Filament, "enable_overhang_bridge_fan").unwrap_or(0.0) > 0.0 {
-            let threshold = m.text(Filament, "overhang_fan_threshold")?;
-            let percent = threshold.trim().trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0);
-            (fraction(m, Filament, "overhang_fan_speed")?.clamp(0.0, 1.0), (percent / 100.0).clamp(0.0, 1.0))
+            let share = fraction(m, Filament, "overhang_fan_threshold")?;
+            (fraction(m, Filament, "overhang_fan_speed")?.clamp(0.0, 1.0), share.clamp(0.0, 1.0))
         } else {
             (0.0, 0.0)
         };
@@ -282,32 +278,22 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             first_layer_infill_speed: m.number(Process, "initial_layer_infill_speed")?,
             first_layer_accel: accel(m, "initial_layer_acceleration")?,
             travel: role(m, "travel_speed", "travel_acceleration")?,
-            retract_length: retract,
+            retract_length: filament_or(m, "filament_retraction_length", "retraction_length")?,
             retract_speed: m.number(M, "retraction_speed")?,
             deretract_speed: m.number(M, "deretraction_speed")?,
             retract_min_travel: m.number(M, "retraction_minimum_travel")?,
             // The process's seam gap, a percentage of the nozzle; 15 % when the profile is silent,
             // the gap Bambu Studio leaves on the X2D.
-            seam_gap: match m.get(Process, "seam_gap").map(|v| v.render()) {
-                Ok(text) if text.trim().ends_with('%') => {
-                    text.trim().trim_end_matches('%').trim().parse::<f64>().unwrap_or(15.0) / 100.0 * nozzle
-                }
-                Ok(text) => text.trim().parse::<f64>().unwrap_or(0.15 * nozzle),
-                Err(_) => 0.15 * nozzle,
-            },
+            seam_gap: share_of(m, Process, "seam_gap", nozzle).unwrap_or(0.15 * nozzle),
             // A filament's own wipe settings win over the printer's; `nil` leaves the printer's.
             wipe_distance: if m.number(M, "wipe").unwrap_or(0.0) > 0.0 {
-                match m.get(Filament, "filament_wipe_distance").ok().and_then(|v| v.number()) {
-                    Some(d) => d,
-                    None => m.number(M, "wipe_distance")?,
-                }
+                filament_or(m, "filament_wipe_distance", "wipe_distance")?
             } else {
                 0.0
             },
-            retract_before_wipe: match m.get(Filament, "filament_retract_before_wipe").ok().and_then(|v| v.number()) {
-                Some(v) => v / 100.0,
-                None => m.number(M, "retract_before_wipe").unwrap_or(0.0) / 100.0,
-            },
+            retract_before_wipe: filament_or(m, "filament_retract_before_wipe", "retract_before_wipe")
+                .unwrap_or(0.0)
+                / 100.0,
             z_hop,
             lift_radius,
             // A filament that does not slow down for cooling has no layer time to reach.

@@ -9,11 +9,16 @@ use layercraft_motion::Program;
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
+/// A machine description, the stages' settings read from it, and the tuning given.
+pub struct Setup {
+    pub machine: Machine,
+    pub settings: Settings,
+    pub tuning: Tuning,
+}
+
 /// What goes with a program into its file.
 pub struct Delivery<'a> {
-    pub settings: &'a Settings,
-    pub tuning: &'a Tuning,
-    pub machine: &'a Machine,
+    pub setup: &'a Setup,
     /// The filament's colour for the printer's screen.
     pub colour: String,
     pub object_name: String,
@@ -24,9 +29,9 @@ pub struct Delivery<'a> {
 
 /// Cools, frames, verifies, writes and packages `program`; a line saying what was written.
 pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
-    let settings = d.settings;
+    let settings = &d.setup.settings;
     let motion = &settings.motion;
-    let field = Field::new(motion.clone(), d.tuning, "motion").map_err(|e| e.to_string())?;
+    let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
     layercraft_motion::cool(&mut program, &field).map_err(|e| e.to_string())?;
     let slowed = layercraft_motion::melt(&mut program, motion.max_volumetric_speed, motion.filament_diameter);
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
@@ -72,7 +77,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
             (k.clone(), json)
         })
         .collect();
-    if d.machine.slicer_version.is_empty() {
+    if d.setup.machine.slicer_version.is_empty() {
         return Err(
             "the machine description predates layercraft 0.1.3: run `layercraft machine import` again".into(),
         );
@@ -94,7 +99,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         thumbnail: layercraft_view::thumbnail(&program, 512),
         small_thumbnail: layercraft_view::thumbnail(&program, 128),
         generator: header.generator.clone(),
-        client_version: d.machine.slicer_version.clone(),
+        client_version: d.setup.machine.slicer_version.clone(),
         object_name: d.object_name.clone(),
         layers: summary.layers,
         layer_height: settings.layering.layer_height,

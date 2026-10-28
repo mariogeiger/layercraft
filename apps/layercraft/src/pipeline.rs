@@ -77,7 +77,7 @@ pub struct Output {
 /// The largest stage file read back, in bytes.
 const MAX_STAGE_BYTES: u64 = 4 << 30;
 
-fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
+pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     if is_ply(path) {
         return Err(format!("{} is a picture of a stage: resume from its JSON", path.display()));
     }

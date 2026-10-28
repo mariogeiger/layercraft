@@ -125,13 +125,8 @@ fn back_right(contour: &[Point]) -> Point {
 pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
-    let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| Path {
-        role,
-        width,
-        closed: true,
-        points: start_near(contour.clone(), back_right(outline)),
-        travel_inside: false,
-        overhang: Vec::new(),
+    let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| {
+        Path::new(role, width, true, start_near(contour.clone(), back_right(outline)))
     };
     // The outer wall's shapes are the islands; without walls, the infill's shapes are.
     let walled = !layer.walls.is_empty();
@@ -241,14 +236,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
             let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
             let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                island.infill.push(Path {
-                    role,
-                    width,
-                    closed: false,
-                    points: line,
-                    travel_inside: false,
-                    overhang: Vec::new(),
-                });
+                island.infill.push(Path::new(role, width, false, line));
             }
         }
         // A role's areas join their lines as one.

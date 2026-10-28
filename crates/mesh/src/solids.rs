@@ -40,33 +40,3 @@ pub fn cuboid(name: &str, min: Vertex, max: Vertex) -> Body {
     let outline = [[min[0], min[1]], [max[0], min[1]], [max[0], max[1]], [min[0], max[1]]];
     prism(name, &outline, min[2], max[2])
 }
-
-/// A rectangle `[x0, x1] × [y0, y1]` with corners rounded to `radius`, each arc cut into
-/// `segments` chords: the outline of the pottery stamp's block.
-pub fn rounded_rectangle(x0: f64, y0: f64, x1: f64, y1: f64, radius: f64, segments: usize) -> Vec<[f64; 2]> {
-    let centres = [
-        (x1 - radius, y0 + radius),
-        (x1 - radius, y1 - radius),
-        (x0 + radius, y1 - radius),
-        (x0 + radius, y0 + radius),
-    ];
-    let mut outline = Vec::with_capacity(4 * (segments + 1));
-    for (k, (cx, cy)) in centres.iter().enumerate() {
-        let start = -std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::FRAC_PI_2;
-        for s in 0..=segments {
-            let a = start + std::f64::consts::FRAC_PI_2 * s as f64 / segments.max(1) as f64;
-            outline.push([cx + radius * a.cos(), cy + radius * a.sin()]);
-        }
-    }
-    outline
-}
-
-/// A regular polygon of `sides` sides inscribed in the circle of `radius` around `centre`.
-pub fn regular_polygon(centre: [f64; 2], radius: f64, sides: usize) -> Vec<[f64; 2]> {
-    (0..sides)
-        .map(|i| {
-            let a = std::f64::consts::TAU * i as f64 / sides.max(1) as f64;
-            [centre[0] + radius * a.cos(), centre[1] + radius * a.sin()]
-        })
-        .collect()
-}

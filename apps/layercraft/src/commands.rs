@@ -1,6 +1,6 @@
 //! The command line: arguments and what each command does.
 
-use crate::deliver::{Delivery, deliver};
+use crate::deliver::{Delivery, Setup, deliver};
 use crate::pipeline::{self, Stage, stage_file};
 use crate::settings;
 use clap::{Parser, Subcommand};
@@ -137,6 +137,19 @@ fn load_machine(name: &str) -> Result<Machine, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>) -> Result<Setup, String> {
+    let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
+    let machine = load_machine(machine)?;
+    let settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
+    Ok(Setup { machine, settings, tuning })
+}
+
+/// The middle of the plate's printable area.
+fn plate_centre(s: &Setup) -> [f64; 2] {
+    let area = s.settings.envelope.area;
+    [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0]
+}
+
 fn parse_pair(text: &str) -> Result<[f64; 2], String> {
     let mut parts = text.split(',').map(|v| v.trim().parse::<f64>());
     match (parts.next(), parts.next(), parts.next()) {
@@ -169,29 +182,18 @@ pub fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune } => {
-            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
-            let machine = load_machine(&machine)?;
-            let settings = settings::read(&machine, bed.as_deref()).map_err(|e| e.to_string())?;
-            let area = settings.envelope.area;
+            let s = setup(&machine, bed.as_deref(), tune.as_deref())?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
-                None => [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0],
+                None => plate_centre(&s),
             };
-            let output = pipeline::run(input.as_deref(), at, &settings, &tuning, from.as_ref(), &emit)?;
+            let output = pipeline::run(input.as_deref(), at, &s.settings, &s.tuning, from.as_ref(), &emit)?;
             let object_name = input
                 .as_ref()
                 .and_then(|p| p.file_stem())
                 .map(|s| s.to_string_lossy().trim_end_matches(".gcode").to_string())
                 .unwrap_or_else(|| "part".into());
-            let delivery = Delivery {
-                settings: &settings,
-                tuning: &tuning,
-                machine: &machine,
-                colour,
-                object_name,
-                gcode: gcode.as_deref(),
-                out: &out,
-            };
+            let delivery = Delivery { setup: &s, colour, object_name, gcode: gcode.as_deref(), out: &out };
             println!("{}", deliver(output.program, &delivery)?);
             Ok(())
         }
@@ -199,22 +201,13 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
-            let machine = load_machine(&machine)?;
-            let settings = settings::read(&machine, bed.as_deref()).map_err(|e| e.to_string())?;
+            let s = setup(&machine, bed.as_deref(), tune.as_deref())?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
-            let merged = layercraft_motion::merge(&programs, settings.motion.deretract_speed);
-            let limits = &settings.motion.limits;
+            let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
+            let limits = &s.settings.motion.limits;
             pipeline::emit(Stage::Program, &merged, || layercraft_view::program(&merged, limits), &emit)?;
-            let delivery = Delivery {
-                settings: &settings,
-                tuning: &tuning,
-                machine: &machine,
-                colour,
-                object_name: "plate".into(),
-                gcode: gcode.as_deref(),
-                out: &out,
-            };
+            let object_name = "plate".into();
+            let delivery = Delivery { setup: &s, colour, object_name, gcode: gcode.as_deref(), out: &out };
             println!("{}", deliver(merged, &delivery)?);
             Ok(())
         }
@@ -227,17 +220,12 @@ pub fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::View { input, out, machine, layers, tune } => {
-            let tuning = tune.as_deref().map(pipeline::read_tuning).transpose()?.unwrap_or_default();
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
-                let text =
-                    std::fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
-                serde_json::from_str(&text).map_err(|e| format!("{}: {e}", input.display()))?
+                pipeline::read_json(&input)?
             } else {
-                let machine = load_machine(&machine)?;
-                let settings = settings::read(&machine, None).map_err(|e| e.to_string())?;
-                let area = settings.envelope.area;
-                let at = [(area[0][0] + area[1][0]) / 2.0, (area[0][1] + area[1][1]) / 2.0];
-                let output = pipeline::run(Some(&input), at, &settings, &tuning, None, &[])?;
+                let s = setup(&machine, None, tune.as_deref())?;
+                let output =
+                    pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?
             };
             let range = match layers {

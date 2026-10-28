@@ -1,6 +1,7 @@
 //! Reading G-code back: filament and path length per layer and feature, from any slicer's
 //! output that marks layers (`; CHANGE_LAYER`, `; Z_HEIGHT:`) and features (`; FEATURE:`).
 
+use crate::read::word;
 use std::collections::BTreeMap;
 
 /// What one layer of a G-code file does.
@@ -20,10 +21,6 @@ pub struct Stats {
     pub layers: Vec<LayerStats>,
     /// The slicer's own estimate, from the header, as written.
     pub estimate: Option<String>,
-}
-
-fn word(line: &str, letter: char) -> Option<f64> {
-    line.split_whitespace().skip(1).find_map(|w| w.strip_prefix(letter).and_then(|v| v.parse::<f64>().ok()))
 }
 
 /// Reads the statistics of a G-code text; lines it does not understand are skipped.

@@ -3,7 +3,27 @@
 
 use super::*;
 use layercraft_geom::{GRID_MM, area, polyline_length, signed_area};
-use layercraft_mesh::solids::{cuboid, prism, rounded_rectangle};
+use layercraft_mesh::solids::{cuboid, prism};
+
+/// A rectangle `[x0, x1] × [y0, y1]` with corners rounded to `radius`, each arc cut into
+/// `segments` chords: the outline of the pottery stamp's block.
+fn rounded_rectangle(x0: f64, y0: f64, x1: f64, y1: f64, radius: f64, segments: usize) -> Vec<[f64; 2]> {
+    let centres = [
+        (x1 - radius, y0 + radius),
+        (x1 - radius, y1 - radius),
+        (x0 + radius, y1 - radius),
+        (x0 + radius, y0 + radius),
+    ];
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let mut outline = Vec::new();
+    for (k, (cx, cy)) in centres.iter().enumerate() {
+        for s in 0..=segments {
+            let a = -quarter + k as f64 * quarter + quarter * s as f64 / segments as f64;
+            outline.push([cx + radius * a.cos(), cy + radius * a.sin()]);
+        }
+    }
+    outline
+}
 
 const LAYERING: Layering = Layering { first_layer_height: 0.2, layer_height: 0.2 };
 
