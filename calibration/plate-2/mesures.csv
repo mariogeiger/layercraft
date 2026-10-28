@@ -1,0 +1,25 @@
+objet,mesure,nominal (mm),mesuré (mm)
+bloc 10 h4,hauteur,4,4.09
+bloc 10 h4,largeur x,10,10
+bloc 10 h4,largeur y,10,10
+bloc 10 h12,hauteur,12,12.1
+bloc 10 h12,largeur x,10,10.02
+bloc 10 h12,largeur y,10,10.03
+bloc 10 h20,hauteur,20,20.11
+bloc 10 h20,largeur x,10,10.03 (9.97 en haut)
+bloc 10 h20,largeur y,10,10.04 (9.98 en haut)
+bloc 3 h20,hauteur,20,20.28
+pont S20,vide sous le pont au milieu (becs intérieurs),5,4.57
+pont S20,épaisseur du tablier au milieu,1,1.49
+pont S20,hauteur totale au milieu,7,7.1
+pont S40,vide sous le pont au milieu (becs intérieurs),5,4.45
+pont S40,épaisseur du tablier au milieu,1,1.57
+pont S40,hauteur totale au milieu,7,7.04
+plaque 45° rapide,"épaisseur entre les deux faces, à mi-hauteur (z ≈ 6)",2,2.14
+plaque 45° rapide,hauteur du sommet (au-dessus du plateau),11,11.14
+plaque 60° rapide,"épaisseur entre les deux faces, à mi-hauteur (z ≈ 6)",2,2.19
+plaque 60° rapide,hauteur du sommet (au-dessus du plateau),11,11.74
+plaque 45° lente,"épaisseur entre les deux faces, à mi-hauteur (z ≈ 6)",2,2.15
+plaque 45° lente,hauteur du sommet (au-dessus du plateau),11,11.2
+plaque 60° lente,"épaisseur entre les deux faces, à mi-hauteur (z ≈ 6)",2,2.3
+plaque 60° lente,hauteur du sommet (au-dessus du plateau),11,11.6

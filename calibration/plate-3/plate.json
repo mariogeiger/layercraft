@@ -1,0 +1,64 @@
+{
+ "printed": "2026-10-28T10:27+01:00",
+ "layercraft": "0.4.7 (331cd47)",
+ "compile": "layercraft compile calib-3.3mf --tune tune.json --colour '#9D432C'",
+ "filament": "PLA #9D432C, AMS slot 2",
+ "machine": "x2d imported from Bambu Studio; slow_down_for_layer_cooling = 0",
+ "bed_offset": [
+  77.25,
+  113.1
+ ],
+ "boxes": {
+  "bloc10_h8": [
+   0,
+   0,
+   10,
+   10
+  ],
+  "bloc10_h8_top08": [
+   20,
+   0,
+   30,
+   10
+  ],
+  "tour3_h20": [
+   40,
+   3.5,
+   43,
+   6.5
+  ],
+  "plaque45_t2_h5": [
+   0,
+   20,
+   11.83,
+   30
+  ],
+  "plaque45_t2_h10": [
+   17.83,
+   20,
+   34.66,
+   30
+  ],
+  "plaque45_t2_h12": [
+   40.66,
+   20,
+   59.49,
+   30
+  ],
+  "plaque45_t3_h10": [
+   65.49,
+   20,
+   83.73,
+   30
+  ],
+  "plaque30_t2_h10": [
+   89.73,
+   20,
+   101.81,
+   30
+  ]
+ },
+ "notes": [
+  "the 3 x 3 tower, alone above 13 mm and laid every 1.4 s, deformed from there up, one face glossy (photos/tower-*.jpg)"
+ ]
+}

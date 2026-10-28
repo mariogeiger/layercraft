@@ -1,0 +1,5 @@
+[
+  {"within": {"z": [0, 100]}, "set": {"motion": {"overhang_speeds": []}}},
+  {"within": {"y": [110, 130]}, "set": {"motion": {"outer_wall": {"speed": 30}, "inner_wall": {"speed": 30}}}},
+  {"within": {"z": [8.1, 100]}, "set": {"motion": {"physics": null, "slow_down_layer_time": 0}}}
+]

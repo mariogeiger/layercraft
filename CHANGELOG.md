@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.8
+
+### Added
+
+- `calibration/`: the caliper calibration plates printed so far, each with the script that
+  generates its 3MF, its `tune.json`, the measurements (`mesures.csv`), the photos, how and when
+  it was printed (`plate.json`) and when each object was printed, layer by layer (`timing.json`).
+  `calibration/sim/` holds the models they test: the elastic ratchet of a part bent by the
+  nozzle, and a layer-by-layer simulation of a part's heat and stresses.
+
 ## 0.4.7
 
 ### Fixed
