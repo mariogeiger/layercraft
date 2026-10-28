@@ -6,7 +6,8 @@ use crate::link::{Fill, link};
 use crate::overhang::{Below, overhang};
 use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{
-    Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, offset, polyline_length, signed_area, union,
+    Contour, GRID_MM, Point, bead_spacing, clip_lines, disc_area, edges, encloses, offset, polyline_length,
+    signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -22,30 +23,14 @@ pub struct Island {
     fills: Rc<Vec<Fill>>,
 }
 
-fn contains(contour: &[Point], p: Point) -> bool {
-    let mut inside = false;
-    let n = contour.len();
-    for i in 0..n {
-        let (Some(a), Some(b)) = (contour.get(i), contour.get((i + n - 1) % n)) else { continue };
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
-        }
-    }
-    inside
-}
-
 /// The innermost of `outlines` holding `p`: an island may sit in another's hole.
 fn holder<'a>(outlines: impl IntoIterator<Item = &'a Contour>, p: Point) -> Option<usize> {
     outlines
         .into_iter()
         .enumerate()
-        .filter(|(_, o)| contains(o, p))
+        .filter(|(_, o)| encloses(edges(o), p))
         .min_by(|(_, a), (_, b)| signed_area(a).abs().total_cmp(&signed_area(b).abs()))
         .map(|(i, _)| i)
-}
-
-fn infill_regions(layer: &RegionLayer) -> [&Region; 5] {
-    [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
 }
 
 /// The layer's islands grouped by the parameters at their centres, each group with the part of
@@ -55,10 +40,7 @@ pub fn parts(
     layer: &RegionLayer,
     field: &Field<PathParams>,
 ) -> Result<Vec<(Rc<PathParams>, RegionLayer)>, PathError> {
-    let outlines: Vec<&Contour> = match layer.walls.first() {
-        Some(outer) => outer.iter().filter_map(|shape| shape.first()).collect(),
-        None => infill_regions(layer).into_iter().flatten().filter_map(|shape| shape.first()).collect(),
-    };
+    let outlines: Vec<&Contour> = layer.outline().into_iter().filter_map(|shape| shape.first()).collect();
     let mut groups: Vec<Rc<PathParams>> = Vec::new();
     let mut group_of = Vec::with_capacity(outlines.len());
     for outline in &outlines {
@@ -74,16 +56,11 @@ pub fn parts(
     if groups.len() <= 1 {
         return Ok(groups.into_iter().map(|p| (p, layer.clone())).collect());
     }
-    let empty = |layer: &RegionLayer| RegionLayer {
-        walls: vec![Vec::new(); layer.walls.len()],
-        top_surface: Vec::new(),
-        solid: Vec::new(),
-        bridge: Vec::new(),
-        bridge_on_sparse: Vec::new(),
-        sparse: Vec::new(),
-        ..layer.clone()
-    };
-    let mut parts: Vec<RegionLayer> = groups.iter().map(|_| empty(layer)).collect();
+    let mut empty = RegionLayer { walls: vec![Vec::new(); layer.walls.len()], ..layer.clone() };
+    for region in empty.infill_mut() {
+        region.clear();
+    }
+    let mut parts = vec![empty; groups.len()];
     // An outline's own shape is its island's; any other lies strictly inside the one holding it.
     let held = |shape: &[Contour]| {
         let p = shape.first().and_then(|c| c.first()).copied().unwrap_or([0.0, 0.0]);
@@ -110,17 +87,13 @@ pub fn parts(
             }
         }
     }
-    let pick: [fn(&mut RegionLayer) -> &mut Region; 5] = [
-        |l| &mut l.top_surface,
-        |l| &mut l.solid,
-        |l| &mut l.bridge,
-        |l| &mut l.bridge_on_sparse,
-        |l| &mut l.sparse,
-    ];
-    for (region, pick) in infill_regions(layer).into_iter().zip(pick) {
+    for (j, region) in layer.infill().into_iter().enumerate() {
         for shape in region {
-            if let Some(part) = group(shape, !walled).and_then(|g| parts.get_mut(g)) {
-                pick(part).push(shape.clone());
+            let slot = group(shape, !walled)
+                .and_then(|g| parts.get_mut(g))
+                .and_then(|part| part.infill_mut().into_iter().nth(j));
+            if let Some(slot) = slot {
+                slot.push(shape.clone());
             }
         }
     }
@@ -161,31 +134,20 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         overhang: Vec::new(),
     };
     // The outer wall's shapes are the islands; without walls, the infill's shapes are.
-    let mut islands: Vec<Island> = match layer.walls.first() {
-        Some(outer) => outer
-            .iter()
-            .filter_map(|shape| {
-                let outline = shape.first()?.clone();
-                let walls = shape
-                    .iter()
-                    .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
-                    .collect();
-                Some(Island { outline, walls, infill: Vec::new(), fills: Rc::default() })
-            })
-            .collect(),
-        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
-            .into_iter()
-            .flatten()
-            .filter_map(|shape| {
-                Some(Island {
-                    outline: shape.first()?.clone(),
-                    walls: Vec::new(),
-                    infill: Vec::new(),
-                    fills: Rc::default(),
-                })
-            })
-            .collect(),
-    };
+    let walled = !layer.walls.is_empty();
+    let mut islands: Vec<Island> = layer
+        .outline()
+        .into_iter()
+        .filter_map(|shape| {
+            let outline = shape.first()?.clone();
+            let walls = shape
+                .iter()
+                .filter(|_| walled)
+                .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
+                .collect();
+            Some(Island { outline, walls, infill: Vec::new(), fills: Rc::default() })
+        })
+        .collect();
     let home = |islands: &[Island], p: Point| -> Option<usize> {
         holder(islands.iter().map(|i| &i.outline), p).or(if islands.is_empty() { None } else { Some(0) })
     };
@@ -243,7 +205,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     // Bridge strands are round, a nozzle wide. Over air they hang, touching side by side. Over
     // sparse infill they rest on its lines, a solid layer like any other: spaced so that each
     // strand's section, π·w²/4, fills its spacing times the layer's height.
-    let resting = std::f64::consts::PI * p.bridge_width * p.bridge_width / (4.0 * h);
+    let resting = disc_area(p.bridge_width) / h;
     let fills = [
         (Role::TOP_SURFACE, &layer.top_surface, top, bead_spacing(top, h)),
         (if first { Role::BOTTOM_SURFACE } else { Role::SOLID }, &layer.solid, solid, bead_spacing(solid, h)),
@@ -307,10 +269,6 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     Ok(islands)
 }
 
-fn end_of(path: &Path) -> Option<Point> {
-    if path.closed { path.points.first().copied() } else { path.points.last().copied() }
-}
-
 /// Orders open paths nearest first from `at`, reversing any that is nearer by its far end.
 fn chain(mut paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>) {
     while !paths.is_empty() {
@@ -329,7 +287,7 @@ fn chain(mut paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>) {
         if best.2 {
             path.points.reverse();
         }
-        if let Some(end) = end_of(&path) {
+        if let Some(end) = path.end() {
             *at = end;
         }
         out.push(path);
@@ -379,7 +337,7 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
                 line.points.reverse();
             }
             let (offset, (lo, hi)) = (offset_of(across, &line), span(&line));
-            if let Some(end) = end_of(&line) {
+            if let Some(end) = line.end() {
                 *at = end;
             }
             out.push(line);

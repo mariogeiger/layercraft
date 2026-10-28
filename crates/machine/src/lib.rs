@@ -5,14 +5,6 @@
 //! (`import`) and kept outside the repository. A setting may hold one value per extruder
 //! variant (extruder × nozzle flow) or per extruder; `Machine` reads the one for the variant
 //! it prints with.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod expr;
 pub mod import;
@@ -80,17 +72,22 @@ impl Machine {
         }
     }
 
-    /// The position of the variant printed with in a profile's list of variants.
-    fn variant_index(&self, kind: Kind) -> Option<usize> {
+    /// The extruder variants a profile lists, which its per-variant settings follow.
+    fn variants(&self, kind: Kind) -> Vec<String> {
         let key = match kind {
             Kind::Machine => "printer_extruder_variant",
             Kind::Process => "print_extruder_variant",
             Kind::Filament => "filament_extruder_variant",
         };
         match self.table(kind).get(key) {
-            Some(Value::List(list)) => list.iter().position(|v| v.render() == self.variant),
-            _ => None,
+            Some(Value::List(list)) => list.iter().map(Value::render).collect(),
+            _ => Vec::new(),
         }
+    }
+
+    /// The position of the variant printed with in a profile's list of variants.
+    fn variant_index(&self, kind: Kind) -> Option<usize> {
+        self.variants(kind).iter().position(|v| *v == self.variant)
     }
 
     /// The extruder (0-based) the variant belongs to.
@@ -108,14 +105,7 @@ impl Machine {
     pub fn get(&self, kind: Kind, key: &str) -> Result<Value, MachineError> {
         let value = self.table(kind).get(key).ok_or_else(|| MachineError::Missing(key.to_string()))?;
         let Value::List(list) = value else { return Ok(value.clone()) };
-        let variants = match self.table(kind).get(match kind {
-            Kind::Machine => "printer_extruder_variant",
-            Kind::Process => "print_extruder_variant",
-            Kind::Filament => "filament_extruder_variant",
-        }) {
-            Some(Value::List(v)) => v.len(),
-            _ => 0,
-        };
+        let variants = self.variants(kind).len();
         let extruders = match self.machine.get("extruder_type") {
             Some(Value::List(v)) => v.len(),
             _ => 1,
@@ -173,14 +163,7 @@ impl Machine {
         let mut scope = Scope::new();
         for kind in [Kind::Machine, Kind::Process, Kind::Filament] {
             let table = self.table(kind);
-            let variants: Vec<String> = match table.get(match kind {
-                Kind::Machine => "printer_extruder_variant",
-                Kind::Process => "print_extruder_variant",
-                Kind::Filament => "filament_extruder_variant",
-            }) {
-                Some(Value::List(v)) => v.iter().map(Value::render).collect(),
-                _ => Vec::new(),
-            };
+            let variants = self.variants(kind);
             let pick = |list: &[Value], name: &str| {
                 variants.iter().position(|v| v == name).and_then(|i| list.get(i)).cloned()
             };

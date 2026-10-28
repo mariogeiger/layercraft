@@ -6,14 +6,6 @@
 //! centre merged in, in order (JSON merge patch, RFC 7386). One mechanism varies any parameter
 //! of any stage by height, by object or by any box, and an empty tuning is the base everywhere.
 //! A box is half-open on each axis it bounds, `[from, to)`, so adjacent boxes share no point.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

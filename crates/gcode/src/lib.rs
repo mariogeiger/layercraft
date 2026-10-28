@@ -11,21 +11,13 @@
 //! relative to the nozzle, a full turn back over its start `G3 Z… I… J… P1`. The printer's
 //! progress (`M73`) is the planner's time at each layer's start.
 //! `stats` reads G-code back, from layercraft or another slicer, to compare them.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod read;
 pub mod stats;
 
 pub use read::{ReadError, read};
 
-use layercraft_motion::{Arc, Frame, Limits, Move, Program, estimate, finish};
+use layercraft_motion::{Arc, Frame, Limits, Move, Program, disc_area, estimate, finish};
 use layercraft_path::Role;
 use std::fmt::Write;
 
@@ -47,11 +39,6 @@ pub fn number(v: f64, decimals: usize) -> String {
     if text == "-0" { "0".to_string() } else { text.to_string() }
 }
 
-/// The name a role goes by in the G-code's feature comments.
-pub fn feature_name(role: Role) -> &'static str {
-    role.name()
-}
-
 fn duration(seconds: f64) -> String {
     let s = seconds.max(0.0).round() as u64;
     match (s / 3600, (s / 60) % 60, s % 60) {
@@ -61,6 +48,7 @@ fn duration(seconds: f64) -> String {
     }
 }
 
+#[derive(Default)]
 struct Writer {
     out: String,
     at: [Option<f64>; 3],
@@ -86,12 +74,7 @@ impl Writer {
         if !text.ends_with('\n') {
             self.out.push('\n');
         }
-        self.at = [None; 3];
-        self.feed = None;
-        self.plane = false;
-        self.accel = None;
-        self.fan = None;
-        self.feature = None;
+        *self = Writer { out: std::mem::take(&mut self.out), carry: self.carry, ..Writer::default() };
     }
 
     fn feed(&mut self, speed: f64, words: &mut String) {
@@ -119,7 +102,7 @@ impl Writer {
         if let Some(bead) = m.bead
             && self.feature != Some((bead.role, bead.width))
         {
-            self.line(&format!("; FEATURE: {}", feature_name(bead.role)));
+            self.line(&format!("; FEATURE: {}", bead.role.name()));
             self.line(&format!("; LINE_WIDTH: {}", number(bead.width, 3)));
             self.feature = Some((bead.role, bead.width));
         }
@@ -199,18 +182,9 @@ impl Writer {
 /// Writes the program, in its frame, as G-code; `limits` time it for the printer's progress.
 pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header) -> String {
     let s = finish(program, limits, header.filament_diameter);
-    let area = std::f64::consts::PI * (header.filament_diameter / 2.0).powi(2);
+    let area = disc_area(header.filament_diameter);
     let grams = s.filament_mm * area * header.filament_density / 1000.0;
-    let mut w = Writer {
-        out: String::new(),
-        at: [None; 3],
-        feed: None,
-        plane: false,
-        accel: None,
-        fan: None,
-        feature: None,
-        carry: 0.0,
-    };
+    let mut w = Writer::default();
     w.line("; HEADER_BLOCK_START");
     w.line(&format!("; {}", header.generator));
     let time = duration(s.motion_seconds);

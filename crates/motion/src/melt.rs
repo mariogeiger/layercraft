@@ -4,18 +4,16 @@
 //! from another slicer, which reckons its own limit, may not be.
 
 use crate::Program;
-use crate::moves::chained;
+use crate::moves::lengths;
 
 /// Slows every bead of `program` that would ask more than `max_volumetric_speed` mm³/s of
 /// filament `filament_diameter` wide; how many it slowed.
 pub fn melt(program: &mut Program, max_volumetric_speed: f64, filament_diameter: f64) -> usize {
-    let area = std::f64::consts::PI * (filament_diameter / 2.0).powi(2);
+    let area = crate::disc_area(filament_diameter);
     let mut slowed = 0;
     let mut at = None;
     for layer in &mut program.layers {
-        let lengths: Vec<f64> =
-            chained(&layer.moves, at).map(|(from, m)| from.map_or(0.0, |f| m.length(f))).collect();
-        at = layer.moves.iter().rev().find_map(|m| m.to).or(at);
+        let lengths = lengths(&layer.moves, &mut at);
         for (m, length) in layer.moves.iter_mut().zip(lengths) {
             if m.e <= 0.0 || length <= 0.0 {
                 continue;

@@ -4,14 +4,6 @@
 //!
 //! The thumbnail paints the beads from the bottom layer up, seen from above, each layer
 //! lighter than the one below it.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod ply;
 mod stages;

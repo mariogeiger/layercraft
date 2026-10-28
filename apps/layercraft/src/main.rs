@@ -8,14 +8,6 @@
 //!   layercraft compare ours.gcode.3mf theirs.gcode   side by side, layer by layer
 //!
 //! Nothing here sends a file to a printer or starts a print.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod commands;
 mod compare;

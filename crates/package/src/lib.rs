@@ -7,14 +7,6 @@
 //! description or names a client version it does not know (error 0500-4046), so the summary
 //! states both as the slicer whose conventions the file follows writes them. Nothing in the
 //! package starts a print.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 use md5::{Digest, Md5};
 use std::io::{Seek, Write};

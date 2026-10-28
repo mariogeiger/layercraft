@@ -8,7 +8,7 @@
 //! slower than its neighbours, and show as a band. Travels, wipes and lifts keep their speed.
 //! The layer's parameters are those at its centre.
 
-use crate::moves::chained;
+use crate::moves::lengths;
 use crate::plan::check;
 use crate::{MotionError, MotionParams, Program};
 use layercraft_path::Face;
@@ -26,11 +26,7 @@ pub fn cool(program: &mut Program, field: &Field<MotionParams>) -> Result<(), Mo
             .map(|p| [p[0], p[1]])
             .collect();
         let p = field.at(centre(&ends, layer.z), check)?;
-        let lengths: Vec<f64> =
-            chained(&layer.moves, at).map(|(from, m)| from.map_or(0.0, |f| m.length(f))).collect();
-        if let Some(end) = layer.moves.iter().rev().find_map(|m| m.to) {
-            at = Some(end);
-        }
+        let lengths = lengths(&layer.moves, &mut at);
         let busy: f64 = layer
             .moves
             .iter()

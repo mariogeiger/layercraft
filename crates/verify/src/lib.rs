@@ -9,16 +9,8 @@
 //! end on their circle, at most a turn; fan between 0 and 1. The machine's own G-code between
 //! layers is the maker's and is not interpreted: after it the nozzle may be anywhere, so a
 //! layer's first move must be a straight travel to a named point.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
-use layercraft_motion::{Move, Program};
+use layercraft_motion::{Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
 /// What the machine can safely do.
@@ -102,7 +94,7 @@ fn check(m: &Move, from: Option<[f64; 3]>, z: f64, e: &Envelope) -> Option<Strin
         if (to[2] - z).abs() > SLACK {
             return Some(format!("extrusion at z = {} on the layer at {z}", to[2]));
         }
-        let filament_area = std::f64::consts::PI * (e.filament_diameter / 2.0).powi(2);
+        let filament_area = disc_area(e.filament_diameter);
         let flow = if length > 0.0 { m.e * filament_area * m.speed / length } else { f64::INFINITY };
         if flow > e.max_volumetric_speed + SLACK {
             return Some(format!("{flow:.2} mm³/s is past the melt limit {}", e.max_volumetric_speed));

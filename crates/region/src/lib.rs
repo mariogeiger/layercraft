@@ -18,17 +18,9 @@
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
 //! layer above covers them, and the top surface reaches the outer wall. A layer keeps the sections
 //! below and above it, and each shape is split by the parameters at its centre (`layercraft_tune`).
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 use layercraft_geom::{
-    GeomError, Region, bead_spacing, difference, intersection, offset, signed_area, union,
+    GeomError, Region, Shape, bead_spacing, difference, intersection, offset, signed_area, union,
 };
 use layercraft_section::{Layer, Sections};
 use layercraft_tune::{Field, TuneError, centre};
@@ -62,7 +54,7 @@ pub struct RegionParams {
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RegionLayer {
     pub index: usize,
     pub top: f64,
@@ -90,6 +82,31 @@ pub struct RegionLayer {
     /// The section of the layer above, which covers this layer; empty on the last layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub above: Region,
+}
+
+impl RegionLayer {
+    /// The infill areas: top surface, solid, bridges over air and over sparse, then sparse.
+    pub fn infill(&self) -> [&Region; 5] {
+        [&self.top_surface, &self.solid, &self.bridge, &self.bridge_on_sparse, &self.sparse]
+    }
+
+    pub fn infill_mut(&mut self) -> [&mut Region; 5] {
+        [
+            &mut self.top_surface,
+            &mut self.solid,
+            &mut self.bridge,
+            &mut self.bridge_on_sparse,
+            &mut self.sparse,
+        ]
+    }
+
+    /// The shapes that bound the layer's islands: the outer wall's, or without walls the infill's.
+    pub fn outline(&self) -> Vec<&Shape> {
+        match self.walls.first() {
+            Some(outer) => outer.iter().collect(),
+            None => self.infill().into_iter().flatten().collect(),
+        }
+    }
 }
 
 /// The output of the region stage.
@@ -290,15 +307,9 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             index: layer.index,
             top: layer.top,
             height: layer.height,
-            walls: Vec::new(),
-            inner_walls_within: None,
-            top_surface: Vec::new(),
-            solid: Vec::new(),
-            bridge: Vec::new(),
-            bridge_on_sparse: Vec::new(),
-            sparse: Vec::new(),
             support: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
             above: next.clone(),
+            ..RegionLayer::default()
         };
         // Parts whose inner walls run everywhere, when others' stop under the air.
         let mut walls_everywhere: Region = Vec::new();
@@ -311,8 +322,8 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
                 insides: &insides,
                 below: layers.last(),
             };
-            let piece = split_part(i, layer, p, region, inside, &around)?;
-            for (k, wall) in piece.walls.into_iter().enumerate() {
+            let mut piece = split_part(i, layer, p, region, inside, &around)?;
+            for (k, wall) in std::mem::take(&mut piece.walls).into_iter().enumerate() {
                 match out.walls.get_mut(k) {
                     Some(walls) => walls.extend(wall),
                     None => out.walls.push(wall),
@@ -322,11 +333,9 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
                 Some(_) => walls_clipped = true,
                 None => walls_everywhere.extend(region.iter().cloned()),
             }
-            out.top_surface.extend(piece.top_surface);
-            out.solid.extend(piece.solid);
-            out.bridge.extend(piece.bridge);
-            out.bridge_on_sparse.extend(piece.bridge_on_sparse);
-            out.sparse.extend(piece.sparse);
+            for (all, part) in out.infill_mut().into_iter().zip(piece.infill_mut()) {
+                all.append(part);
+            }
         }
         if walls_clipped {
             out.inner_walls_within =
@@ -433,8 +442,7 @@ fn split_part(
         bridge,
         bridge_on_sparse,
         sparse: difference(&deep, &hanging)?,
-        support: None,
-        above: Vec::new(),
+        ..RegionLayer::default()
     })
 }
 

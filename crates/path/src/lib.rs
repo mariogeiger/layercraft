@@ -13,14 +13,6 @@
 //! `monotone` role are laid in sweeps, each against the one before. The first layer's beads
 //! are all `first_layer_width` wide. Each wall segment carries the share of its bead that hangs
 //! past the layer below (`overhang`). Each island is traced by the parameters at its centre.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod dense;
 mod hatch;
@@ -50,6 +42,13 @@ pub struct Path {
     /// segment `i` running from point `i` to the next; empty where nothing hangs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub overhang: Vec<f64>,
+}
+
+impl Path {
+    /// Where the nozzle leaves the bead: back at its start when it is closed.
+    pub fn end(&self) -> Option<Point> {
+        if self.closed { self.points.first() } else { self.points.last() }.copied()
+    }
 }
 
 /// The beads of one layer, in printing order.

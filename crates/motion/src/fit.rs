@@ -14,6 +14,7 @@
 
 use crate::moves::chained;
 use crate::{Arc, Move, Program};
+use layercraft_geom::segment_distance;
 use std::f64::consts::TAU;
 
 type P2 = [f64; 2];
@@ -36,18 +37,10 @@ enum Shape {
     Arc(Arc),
 }
 
-/// The distance from `p` to the segment `a`–`b`.
-fn to_segment(p: P2, a: P2, b: P2) -> f64 {
-    let e = sub(b, a);
-    let l2 = dot(e, e);
-    let s = if l2 > 0.0 { (dot(sub(p, a), e) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    norm(sub(p, [a[0] + s * e[0], a[1] + s * e[1]]))
-}
-
 /// The line from the first vertex to the last, if every vertex lies within `eps` of it.
 fn line(v: &[P2], eps: f64) -> bool {
     let (Some(&a), Some(&b)) = (v.first(), v.last()) else { return false };
-    v.iter().all(|&p| to_segment(p, a, b) <= eps)
+    v.iter().all(|&p| segment_distance(p, a, b) <= eps)
 }
 
 /// The arc from the first vertex to the last, if it lies within `eps` of the polyline.

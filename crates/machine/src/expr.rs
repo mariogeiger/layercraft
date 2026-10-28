@@ -16,8 +16,9 @@ const MAX_DEPTH: usize = 64;
 /// The longest expression, which bounds the depth of evaluation.
 const MAX_TOKENS: usize = 2_000;
 
-const OPS: [&str; 20] = [
+const OPS: [&str; 21] = [
     "==", "!=", "<=", ">=", "&&", "||", "<", ">", "+", "-", "*", "/", "%", "!", "?", ":", "(", ")", "[", "]",
+    ",",
 ];
 
 fn fail<T>(msg: String) -> Result<T, TemplateError> {
@@ -61,9 +62,6 @@ fn tokens(text: &str) -> Result<Vec<Token>, TemplateError> {
             }
             i += 1;
             out.push(Token::Str(s));
-        } else if c == ',' {
-            out.push(Token::Op(","));
-            i += 1;
         } else {
             let two: String = [c, at(i + 1)].iter().collect();
             let op = OPS
@@ -116,25 +114,15 @@ impl Parser {
         self.tokens.get(self.pos)
     }
 
-    fn eat(&mut self, op: &str) -> bool {
-        if self.peek()
-            == Some(&Token::Op(match op {
-                "," => ",",
-                ")" => ")",
-                "]" => "]",
-                ":" => ":",
-                "(" => "(",
-                _ => return false,
-            }))
-        {
+    fn eat(&mut self, op: &'static str) -> bool {
+        let found = self.peek() == Some(&Token::Op(op));
+        if found {
             self.pos += 1;
-            true
-        } else {
-            false
         }
+        found
     }
 
-    fn expect(&mut self, op: &str) -> Result<(), TemplateError> {
+    fn expect(&mut self, op: &'static str) -> Result<(), TemplateError> {
         if self.eat(op) { Ok(()) } else { fail(format!("expected `{op}`")) }
     }
 
@@ -144,8 +132,7 @@ impl Parser {
             return fail("expression nests too deep".into());
         }
         let cond = self.binary(0)?;
-        let node = if self.peek() == Some(&Token::Op("?")) {
-            self.pos += 1;
+        let node = if self.eat("?") {
             let yes = self.expression()?;
             self.expect(":")?;
             let no = self.expression()?;
@@ -183,8 +170,7 @@ impl Parser {
 
     fn postfix(&mut self) -> Result<Node, TemplateError> {
         let mut node = self.primary()?;
-        while self.peek() == Some(&Token::Op("[")) {
-            self.pos += 1;
+        while self.eat("[") {
             let index = self.expression()?;
             self.expect("]")?;
             node = Node::Index(Box::new(node), Box::new(index));

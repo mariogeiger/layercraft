@@ -22,8 +22,8 @@ outranks feature work.**
 
 ## Never crash
 - **No panics in non-test code:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`,
-  `unimplemented!`; no `unsafe` (`unsafe_code = "forbid"`). Every crate root carries
-  `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]`.
+  `unimplemented!`; no `unsafe` (`unsafe_code = "forbid"`). The root `Cargo.toml` denies them
+  in `[workspace.lints]`, and every crate takes those lints with `[lints] workspace = true`.
 - **Errors are `Result<T, E>`** through the crate's error type and `?`. An unfinished feature
   returns an error ("not supported yet: …").
 - **Input is hostile:** 3MF files, stage files read with `--from`, machine descriptions and the

@@ -8,7 +8,7 @@
 
 use crate::moves::chained;
 use crate::time::{Limits, estimate};
-use crate::{MotionError, Program, Summary, Templates};
+use crate::{MotionError, Program, Summary, Templates, disc_area};
 use layercraft_machine::{Scope, Value, expand};
 
 /// The machine's G-code around a program's layers.
@@ -55,7 +55,7 @@ fn first_layer_bounds(program: &Program) -> [[f64; 2]; 2] {
 /// What a program does, read from its moves: plastic is what the extrusions push, `e` times
 /// the filament's section.
 pub fn finish(program: &Program, limits: &Limits, filament_diameter: f64) -> Summary {
-    let filament_area = std::f64::consts::PI * (filament_diameter / 2.0).powi(2);
+    let filament_area = disc_area(filament_diameter);
     let times = estimate(program, limits);
     let total = times.last().copied().unwrap_or(0.0);
     let first_moves = program.layers.first().map_or(0, |l| l.moves.len());

@@ -240,48 +240,31 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
     let mut out: Vec<Layer> = Vec::with_capacity(layers.len());
     for (mut layer, moves) in layers {
         for m in moves {
-            if m.in_place {
-                layer.moves.push(Move {
-                    to: None,
-                    arc: None,
-                    e: m.e,
-                    speed: m.speed,
-                    accel: m.accel,
-                    fan: m.fan,
-                    bead: None,
-                });
-                continue;
-            }
-            let [Some(x), Some(y), Some(z)] = m.to else {
-                return Err(ReadError { line: m.line, reason: "a move to an axis never named".into() });
-            };
-            let to = [x, y, z];
-            let arc = match (m.arc, at) {
-                (Some((ccw, centre, full)), Some(from)) => {
-                    let tau = std::f64::consts::TAU;
-                    let t = match (full, ccw) {
-                        (true, true) => tau,
-                        (true, false) => -tau,
-                        (false, _) => turn([from[0], from[1]], [x, y], centre, ccw),
-                    };
-                    Some(Arc { centre, turn: t })
+            let (to, arc, bead) = if m.in_place {
+                (None, None, None)
+            } else {
+                let [Some(x), Some(y), Some(z)] = m.to else {
+                    return Err(ReadError { line: m.line, reason: "a move to an axis never named".into() });
+                };
+                let arc = match (m.arc, at) {
+                    (Some((ccw, centre, full)), Some(from)) => {
+                        let tau = std::f64::consts::TAU;
+                        let t = match (full, ccw) {
+                            (true, true) => tau,
+                            (true, false) => -tau,
+                            (false, _) => turn([from[0], from[1]], [x, y], centre, ccw),
+                        };
+                        Some(Arc { centre, turn: t })
+                    }
+                    _ => None,
+                };
+                let goes = at != Some([x, y, z]) || arc.is_some();
+                if !goes && m.e == 0.0 {
+                    continue;
                 }
-                _ => None,
+                (goes.then_some([x, y, z]), arc, m.bead)
             };
-            let goes = at != Some(to) || arc.is_some();
-            if !goes && m.e == 0.0 {
-                continue;
-            }
-            let to = goes.then_some(to);
-            layer.moves.push(Move {
-                to,
-                arc,
-                e: m.e,
-                speed: m.speed,
-                accel: m.accel,
-                fan: m.fan,
-                bead: m.bead,
-            });
+            layer.moves.push(Move { to, arc, e: m.e, speed: m.speed, accel: m.accel, fan: m.fan, bead });
             at = to.or(at);
         }
         out.push(layer);

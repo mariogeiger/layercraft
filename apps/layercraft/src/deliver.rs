@@ -57,7 +57,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         std::fs::write(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
     }
     let summary = layercraft_motion::finish(&program, &motion.limits, motion.filament_diameter);
-    let filament_area = std::f64::consts::PI * (motion.filament_diameter / 2.0).powi(2);
+    let filament_area = layercraft_motion::disc_area(motion.filament_diameter);
     let grams = summary.filament_mm * filament_area * settings.filament_density / 1000.0;
     let settings_json: serde_json::Map<String, serde_json::Value> = settings
         .scope

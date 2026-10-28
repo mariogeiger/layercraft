@@ -8,7 +8,7 @@
 //! `w · STEP` long, so the fraction changes where the overhang does. Distances matter only within
 //! a bead, so each point looks only at the edges filed in the grid cells, a bead wide, around it.
 
-use layercraft_geom::{Point, RESOLUTION_MM, Region};
+use layercraft_geom::{Point, RESOLUTION_MM, Region, edges, encloses, segment_distance};
 use std::collections::HashMap;
 
 /// The most a segment's fraction may change along it before it is halved.
@@ -32,32 +32,26 @@ impl Below {
     pub fn new(below: &Region, width: f64) -> Below {
         let cell = width.max(1e-3);
         let index = |v: f64| (v / cell).floor() as i64;
-        let mut edges = Vec::new();
+        let edges: Vec<(Point, Point)> = below.iter().flatten().flat_map(|c| edges(c)).collect();
         let mut cells: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
         let mut rows: HashMap<i64, Vec<usize>> = HashMap::new();
-        for contour in below.iter().flatten() {
-            let n = contour.len();
-            for i in 0..n {
-                let (Some(&a), Some(&b)) = (contour.get(i), contour.get((i + 1) % n)) else { continue };
-                let k = edges.len();
-                edges.push((a, b));
-                let (y0, y1) = (index(a[1].min(b[1])), index(a[1].max(b[1])));
-                for y in y0..=y1.min(y0.saturating_add(MAX_SAMPLES as i64)) {
-                    rows.entry(y).or_default().push(k);
-                }
-                // Samples half a cell apart, each filing the edge in its cell and the eight around
-                // it: every cell the edge passes through, and its neighbours.
-                let samples =
-                    (((b[0] - a[0]).hypot(b[1] - a[1]) / (cell / 2.0)).ceil() as usize).min(MAX_SAMPLES);
-                for j in 0..=samples {
-                    let t = j as f64 / samples.max(1) as f64;
-                    let (x, y) = (index(a[0] + t * (b[0] - a[0])), index(a[1] + t * (b[1] - a[1])));
-                    for dx in -1..=1 {
-                        for dy in -1..=1 {
-                            let filed = cells.entry((x + dx, y + dy)).or_default();
-                            if filed.last() != Some(&k) {
-                                filed.push(k);
-                            }
+        for (k, &(a, b)) in edges.iter().enumerate() {
+            let (y0, y1) = (index(a[1].min(b[1])), index(a[1].max(b[1])));
+            for y in y0..=y1.min(y0.saturating_add(MAX_SAMPLES as i64)) {
+                rows.entry(y).or_default().push(k);
+            }
+            // Samples half a cell apart, each filing the edge in its cell and the eight around
+            // it: every cell the edge passes through, and its neighbours.
+            let samples =
+                (((b[0] - a[0]).hypot(b[1] - a[1]) / (cell / 2.0)).ceil() as usize).min(MAX_SAMPLES);
+            for j in 0..=samples {
+                let t = j as f64 / samples.max(1) as f64;
+                let (x, y) = (index(a[0] + t * (b[0] - a[0])), index(a[1] + t * (b[1] - a[1])));
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        let filed = cells.entry((x + dx, y + dy)).or_default();
+                        if filed.last() != Some(&k) {
+                            filed.push(k);
                         }
                     }
                 }
@@ -72,21 +66,15 @@ impl Below {
 
     /// Whether `p` lies inside the section: the edges a ray from it to +x crosses, odd.
     fn holds(&self, p: Point) -> bool {
-        let edges = self.rows.get(&self.index(p[1])).into_iter().flatten().filter_map(|&k| self.edges.get(k));
-        edges
-            .filter(|&&(a, b)| {
-                (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
-            })
-            .count()
-            % 2
-            == 1
+        let row = self.rows.get(&self.index(p[1])).into_iter().flatten();
+        encloses(row.filter_map(|&k| self.edges.get(k).copied()), p)
     }
 
     /// The distance from `p` to the section's edge, when under one cell; past it, one cell.
     fn near_distance(&self, p: Point) -> f64 {
         let cell = (self.index(p[0]), self.index(p[1]));
         let edges = self.cells.get(&cell).into_iter().flatten().filter_map(|&k| self.edges.get(k));
-        edges.map(|&(a, b)| distance_to_segment(p, a, b)).fold(self.cell, f64::min)
+        edges.map(|&(a, b)| segment_distance(p, a, b)).fold(self.cell, f64::min)
     }
 
     /// The fraction of a bead `width` wide centred at `p` that hangs over air.
@@ -103,14 +91,6 @@ impl Below {
             reach / width
         }
     }
-}
-
-fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let t =
-        if len2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
 }
 
 fn midpoint(a: Point, b: Point) -> Point {

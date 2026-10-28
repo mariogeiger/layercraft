@@ -10,7 +10,9 @@
 
 use crate::Path;
 use crate::Role;
-use layercraft_geom::{GeomError, Point, Region, difference, intersection};
+use layercraft_geom::{
+    GeomError, Point, Region, difference, edges, encloses, intersection, segment_distance,
+};
 use layercraft_region::RegionLayer;
 
 /// One infill area of a layer: its role, the region its lines fill, and the longest join.
@@ -39,55 +41,24 @@ fn crosses(a: Point, b: Point, c: Point, d: Point) -> bool {
         && (d3 > scale && d4 < -scale || d3 < -scale && d4 > scale)
 }
 
-fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let t =
-        if len2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
-}
-
-fn edges(region: &Region) -> impl Iterator<Item = (Point, Point)> + '_ {
-    region.iter().flatten().flat_map(|c| {
-        let n = c.len();
-        (0..n).filter_map(move |i| Some((*c.get(i)?, *c.get((i + 1) % n)?)))
-    })
+fn region_edges(region: &Region) -> impl Iterator<Item = (Point, Point)> + '_ {
+    region.iter().flatten().flat_map(|c| edges(c))
 }
 
 /// Whether a point is inside the region or on its edge (even-odd over all its contours).
 fn covers(region: &Region, p: Point) -> bool {
-    let mut inside = false;
-    for (a, b) in edges(region) {
-        if distance_to_segment(p, a, b) < 1e-4 {
-            return true;
-        }
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
-            inside = !inside;
-        }
-    }
-    inside
+    region_edges(region).any(|(a, b)| segment_distance(p, a, b) < 1e-4) || encloses(region_edges(region), p)
 }
 
 fn inside(region: &Region, a: Point, b: Point) -> bool {
-    !edges(region).any(|(c, d)| crosses(a, b, c, d))
+    !region_edges(region).any(|(c, d)| crosses(a, b, c, d))
         && covers(region, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
-}
-
-fn end_of(path: &Path) -> Option<Point> {
-    if path.closed { path.points.first().copied() } else { path.points.last().copied() }
 }
 
 /// The part of a layer where a move needs no retraction: inside its outer wall (inside its
 /// areas, with none), covered by the layer above, and not hanging over air.
 pub fn hidden(layer: &RegionLayer) -> Result<Region, GeomError> {
-    let outline = match layer.walls.first() {
-        Some(outer) => outer.clone(),
-        None => [&layer.top_surface, &layer.solid, &layer.bridge, &layer.bridge_on_sparse, &layer.sparse]
-            .into_iter()
-            .flatten()
-            .cloned()
-            .collect(),
-    };
+    let outline: Region = layer.outline().into_iter().cloned().collect();
     difference(&intersection(&outline, &layer.above)?, &layer.bridge)
 }
 
@@ -101,7 +72,7 @@ pub fn hide(mut paths: Vec<Path>, hidden: &Region) -> Vec<Path> {
         {
             path.travel_inside = inside(hidden, a, b);
         }
-        end = end_of(path);
+        end = path.end();
     }
     paths
 }
@@ -115,7 +86,7 @@ pub fn link(mut paths: Vec<Path>, fill: &Fill) -> Vec<Path> {
             let gap = (b[0] - a[0]).hypot(b[1] - a[1]);
             path.travel_inside = gap <= fill.max_link && (gap < EPS || inside(&fill.reach, a, b));
         }
-        end = end_of(path);
+        end = path.end();
     }
     paths
 }

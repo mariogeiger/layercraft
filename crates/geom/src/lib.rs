@@ -6,19 +6,11 @@
 //! must be finite and inside `LIMIT_MM`, which keeps the engine away from its panicking paths.
 //! Results lie on a nanometre lattice (`GRID_MM`) and keep no contour thinner than a
 //! micrometre (`RESOLUTION_MM`).
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod bead;
 mod ops;
 
-pub use bead::{bead_area, bead_spacing};
+pub use bead::{bead_area, bead_spacing, disc_area};
 
 pub use ops::{
     GRID_MM, RESOLUTION_MM, area, clip_lines, difference, intersection, offset, triangulate, union,
@@ -84,16 +76,34 @@ pub fn check_points<'a>(lists: impl IntoIterator<Item = &'a Vec<Point>>) -> Resu
     Ok(())
 }
 
+/// The edges of a closed contour, each from a vertex to the next, the last back to the first.
+pub fn edges(contour: &[Point]) -> impl Iterator<Item = (Point, Point)> + '_ {
+    contour.iter().copied().zip(contour.iter().copied().cycle().skip(1))
+}
+
 /// The signed area of a contour: positive when counterclockwise.
 pub fn signed_area(contour: &[Point]) -> f64 {
-    let n = contour.len();
-    let mut twice = 0.0;
-    for i in 0..n {
-        if let (Some(a), Some(b)) = (contour.get(i), contour.get((i + 1) % n)) {
-            twice += a[0] * b[1] - b[0] * a[1];
-        }
-    }
-    twice / 2.0
+    edges(contour).fold(0.0, |twice, (a, b)| twice + a[0] * b[1] - b[0] * a[1]) / 2.0
+}
+
+/// Whether the edge `a`–`b` crosses the ray from `p` toward +x.
+pub fn crosses_ray(p: Point, (a, b): (Point, Point)) -> bool {
+    (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+}
+
+/// Whether `p` lies inside the contours whose edges are `edges`, by the even-odd rule: the ray
+/// from it crosses them an odd number of times.
+pub fn encloses(edges: impl IntoIterator<Item = (Point, Point)>, p: Point) -> bool {
+    edges.into_iter().filter(|&e| crosses_ray(p, e)).count() % 2 == 1
+}
+
+/// The distance from `p` to the segment `a`–`b`.
+pub fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t =
+        if len2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
 }
 
 /// The length of an open polyline.

@@ -91,6 +91,14 @@ impl Move {
     }
 }
 
+/// The length of each move of a layer from `at`, where the nozzle starts it, which then becomes
+/// where the layer leaves the nozzle.
+pub fn lengths(moves: &[Move], at: &mut Option<Point3>) -> Vec<f64> {
+    let lengths = chained(moves, *at).map(|(from, m)| from.map_or(0.0, |f| m.length(f))).collect();
+    *at = moves.iter().rev().find_map(|m| m.to).or(*at);
+    lengths
+}
+
 /// Each move of a layer with the point it starts from: `start` for the first, which is
 /// unknown after the machine's own G-code, then each move's end.
 pub fn chained(moves: &[Move], start: Option<Point3>) -> impl Iterator<Item = (Option<Point3>, &Move)> {

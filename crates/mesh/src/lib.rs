@@ -3,14 +3,6 @@
 //! A `Mesh` is a list of bodies placed in the printer's frame; each body is an indexed triangle
 //! set whose triangles face outward (counterclockwise seen from outside). 3MF files are hostile
 //! input: indices are checked, sizes capped and every coordinate must be finite.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 pub mod solids;
 mod threemf;

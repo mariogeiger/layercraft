@@ -1,6 +1,6 @@
 //! Parallel lines on a fixed grid, clipped to a region.
 
-use layercraft_geom::{GeomError, Point, Polyline, Region, bounds, clip_lines, polyline_length};
+use layercraft_geom::{GeomError, Point, Polyline, Region, bounds, clip_lines, edges, polyline_length};
 
 /// The most hatch lines drawn across one region.
 const MAX_LINES: f64 = 1_000_000.0;
@@ -47,17 +47,12 @@ pub fn bridge_angle(
     preferred: f64,
     hangs: impl Fn(Point) -> bool,
 ) -> Result<f64, GeomError> {
-    let mut candidates = vec![preferred];
-    for c in region.iter().flatten() {
-        let n = c.len();
-        for i in 0..n {
-            let (Some(a), Some(b)) = (c.get(i), c.get((i + 1) % n)) else { continue };
-            candidates.push((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0);
-        }
-    }
+    let across = region.iter().flatten().flat_map(|c| edges(c));
+    let candidates = std::iter::once(preferred)
+        .chain(across.map(|(a, b)| (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0));
     let normalize = |a: f64| a.rem_euclid(180.0);
     let mut seen: Vec<f64> = Vec::new();
-    for a in candidates.into_iter().map(normalize).chain((0..12).map(|k| 15.0 * k as f64)) {
+    for a in candidates.map(normalize).chain((0..12).map(|k| 15.0 * k as f64)) {
         if seen.len() < MAX_CANDIDATES && !seen.iter().any(|s| (s - a).abs() < 0.5) {
             seen.push(a);
         }

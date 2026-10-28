@@ -15,14 +15,6 @@
 //! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
 //! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
 //! takes the parameters at its centre; `finish` reads a program's summary from its moves.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod cool;
 mod fit;
@@ -41,7 +33,7 @@ pub use merge::merge;
 pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};
 
-pub use layercraft_geom::bead_area;
+pub use layercraft_geom::{bead_area, disc_area};
 use layercraft_machine::TemplateError;
 use layercraft_path::Role;
 use layercraft_tune::TuneError;

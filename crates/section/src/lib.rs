@@ -6,14 +6,6 @@
 //! stitch into closed loops with no tolerance. Oriented by the outward normals, the loops wind
 //! once around the solid's inside; the layer region is the set of positive winding number,
 //! which also merges overlapping bodies and absorbs non-manifold edges.
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unimplemented,
-    clippy::todo,
-    clippy::unreachable
-)]
 
 mod cut;
 

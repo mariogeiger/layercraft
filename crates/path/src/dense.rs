@@ -13,7 +13,7 @@
 
 use crate::PathError;
 use crate::hatch::hatch;
-use layercraft_geom::{Contour, GeomError, Point, Polyline, Region, area, intersection, union};
+use layercraft_geom::{Contour, GeomError, Point, Polyline, Region, area, edges, intersection, union};
 use std::f64::consts::PI;
 
 /// The longest edges whose directions a piece is tried along.
@@ -25,13 +25,8 @@ fn angles(piece: &Region, preferred: f64) -> Vec<f64> {
     let mut edges: Vec<(f64, f64)> = piece
         .iter()
         .flatten()
-        .flat_map(|c| {
-            let n = c.len();
-            (0..n).filter_map(move |i| {
-                let (a, b) = (c.get(i)?, c.get((i + 1) % n)?);
-                Some(((b[0] - a[0]).hypot(b[1] - a[1]), (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees()))
-            })
-        })
+        .flat_map(|c| edges(c))
+        .map(|(a, b)| ((b[0] - a[0]).hypot(b[1] - a[1]), (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees()))
         .collect();
     edges.sort_by(|x, y| y.0.total_cmp(&x.0));
     let mut out: Vec<f64> = Vec::new();

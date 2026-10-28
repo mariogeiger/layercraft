@@ -1,6 +1,6 @@
 //! From ordered beads to the program: travels, retractions, wipes and lifts, layer by layer.
 
-use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area};
+use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area, disc_area};
 use layercraft_geom::Point;
 use layercraft_machine::{Scope, Value};
 use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
@@ -119,11 +119,7 @@ fn path_points(path: &Path, gap: f64) -> Vec<Point> {
 
 /// The cross-section a bead lays: flattened on the layer below, or round for a strand.
 fn section_area(path: &Path, height: f64) -> f64 {
-    if path.role.strand() {
-        std::f64::consts::PI * path.width * path.width / 4.0
-    } else {
-        bead_area(path.width, height)
-    }
+    if path.role.strand() { disc_area(path.width) } else { bead_area(path.width, height) }
 }
 
 /// The speed of a bead: by role, the first layer's own, never past the melt limit.
@@ -324,7 +320,7 @@ impl State {
 pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, MotionError> {
     let base = field.base();
     check(base)?;
-    let filament_area = std::f64::consts::PI * (base.filament_diameter / 2.0).powi(2);
+    let filament_area = disc_area(base.filament_diameter);
     let mut s = State {
         moves: Vec::new(),
         at: [0.0; 3],
