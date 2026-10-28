@@ -296,12 +296,9 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 / 100.0,
             z_hop,
             lift_radius,
-            // A filament that does not slow down for cooling has no layer time to reach.
-            slow_down_layer_time: if m.number(Filament, "slow_down_for_layer_cooling").unwrap_or(1.0) > 0.0 {
-                m.number(Filament, "slow_down_layer_time")?
-            } else {
-                0.0
-            },
+            // Every layer takes its time to cool, whatever `slow_down_for_layer_cooling` says: one
+            // laid faster stays soft under the next, and sags or smears.
+            slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,
             slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,
             fan_speed: fraction(m, Filament, "fan_max_speed")?.clamp(0.0, 1.0),
             overhang_fan_speed,

@@ -21,8 +21,8 @@ curious humans like that too.
 | **paths** | every bead, in printing order | wall loops with their seams lined up, hatches on a fixed grid, strands across bridges |
 | **program** | every move of the nozzle, layer by layer, each with all it does: where it goes (a line, or an arc climbing about a vertical axis), the filament, speed, acceleration and fan, and the bead it lays | filament from the volume each bead fills, speeds from the machine, time from a look-ahead planner |
 
-Then each layer is slowed if it would print faster than it cools, each bead held to what the hot
-end melts, the machine's own G-code is put around the layers, `verify` checks every move against
+Then each layer is slowed if it would print faster than it cools, and waits off the part when even
+its slowest is too fast, each bead held to what the hot end melts, the machine's own G-code is put around the layers, `verify` checks every move against
 the machine, and the program is written as G-code and packed into the `.gcode.3mf` the printer
 reads from its storage. A program can also be read back from any slicer's G-code, and several
 programs merged onto one plate.

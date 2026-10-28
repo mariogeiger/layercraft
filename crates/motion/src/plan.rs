@@ -188,7 +188,7 @@ impl State {
 
     /// A move to `to` (or in place), with the nozzle's state.
     fn push(&mut self, to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>) {
-        self.moves.push(Move { to, arc, e, speed, accel: self.accel, fan: self.fan, bead });
+        self.moves.push(Move { to, arc, e, speed, accel: self.accel, fan: self.fan, bead, wait: 0.0 });
         if let Some(to) = to {
             if arc.is_none() {
                 self.heading = self.heading_to([to[0], to[1]]);

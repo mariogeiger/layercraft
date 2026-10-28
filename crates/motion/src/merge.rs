@@ -73,6 +73,7 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
                     e: state - piece.before,
                     speed,
                     bead: None,
+                    wait: 0.0,
                     ..first.clone()
                 });
             }

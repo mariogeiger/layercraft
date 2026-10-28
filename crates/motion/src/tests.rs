@@ -85,7 +85,7 @@ fn single(moves: Vec<Move>) -> Program {
 }
 
 fn travel(to: [f64; 3], speed: f64) -> Move {
-    Move { to: Some(to), arc: None, e: 0.0, speed, accel: 1000.0, fan: 0.0, bead: None }
+    Move { to: Some(to), arc: None, e: 0.0, speed, accel: 1000.0, fan: 0.0, bead: None, wait: 0.0 }
 }
 
 /// Whether a move climbs from where the nozzle is, straight or turning, laying nothing.
@@ -145,24 +145,42 @@ fn a_layer_starts_crossing_over_at_the_hop_then_lands() {
     assert!(moves[4].bead.is_some());
 }
 
+/// A plate 256 mm square.
+const PLATE: [[f64; 2]; 2] = [[0.0, 0.0], [256.0, 256.0]];
+
 #[test]
-fn short_layers_slow_down_to_cool() {
+fn a_layer_too_short_at_its_floor_waits_off_the_part() {
     let mut p = params();
     p.slow_down_layer_time = 4.0;
     let mut program = compiled(&line(10.0), &p);
     let speeds = |program: &Program| -> Vec<f64> {
         all(program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect()
     };
-    assert_eq!(speeds(&program)[1], 100.0);
+    assert_eq!(speeds(&program), [50.0, 100.0]);
     let before = program.clone();
-    cool(&mut program, &Field::uniform(p)).unwrap();
-    // 10 mm at 100 mm/s is 0.1 s: slowed to 2.5 mm/s, held at the 10 mm/s floor.
-    assert_eq!(speeds(&program)[1], 10.0);
+    cool(&mut program, &Field::uniform(p.clone()), PLATE).unwrap();
+    // 10 mm at 50 mm/s, then at 100 mm/s, is 0.2 s and 0.1 s: held at the 10 mm/s floor.
+    assert_eq!(speeds(&program), [10.0, 10.0]);
+    // At its floor the first layer takes 1 s. Lifted off its bead's end at (20, 10), it goes
+    // 10 mm past the bead the nearest way, along x, and waits the 3 s left.
+    let n = before.layers[0].moves.len();
+    let added = &program.layers[0].moves[n..];
+    assert_eq!(added.len(), 2, "{added:?}");
+    assert_eq!(
+        (added[0].to, added[0].e, added[0].speed),
+        (Some([30.0, 10.0, 0.6000000000000001]), 0.0, 300.0)
+    );
+    assert_eq!((added[1].to, added[1].e, added[1].wait), (None, 0.0, 3.0));
+    // Nothing lands on the last layer: it does not wait.
+    assert_eq!(program.layers[1].moves.len(), before.layers[1].moves.len());
     // Travels, wipes and lifts keep their speed.
-    let others = |program: &Program| -> Vec<Move> {
-        all(program).into_iter().filter(|m| m.bead.is_none()).cloned().collect()
-    };
-    assert_eq!(others(&program), others(&before));
+    let others =
+        |moves: &[Move]| -> Vec<Move> { moves.iter().filter(|m| m.bead.is_none()).cloned().collect() };
+    assert_eq!(others(&program.layers[0].moves[..n]), others(&before.layers[0].moves));
+    assert_eq!(others(&program.layers[1].moves), others(&before.layers[1].moves));
+    // The wait is in the program's time.
+    let (t0, t1) = (finish(&before, &p.limits, 1.75), finish(&program, &p.limits, 1.75));
+    assert!(t1.motion_seconds - t0.motion_seconds > 3.0 + 2.0 * 0.9, "{t0:?} {t1:?}");
 }
 
 #[test]
@@ -501,7 +519,7 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
     for (goal, expected) in [(0.5, [100.0, 25.0]), (1.5, [20.0, 10.0])] {
         let p = MotionParams { slow_down_layer_time: goal, ..params() };
         let mut program = compiled(&paths, &p);
-        cool(&mut program, &Field::uniform(p)).unwrap();
+        cool(&mut program, &Field::uniform(p), PLATE).unwrap();
         let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
         assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-6), "goal {goal}: {speeds:?}");
     }

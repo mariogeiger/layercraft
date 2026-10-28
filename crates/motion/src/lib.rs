@@ -9,9 +9,9 @@
 //! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament. A wall
 //! loop stops `seam_gap` short of its start. Speeds come by role, a wall's slowed by the share
 //! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
-//! share), capped by the hot end's volumetric limit;
-//! a layer too short to cool is slowed by a pass of its own (`cool`), and the beads are
-//! written as the fewest lines and arcs within the resolution (`fit`). Leaving
+//! share), capped by the hot end's volumetric limit. A layer too short to cool is slowed by a
+//! pass of its own (`cool`), and waits out the rest off the part when even its slowest is too
+//! short; the beads are written as the fewest lines and arcs within the resolution (`fit`). Leaving
 //! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
 //! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
 //! takes the parameters at its centre; `finish` reads a program's summary from its moves.
@@ -73,6 +73,13 @@ pub struct Move {
     /// The bead laid, for a move that lays one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bead: Option<Bead>,
+    /// The seconds the nozzle then stays where the move leaves it, the fan running.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wait: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// One layer: the moves printed at `z`, after the machine's own layer change, from wherever
@@ -173,7 +180,8 @@ pub struct MotionParams {
     pub z_hop: f64,
     /// The radius of the helix a lift turns, in mm (0: straight up).
     pub lift_radius: f64,
-    /// A layer printing faster than this is slowed down, in seconds.
+    /// The least time a layer takes, to cool before the next lands on it, in seconds: slowed
+    /// down to `slow_down_min_speed`, then waiting off the part.
     pub slow_down_layer_time: f64,
     pub slow_down_min_speed: f64,
     pub fan_speed: f64,

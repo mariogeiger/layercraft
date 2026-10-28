@@ -2,6 +2,26 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.4.14
+
+### Changed
+
+- Every layer takes `slow_down_layer_time` to cool before the next lands on it, whatever
+  `slow_down_for_layer_cooling` says: Bambu PLA Basic on the X2D turns the slowing off, and the
+  Benchy then laid its cabin's layers in 0.7 to 3 s and its chimney's in 0.1 to 0.3 s, still
+  soft under the next: the chimney smeared and the top of the round window sagged. This undoes
+  0.4.3's reading of the switch.
+- A layer still too short at `slow_down_min_speed` waits out the rest: the nozzle goes 10 mm past
+  the layer's beads, the nearest way that stays on the plate, and stays there, the fan running,
+  before the next layer. The Benchy's chimney waits about 2 s a layer; the print takes 32.5 min.
+
+### Added
+
+- `Move::wait`, the seconds the nozzle stays where a move leaves it, written as the printer's own
+  dwell (`M400 P`, in milliseconds) and read back from it or from `G4`; `verify` refuses a wait
+  that is not finite or is negative, and the time counts it. `cool` takes the plate's printable
+  area.
+
 ## 0.4.13
 
 ### Changed

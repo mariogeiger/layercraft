@@ -8,7 +8,8 @@
 //! printer would; an axis the G-code has not named yet takes the next value it is given. A
 //! layer starts at its first travel to a new point or its first extrusion: the wipe,
 //! retraction and lift before it leave the layer below, at its height. An arc keeps its
-//! centre and the angle it turns; `; FEATURE` and `; LINE_WIDTH` name the beads.
+//! centre and the angle it turns; `; FEATURE` and `; LINE_WIDTH` name the beads. A dwell
+//! (`G4`, or the printer's `M400` with a time) is a wait where the nozzle is.
 
 use layercraft_motion::{Arc, Bead, Layer, Move, Program};
 use layercraft_path::Role;
@@ -38,6 +39,7 @@ struct Raw {
     accel: f64,
     fan: f64,
     bead: Option<Bead>,
+    wait: f64,
 }
 
 /// The number a G-code command gives after `letter`.
@@ -142,6 +144,15 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
         }
         match head {
             "" | "G90" | "G91" | "M82" | "M83" | "G92" | "M204" | "M106" | "G17" | "G21" => continue,
+            // A dwell: `S` seconds and `P` milliseconds, where the nozzle is.
+            "G4" | "M400" if has(code, 'S') || has(code, 'P') => {
+                let wait = word(code, 'S').unwrap_or(0.0) + word(code, 'P').unwrap_or(0.0) / 1000.0;
+                let speed = feed.ok_or_else(|| err(line, "a wait before any feed rate".into()))?;
+                let accel = accel.ok_or_else(|| err(line, "a wait before any acceleration".into()))?;
+                let (to, e, arc, bead, in_place) = (at, 0.0, None, None, true);
+                raws.push(Raw { line, in_place, to, arc, e, speed, accel, fan, bead, wait });
+                continue;
+            }
             _ if FRAME.contains(&head) => continue,
             "G0" | "G1" | "G2" | "G3" => {}
             other => return Err(err(line, format!("an unknown command `{other}`"))),
@@ -205,7 +216,7 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
         let speed = feed.ok_or_else(|| err(line, "a move before any feed rate".into()))?;
         let accel = accel.ok_or_else(|| err(line, "a move before any acceleration".into()))?;
         let in_place = named.iter().all(Option::is_none) && arc.is_none();
-        raws.push(Raw { line, in_place, to, arc, e, speed, accel, fan, bead });
+        raws.push(Raw { line, in_place, to, arc, e, speed, accel, fan, bead, wait: 0.0 });
         at = to;
     }
     if let Some((_, moves)) = layers.last_mut() {
@@ -258,7 +269,16 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
                 }
                 (goes.then_some([x, y, z]), arc, m.bead)
             };
-            layer.moves.push(Move { to, arc, e: m.e, speed: m.speed, accel: m.accel, fan: m.fan, bead });
+            layer.moves.push(Move {
+                to,
+                arc,
+                e: m.e,
+                speed: m.speed,
+                accel: m.accel,
+                fan: m.fan,
+                bead,
+                wait: m.wait,
+            });
             at = to.or(at);
         }
         out.push(layer);

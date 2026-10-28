@@ -15,7 +15,7 @@ const ENVELOPE: Envelope = Envelope {
 
 fn mv(to: [f64; 3], e: f64, speed: f64) -> Move {
     let bead = (e > 0.0).then_some(Bead { role: Role::OUTER_WALL, width: 0.42 });
-    Move { to: Some(to), arc: None, e, speed, accel: 1000.0, fan: 0.0, bead }
+    Move { to: Some(to), arc: None, e, speed, accel: 1000.0, fan: 0.0, bead, wait: 0.0 }
 }
 
 fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
@@ -52,6 +52,8 @@ fn each_danger_is_caught() {
         (0, mv([10.0, 10.0, 999.0], 0.0, 500.0)),
         (2, Move { fan: 2.0, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
         (2, Move { accel: 0.0, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
+        (2, Move { wait: f64::NAN, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
+        (2, Move { wait: -1.0, ..mv([20.0, 10.0, 0.2], 0.3, 50.0) }),
         // From where the layer starts, unknown, only a travel.
         (0, mv([10.0, 10.0, 0.2], 0.3, 50.0)),
     ];

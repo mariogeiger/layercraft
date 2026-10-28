@@ -84,8 +84,8 @@ fn run_time(segments: &[Segment], jerk: f64) -> f64 {
         .sum()
 }
 
-/// The time of the program at the end of each move, layer after layer, in seconds; the last
-/// is the total. The machine's own G-code between layers takes no time here.
+/// The time of the program at the end of each move and its wait, layer after layer, in
+/// seconds; the last is the total. The machine's own G-code between layers takes no time here.
 pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
     let mut times = Vec::new();
     let mut done = 0.0;
@@ -113,6 +113,7 @@ pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
             let Some(to) = m.to else {
                 flush(&mut run, &mut times, &mut done);
                 done += if m.speed > 0.0 { m.e.abs() / m.speed } else { 0.0 };
+                done += m.wait;
                 times.push(done);
                 continue;
             };
@@ -131,6 +132,14 @@ pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
             }
             run.push(Segment { slot: times.len(), length, dir, vmax: vmax.max(1e-3), accel });
             times.push(done);
+            // A wait stops the nozzle at the move's end.
+            if m.wait > 0.0 {
+                flush(&mut run, &mut times, &mut done);
+                done += m.wait;
+                if let Some(t) = times.last_mut() {
+                    *t = done;
+                }
+            }
         }
     }
     flush(&mut run, &mut times, &mut done);

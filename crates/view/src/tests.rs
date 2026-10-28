@@ -133,6 +133,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         accel: 1000.0,
         fan: 0.0,
         bead,
+        wait: 0.0,
     };
     let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
     let helix = Arc { centre: [10.0, -3.0], turn: std::f64::consts::TAU };

@@ -13,7 +13,7 @@ fn numbers_are_short() {
 }
 
 fn mv(to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>) -> Move {
-    Move { to, arc, e, speed, accel: 1000.0, fan: 0.0, bead }
+    Move { to, arc, e, speed, accel: 1000.0, fan: 0.0, bead, wait: 0.0 }
 }
 
 fn header() -> Header {
@@ -151,6 +151,9 @@ fn what_is_written_reads_back() {
         mv(Some([16.5, 20.0, 0.2]), None, -0.3, 40.0, None),
         mv(None, None, -0.1, 30.0, None),
         mv(Some([16.5, 20.0, 0.6]), Some(Arc { centre: [16.5, 21.0], turn: tau }), 0.0, 300.0, None),
+        // Off the part to wait for the layer to cool.
+        mv(Some([40.0, 20.0, 0.6]), None, 0.0, 500.0, None),
+        Move { wait: 2.5, ..mv(None, None, 0.0, 500.0, None) },
     ];
     let second = vec![
         mv(Some([30.0, 30.0, 0.8]), None, 0.0, 500.0, None),
@@ -180,6 +183,7 @@ fn what_is_written_reads_back() {
                 close(m.e, n.e, 1e-5) && close(m.speed, n.speed, 1.0 / 60.0) && m.bead == n.bead,
                 "{m:?} read as {n:?}"
             );
+            assert!(close(m.wait, n.wait, 1e-3), "{m:?} read as {n:?}");
             assert_eq!(m.arc.is_some(), n.arc.is_some());
             if let (Some(p), Some(q)) = (m.arc, n.arc) {
                 assert!(

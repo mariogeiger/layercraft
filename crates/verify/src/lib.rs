@@ -6,9 +6,9 @@
 //! height; the nozzle never below the layer it prints (extrusions at the layer's height, other
 //! moves at or above it); layers rising; speeds within the machine's limits, accelerations
 //! positive; filament flowing no faster than the hot end melts it; wipes that move; arcs that
-//! end on their circle, at most a turn; fan between 0 and 1. The machine's own G-code between
-//! layers is the maker's and is not interpreted: after it the nozzle may be anywhere, so a
-//! layer's first move must be a straight travel to a named point.
+//! end on their circle, at most a turn; fan between 0 and 1; waits finite and not negative.
+//! The machine's own G-code between layers is the maker's and is not interpreted: after it the
+//! nozzle may be anywhere, so a layer's first move must be a straight travel to a named point.
 
 use layercraft_motion::{Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
@@ -48,6 +48,9 @@ fn check(m: &Move, from: Option<[f64; 3]>, z: f64, e: &Envelope) -> Option<Strin
     let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
     if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
         return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
+    }
+    if !(m.wait.is_finite() && m.wait >= 0.0) {
+        return Some(format!("a wait of {} s", m.wait));
     }
     if !(0.0..=1.0).contains(&m.fan) {
         return Some(format!("fan at {}", m.fan));

@@ -140,8 +140,17 @@ impl Writer {
     }
 
     /// Writes a move, and the state it needs before it, unless it changes nothing at the
-    /// precision written.
+    /// precision written; then its wait, as the printer's own dwell, in milliseconds.
     fn write_move(&mut self, m: &Move) {
+        self.write_motion(m);
+        let ms = (m.wait * 1000.0).round();
+        if ms > 0.0 {
+            self.state(m);
+            self.line(&format!("M400 P{}", number(ms, 0)));
+        }
+    }
+
+    fn write_motion(&mut self, m: &Move) {
         // A bead's filament with what earlier beads carried; the rest carries on.
         let wanted = if m.bead.is_some() { m.e + self.carry } else { m.e };
         let e = Some(number(wanted, 5)).filter(|e| e != "0");

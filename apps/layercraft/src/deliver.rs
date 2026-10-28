@@ -32,7 +32,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let settings = &d.setup.settings;
     let motion = &settings.motion;
     let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
-    layercraft_motion::cool(&mut program, &field).map_err(|e| e.to_string())?;
+    layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
     let slowed = layercraft_motion::melt(&mut program, motion.max_volumetric_speed, motion.filament_diameter);
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
     let frame =
