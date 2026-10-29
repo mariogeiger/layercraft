@@ -50,6 +50,10 @@ enum Command {
         /// "set": {"motion": {"lift_radius": 0.6}}}`; boxes are in plate millimetres.
         #[arg(long)]
         tune: Option<PathBuf>,
+        /// Keep every layer flat, as a planar slicer does, rather than bend layers to follow
+        /// gently sloped tops.
+        #[arg(long)]
+        flat: bool,
     },
     /// Print several programs together on one plate, layer by layer under one frame: program
     /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
@@ -91,6 +95,9 @@ enum Command {
         /// Vary settings by place, as for `compile`.
         #[arg(long)]
         tune: Option<PathBuf>,
+        /// Keep every layer flat, as for `compile`.
+        #[arg(long)]
+        flat: bool,
     },
 }
 
@@ -137,10 +144,14 @@ fn load_machine(name: &str) -> Result<Machine, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>) -> Result<Setup, String> {
+/// The machine, its settings and the tuning; with `flat`, layers that never bend.
+fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>, flat: bool) -> Result<Setup, String> {
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
     let machine = load_machine(machine)?;
-    let settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
+    let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
+    if flat {
+        settings.layering.foliation = None;
+    }
     Ok(Setup { machine, settings, tuning })
 }
 
@@ -181,8 +192,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}\nvariant: {}", machine.source, machine.variant);
             Ok(())
         }
-        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune } => {
-            let s = setup(&machine, bed.as_deref(), tune.as_deref())?;
+        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune, flat } => {
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), flat)?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -201,7 +212,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let s = setup(&machine, bed.as_deref(), tune.as_deref())?;
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), false)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
             let limits = &s.settings.motion.limits;
@@ -219,11 +230,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, machine, layers, tune } => {
+        Command::View { input, out, machine, layers, tune, flat } => {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s = setup(&machine, None, tune.as_deref())?;
+                let s = setup(&machine, None, tune.as_deref(), flat)?;
                 let output =
                     pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?
