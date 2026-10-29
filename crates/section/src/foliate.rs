@@ -4,16 +4,16 @@
 //! Slab `k` lies between the leaves `k − 1` and `k`; leaf `k` lies at `z_k + d_k(x, y)`, `z_k`
 //! the top of the flat layer and `d_k` a field on the grid; the bed and the first leaf stay flat.
 //! A patch (`patches`) pins `d` on one leaf `K`, the flat layer nearest the middle of its heights,
-//! and on the `parallel_layers − 1` leaves below, which keep its shape. Every other value obeys
-//! difference constraints: each slab `min_layer_height` to `max_layer_height` thick, each leaf
-//! leaning no more than `tan(max_slope)` between neighbouring vertices and rising no more than
-//! `max_rise`, and the leaf below no higher than the one printed over it within the nozzle's
-//! flat face, `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ face_radius`, between vertices too (`face`).
-//! They make a quasi-distance `δ` between (leaf, vertex) pairs, and the fields obeying them a
-//! lattice, closed under max and min: between the least, `Lo(x) = max_p (A_p − δ(x, p))`, and the
-//! greatest, `U(x) = min_p (A_p + δ(p, x))`, over pins `p` of value `A_p`, each leaf takes the
-//! value nearest flat, `d = max(Lo, min(0, U))`, meeting every pin and bending no more than they
-//! demand. Pins are accepted largest patch first, nearest the plane first, each only when it
+//! and on the `parallel_layers − 1` leaves below, which keep its shape, each slab as thick as the
+//! face lets parallel slabs be on the patch's slope. Every other value obeys difference
+//! constraints: each slab `min_layer_height` to `max_layer_height` thick, each leaf leaning no
+//! more than `tan(max_slope)` between neighbouring vertices and rising no more than `max_rise`,
+//! and no bead below above the nozzle's face, `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ face_reach`
+//! (`face`). They make a quasi-distance `δ` between (leaf, vertex) pairs, and the fields obeying
+//! them a lattice, closed under max and min: between the least, `Lo(x) = max_p (A_p − δ(x, p))`,
+//! and the greatest, `U(x) = min_p (A_p + δ(p, x))`, over pins `p` of value `A_p`, each leaf takes
+//! the value nearest flat, `d = max(Lo, min(0, U))`, meeting every pin and bending no more than
+//! they demand. Pins are accepted largest patch first, nearest the plane first, each only when it
 //! agrees with those held, `A_p − A_q ≤ δ(q, p)` by a bound never above the grid's paths, so the
 //! envelopes, cones along the grid by Dijkstra's algorithm closed across leaves, meet the pins.
 //! A patch rising more than `max_rise` is followed in bands, each on a leaf of its own.
@@ -42,9 +42,10 @@ pub struct Foliation {
     pub parallel_layers: usize,
     /// The side of the grid's squares, in mm.
     pub cell: f64,
-    /// The radius of the nozzle's flat face, in mm: within it of where a leaf is printed, the
-    /// leaf below lies no higher.
-    pub face_radius: f64,
+    /// How far from where a leaf is printed the leaf below lies no higher, in mm: the radius of
+    /// the nozzle's flat face, and half the widest bead, whose flat top stands across its width
+    /// as high as its middle.
+    pub face_reach: f64,
 }
 
 /// Fractions of a cell by which the grid is set off the plate's origin, irrational so that its
@@ -67,6 +68,9 @@ struct Metric {
     laps: Laps,
     /// The most leaves a path crosses.
     leaves: usize,
+    /// Whether a path may gain by turning: crossing a leaf more each way, for `up + down`, lets
+    /// `d` fall sideways at most `slope · R − t` further, `fall` being convex.
+    turns: bool,
 }
 
 impl Metric {
@@ -84,6 +88,9 @@ impl Metric {
             let along = if m == 0 { self.slope * r } else { m as f64 * self.laps.fall(r / m as f64) };
             along.min(self.rise)
         };
+        if !self.turns {
+            return falls as f64 * self.down + rises as f64 * self.up + sideways(falls);
+        }
         let mut best = f64::INFINITY;
         for extra in 0..=self.leaves {
             let crossing = (falls + extra) as f64 * self.down + (rises + extra) as f64 * self.up;
@@ -127,10 +134,14 @@ impl Accepted<'_> {
             return false;
         }
         let [ci, cj] = self.cell(at);
+        // Sideways `d` changes no slower than this: pins that differ by less over their
+        // distance agree, whatever leaves they lie on.
+        let rate = m.laps.rate();
         for dj in -1..=1 {
             for di in -1..=1 {
                 for q in self.cells.get(&[ci + di, cj + dj]).into_iter().flatten() {
-                    if q.leaf.abs_diff(leaf) > self.leaves {
+                    let (dx, dy, dv) = (q.at[0] - at[0], q.at[1] - at[1], q.value - value);
+                    if q.leaf.abs_diff(leaf) > self.leaves || dv * dv <= rate * rate * (dx * dx + dy * dy) {
                         continue;
                     }
                     if value - q.value > m.dist((q.leaf, q.at), (leaf, at)) + SLACK
@@ -168,8 +179,8 @@ fn check(p: &Foliation, layer_height: f64) -> Result<(), SectionError> {
     if !(p.cell.is_finite() && (0.05..=5.0).contains(&p.cell)) || p.parallel_layers > 50 {
         return bad("the cell must be 0.05 to 5 mm, and parallel layers at most 50");
     }
-    if !(p.face_radius.is_finite() && (0.0..=10.0).contains(&p.face_radius)) {
-        return bad("the nozzle's face must be 0 to 10 mm across its radius");
+    if !(p.face_reach.is_finite() && (0.0..=10.0).contains(&p.face_reach)) {
+        return bad("the nozzle's face must reach 0 to 10 mm");
     }
     Ok(())
 }
@@ -267,15 +278,10 @@ pub fn foliate(
     if slope < 1e-3 {
         return Ok(flat);
     }
-    let down = layer_height - p.min_layer_height;
-    let metric = Metric {
-        up: p.max_layer_height - layer_height,
-        down,
-        slope,
-        rise: p.max_rise,
-        laps: laps(s, p.face_radius, slope, down, p.min_layer_height),
-        leaves: tops.len(),
-    };
+    let (up, down) = (p.max_layer_height - layer_height, layer_height - p.min_layer_height);
+    let laps = laps(s, p.face_reach, slope, down, p.min_layer_height);
+    let turns = up + down < slope * laps.reach - p.min_layer_height;
+    let metric = Metric { up, down, slope, rise: p.max_rise, laps, leaves: tops.len(), turns };
     // Bands this wide put every pin within half the rise of its leaf's plane, the plane half a
     // layer from the band's middle at most, the band's edges half a layer past it at most: two
     // pins then never differ by more than the rise, and differ by more than their distance's
@@ -317,9 +323,16 @@ pub fn foliate(
                     }
                     continue;
                 }
-                let copies = (0..parallel).filter_map(|j| leaf.checked_sub(j)).filter(|&k| k >= 1);
-                if copies.clone().all(|k| accepted.fits(k, at, value)) {
-                    for k in copies {
+                // Each copy a slab lower, as thick as the face lets parallel slabs be on the pin's
+                // slope; none where no slab can be that thick.
+                let thicker = (q.slope * metric.laps.reach - layer_height).max(0.0);
+                let depth = if thicker <= metric.up + SLACK { parallel } else { 1 };
+                let copies = (0..depth)
+                    .filter_map(|j| Some((leaf.checked_sub(j)?, value - j as f64 * thicker)))
+                    .filter(|&(k, _)| k >= 1);
+                // Every value within the bound keeps every leaf within the rise.
+                if copies.clone().all(|(k, v)| v.abs() <= bound && accepted.fits(k, at, v)) {
+                    for (k, value) in copies {
                         accepted.hold(Held { leaf: k, vertex: q.vertex, at, value });
                     }
                     took = true;

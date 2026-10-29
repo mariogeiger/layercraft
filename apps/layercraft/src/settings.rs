@@ -73,8 +73,9 @@ const MAX_SLOPE: f64 = 20.0;
 const SLAB_SPREAD: f64 = 0.5;
 
 /// The side of the grid layers bend on, in nozzle diameters: fine enough that a bent layer meets
-/// a smooth top surface within a micrometre, coarse enough that a bead crosses few lines.
-const BEND_CELL: f64 = 1.25;
+/// a smooth top surface within a micrometre and that the grid's triangles cost the nozzle's face
+/// little of its reach (`face`), coarse enough that a bead crosses few lines.
+const BEND_CELL: f64 = 0.625;
 
 /// The hop and the radius of the helix a lift turns, a spiral one's `spiral_radius`; a filament's
 /// own lift wins over the printer's. Bambu's automatic lift is taken as the spiral one.
@@ -176,6 +177,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     let outer = width(m, "outer_wall_line_width", nozzle)?;
     let inner = width(m, "inner_wall_line_width", nozzle)?;
     let sparse_width = width(m, "sparse_infill_line_width", nozzle)?;
+    let top_surface_width = width(m, "top_surface_line_width", nozzle)?;
+    let solid_width = width(m, "internal_solid_infill_line_width", nozzle)?;
+    // Bridges are laid a nozzle wide.
+    let widest =
+        [outer, inner, sparse_width, top_surface_width, solid_width, nozzle].into_iter().fold(0.0, f64::max);
     let (first_bed_key, _) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
@@ -231,7 +237,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 max_rise: (nozzle_shape.protrusion - printer.head_margin).max(0.0),
                 parallel_layers: 2,
                 cell: BEND_CELL * nozzle,
-                face_radius: nozzle_shape.face_diameter / 2.0,
+                face_reach: (nozzle_shape.face_diameter + widest) / 2.0,
             }),
         },
         region: RegionParams {
@@ -254,8 +260,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         path: PathParams {
             outer_wall_width: outer,
             inner_wall_width: inner,
-            top_surface_width: width(m, "top_surface_line_width", nozzle)?,
-            solid_width: width(m, "internal_solid_infill_line_width", nozzle)?,
+            top_surface_width,
+            solid_width,
             sparse_width,
             sparse_density: fraction(m, Process, "sparse_infill_density")?,
             infill_wall_overlap: fraction(m, Process, "infill_wall_overlap")?,

@@ -20,6 +20,8 @@ pub struct Pin {
     /// Under a patch triangle; otherwise beside the shadow, on a triangle's plane carried past
     /// its edge.
     pub exact: bool,
+    /// How steeply that triangle leans: the tangent of its angle to the plate.
+    pub slope: f64,
 }
 
 /// One top surface a leaf may follow.
@@ -119,11 +121,12 @@ pub fn patches(mesh: &Mesh, grid: &Grid, max_slope: f64) -> Vec<Patch> {
     let mut out = Vec::new();
     for triangles in groups(mesh, max_slope) {
         let mut area = 0.0;
-        // Each vertex's height, and how far from the triangle that gave it.
-        let mut best: HashMap<[i64; 2], (f64, f64)> = HashMap::new();
+        // Each vertex's height, how far from the triangle that gave it, and how steep that is.
+        let mut best: HashMap<[i64; 2], (f64, f64, f64)> = HashMap::new();
         for t in &triangles {
             let n = normal(*t);
             area += n[2] / 2.0;
+            let slope = n[0].hypot(n[1]) / n[2];
             let (lo, hi) = t.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), v| {
                 ([lo[0].min(v[0]), lo[1].min(v[1])], [hi[0].max(v[0]), hi[1].max(v[1])])
             });
@@ -147,17 +150,17 @@ pub fn patches(mesh: &Mesh, grid: &Grid, max_slope: f64) -> Vec<Patch> {
                     if off > reach || !height.is_finite() {
                         continue;
                     }
-                    let slot = best.entry([i, j]).or_insert((off, height));
+                    let slot = best.entry([i, j]).or_insert((off, height, slope));
                     // The nearest triangle wins; under two at once, the higher.
                     if off < slot.0 || (off == 0.0 && slot.0 == 0.0 && height > slot.1) {
-                        *slot = (off, height);
+                        *slot = (off, height, slope);
                     }
                 }
             }
         }
         let mut pins: Vec<Pin> = best
             .into_iter()
-            .map(|(vertex, (off, height))| Pin { vertex, height, exact: off == 0.0 })
+            .map(|(vertex, (off, height, slope))| Pin { vertex, height, exact: off == 0.0, slope })
             .collect();
         pins.sort_by_key(|p| p.vertex);
         if pins.iter().any(|p| p.exact) {

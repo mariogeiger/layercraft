@@ -1,26 +1,28 @@
 //! The nozzle's flat face as the grid resolves it: how far `d` may fall from a leaf to the one
-//! below, to each offset, so that the leaf below never stands above the face printing over it.
+//! below, to each offset, so that no bead below stands above the face printing over it.
 //!
-//! The face asks `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ ρ`. The leaves are linear on the grid's
-//! triangles, and for such fields the bounds `d_{k−1}(u + δ) − d_k(u) ≤ W(δ)` at the vertices give
-//! `d_{k−1}(y) − d_k(x) ≤ W̃(y − x)` everywhere, `W̃` the linear interpolation of `W` on the same
-//! triangles, and nothing more: over two triangles and a triangle of offsets the difference less
-//! `W̃` is affine, and the polytope they bound has only pairs of vertices for corners, the sides
-//! lying along three directions any two of which span the lattice. The face holds exactly when
-//! `W̃ ≤ h` over its disc. `W(δ) = h − t + fall(|δ|)`, `t` the thinnest slab, keeps every pair of
-//! parallel planes leaning up to `s` with slabs `t ≥ max(t_min, s·R)` between them, a face of
-//! radius `R`: `fall(ℓ) = min(s·ℓ, max(t·ℓ/R, t + s·(ℓ − R)))`. At `R = ρ` its interpolation
-//! overshoots on the disc, the function bending between vertices; `R` is the least radius that
-//! does not, found by bisection, the test exact: an affine function is greatest over a triangle
-//! and a disc at a corner inside the disc, where a side crosses the circle, or where the circle
-//! meets its gradient. Offsets whose weight a nearer one and the slope imply are dropped.
+//! A bead's flat top stands as high as its middle, on its leaf, so the face asks
+//! `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ ρ`, its reach: its radius and half the widest bead.
+//! The leaves are linear on the grid's triangles, and for such fields the bounds
+//! `d_{k−1}(u + δ) − d_k(u) ≤ W(δ)` at the vertices give `d_{k−1}(y) − d_k(x) ≤ W̃(y − x)`
+//! everywhere, `W̃` the linear interpolation of `W` on the same triangles, and nothing more: over
+//! two triangles and a triangle of offsets the difference less `W̃` is affine, and the polytope
+//! they bound has only pairs of vertices for corners, the sides lying along three directions any
+//! two of which span the lattice. The face holds exactly when `W̃ ≤ h` over its disc.
+//! `W(δ) = h − t + fall(|δ|)`, `t` the thinnest slab, keeps every pair of parallel planes leaning
+//! up to `s` with slabs `t ≥ max(t_min, s·R)` between them, a face reaching `R`:
+//! `fall(ℓ) = min(s·ℓ, max(t·ℓ/R, t + s·(ℓ − R)))`. At `R = ρ` its interpolation overshoots on the
+//! disc, the function bending between vertices; `R` is the least reach that does not, found by
+//! bisection, the test exact: an affine function is greatest over a triangle and a disc at a
+//! corner inside the disc, where a side crosses the circle, or where the circle meets its
+//! gradient. Offsets whose weight a nearer one and the slope imply are dropped.
 
 use std::collections::HashMap;
 use std::f64::consts::SQRT_2;
 
 /// Room for rounding when weights are compared, in mm.
 const SLACK: f64 = 1e-9;
-/// Halvings of the bisection on the face's radius: far below a nanometre.
+/// Halvings of the bisection on the face's reach: far below a nanometre.
 const BISECTIONS: usize = 48;
 
 /// The edges from a leaf to the one below.
@@ -28,7 +30,7 @@ const BISECTIONS: usize = 48;
 pub(crate) struct Laps {
     /// Offsets in cells, `[0, 0]` among them, and how far `d` may fall to each, in mm.
     pub edges: Vec<([i64; 2], f64)>,
-    /// The face's radius as the grid resolves it, `R`, in mm; 0 without a face.
+    /// The face's reach as the grid resolves it, `R`, in mm; 0 without a face.
     pub reach: f64,
     slope: f64,
     thin: f64,
@@ -54,7 +56,7 @@ fn fall(l: f64, slope: f64, thin: f64, reach: f64) -> f64 {
     (slope * l).min((thin * l / reach).max(thin + slope * (l - reach)))
 }
 
-/// The edges for a face of `face` mm radius on a grid of `cell` mm, leaves leaning up to `slope`,
+/// The edges for a face reaching `face` mm on a grid of `cell` mm, leaves leaning up to `slope`,
 /// `d` falling by `down` straight down, the thinnest slab `thin`.
 pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> Laps {
     let straight = Laps { edges: vec![([0, 0], down)], reach: 0.0, slope, thin };

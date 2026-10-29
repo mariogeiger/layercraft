@@ -115,7 +115,7 @@ fn bent() -> Layering {
             max_rise: 3.0,
             parallel_layers: 2,
             cell: 0.5,
-            face_radius: 0.5,
+            face_reach: 0.5 + 0.42 / 2.0,
         }),
     }
 }
@@ -264,13 +264,34 @@ fn the_leaf_below_never_stands_above_the_nozzle_face() {
     let surfaces: [Surface; 2] =
         [("diagonal", |x, y| 2.0 + 0.216 * (x + y)), ("gable", |x, _| 4.0 - 0.3 * (x - 5.0).abs())];
     let layering = bent();
-    let face = layering.foliation.as_ref().unwrap().face_radius;
+    let face = layering.foliation.as_ref().unwrap().face_reach;
     for (name, top) in surfaces {
         let mesh = Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)] };
         let sections = section(&mesh, &layering).unwrap();
         assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
         let contact = face_contact(&sections, [0.0, 0.0], [10.0, 8.0], face);
         assert!(contact <= 1e-9, "{name}: the leaf below stands {contact} mm above the face");
+    }
+}
+
+#[test]
+fn under_a_steep_top_the_slab_thickens_only_as_the_face_needs() {
+    // A gable of 16.7° each way: parallel slabs under it must be `0.3 · R` thick, `R` the face's
+    // reach as the grid resolves it, more than a layer; the top still meets the surface.
+    let layering = bent();
+    let f = layering.foliation.as_ref().unwrap();
+    let laps = crate::face::laps(f.cell, f.face_reach, 20f64.to_radians().tan(), 0.1, f.min_layer_height);
+    let need = 0.3 * laps.reach;
+    assert!(need > 0.2 && need < 0.3, "{need}");
+    let top = |x: f64, _: f64| 4.0 - 0.3 * (x - 5.0).abs();
+    let mesh = Mesh { bodies: vec![height_field("gable", [0.0, 0.0], [10.0, 8.0], 10, top)] };
+    let sections = section(&mesh, &layering).unwrap();
+    for p in [[2.3, 4.1], [3.1, 2.6], [6.9, 5.2], [7.7, 3.3]] {
+        let (z, layer) = top_at(&sections, p).unwrap();
+        assert!((z - top(p[0], p[1])).abs() <= 1e-9, "at {p:?}: layer {layer} tops at {z}");
+        let below = &sections.layers[layer - 1];
+        let slab = z - (below.top + below.warp.at(p));
+        assert!((slab - need).abs() <= 1e-9, "at {p:?}: the slab under the top is {slab} mm, not {need}");
     }
 }
 
