@@ -14,6 +14,7 @@ mod commands;
 mod compare;
 mod deliver;
 mod pipeline;
+mod printers;
 mod settings;
 
 use clap::Parser;

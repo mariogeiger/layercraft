@@ -19,20 +19,21 @@ use clearance::{Heights, intrusion, lay};
 use layercraft_motion::{Layer, Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
-/// The toolhead's underside, about the nozzle's axis, in mm (`clearance`).
+/// The toolhead's underside, about the nozzle's axis, in mm (`clearance`): the nozzle, a flat
+/// face whose flank widens up to a column, reaching below the rest of the head, whose underside
+/// is taken, with all that lies past it, as one plane.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Toolhead {
-    /// The radius of the nozzle's flat tip.
-    pub tip_radius: f64,
-    /// How much wider the nozzle's cone grows per mm up: the tangent of its half-angle.
-    pub flare: f64,
-    /// How far the nozzle reaches below the rest of the head.
-    pub nozzle_height: f64,
-    /// How far around the nozzle the rest of the head reaches.
-    pub head_radius: f64,
-    /// How high the gantry stands above the tip, past the head.
-    pub gantry_height: f64,
-    /// The room kept under the head, past its tip, for beads that curl up.
+    /// The radius of the nozzle's flat face.
+    pub face_radius: f64,
+    /// How steeply the nozzle's flank rises from its face to its column: the tangent of its
+    /// angle above the plate.
+    pub flank_slope: f64,
+    /// The radius of the nozzle's column.
+    pub column_radius: f64,
+    /// How far the nozzle reaches below the plane of the rest of the head.
+    pub protrusion: f64,
+    /// The room kept under that plane, for beads that curl up and a plate not quite flat.
     pub margin: f64,
 }
 

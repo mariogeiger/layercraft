@@ -2,6 +2,29 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.6.0
+
+### Added
+
+- `printers/`: one folder per printer, holding what its machine description does not tell,
+  measured on the printer itself. `printers/bambu-lab-x2d/printer.json` holds the X2D's toolhead,
+  its spiral lift radius and the G-code its firmware expects before the first layer, and
+  layercraft reads it. Beside it are the owner's sketch and photo of the toolhead, the script that
+  measures the nozzle on the photo, and what is known of the printer. A printer without a folder
+  is refused.
+
+### Changed
+
+- `verify` takes the measured toolhead (`Toolhead { face_radius, flank_slope, column_radius,
+  protrusion, margin }`): a nozzle with a 1.0 mm face, a 50° flank and a column 3.11 mm across,
+  reaching 2.94 mm below the rest of the head. The head's underside, with the other nozzle and
+  the gantry, counts as one plane, with 0.2 mm kept under it.
+- A bent layer dips at most 2.74 mm below what is printed. It used to dip 3.0 mm, 0.06 mm more
+  than the nozzle reaches: that limit came from the profile's `nozzle_height` of 4.0 mm, less a
+  1 mm margin.
+- The Benchy compiles and passes as before. Its sloped tops lie 10.0 µm from the model on
+  average, 89.6 % of them within 20 µm.
+
 ## 0.5.0
 
 ### Added

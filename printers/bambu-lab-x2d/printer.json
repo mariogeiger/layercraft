@@ -1,0 +1,12 @@
+{
+  "model": "Bambu Lab X2D",
+  "nozzle": {
+    "face_diameter": 1.0,
+    "flank_degrees": 50.0,
+    "column_diameter": 3.11,
+    "protrusion": 2.94
+  },
+  "head_margin": 0.2,
+  "spiral_lift_radius": 1.2,
+  "prologue": ";VT[initial_filament_id] H[initial_no_support_hotend]\nM981 S1 P20000 ;open spaghetti detector\n"
+}

@@ -3,8 +3,10 @@
 //! Bambu's settings follow conventions of their own: a line width of 0 means the default
 //! width, a percentage is of the nozzle diameter; an acceleration of 0 means the default one,
 //! a percentage is of it; a filament's `nil` leaves the printer's value. This file holds those
-//! conventions so the stages see plain numbers.
+//! conventions so the stages see plain numbers. What the description does not tell of the printer
+//! comes from its folder in `printers/` (`printers`).
 
+use crate::printers::printer;
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
 use layercraft_path::{Face, PathParams};
@@ -62,22 +64,8 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
     Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)?, flow: 1.0 })
 }
 
-/// The radius of a spiral lift's helix, in mm: the smallest that broke the string at the end of
-/// a print. Measured on the X2D with Bambu PLA Basic, one 10 mm cube per radius, the print ending
-/// on its lift: at 0 the nozzle pulled up a 3 mm string, at 0.6 a 10 mm one, at 1.2 and 2.4 none.
-/// A larger turn only costs time, about `2π·√(r/a)` per lift at its centripetal limit.
-const SPIRAL_LIFT_RADIUS: f64 = 1.2;
-
-/// How much wider the nozzle grows per mm up from its tip, `tan 60°`: a cone wider than any
-/// nozzle's, until the X2D's is measured; the machine description does not give it.
-const NOZZLE_FLARE: f64 = 1.732_050_807_568_877_2;
-
-/// The room kept under the head past the nozzle's tip, in mm: for overhangs that curl up and a
-/// plate not quite flat.
-const HEAD_MARGIN: f64 = 1.0;
-
 /// The steepest top surface the layers bend to follow, in degrees: across a grid triangle a
-/// layer then leans at most `√2 · tan 20°`, 27°, under the nozzle's cone of `atan(1 / flare)`, 30°.
+/// layer then leans at most `√2 · tan 20°`, 27°, under the X2D nozzle's flank of 50° (`printers/`).
 const MAX_SLOPE: f64 = 20.0;
 
 /// How much thinner and thicker than the layer height a bent slab may be: a half, as the bead
@@ -88,9 +76,9 @@ const SLAB_SPREAD: f64 = 0.5;
 /// a smooth top surface within a micrometre, coarse enough that a bead crosses few lines.
 const BEND_CELL: f64 = 1.25;
 
-/// The hop and the radius of the helix a lift turns; a filament's own lift wins over the
-/// printer's. Bambu's automatic lift is taken as the spiral one.
-fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
+/// The hop and the radius of the helix a lift turns, a spiral one's `spiral_radius`; a filament's
+/// own lift wins over the printer's. Bambu's automatic lift is taken as the spiral one.
+fn lift(m: &Machine, spiral_radius: f64) -> Result<(f64, f64), MachineError> {
     use Kind::{Filament, Machine as M};
     let z_hop = filament_or(m, "filament_z_hop", "z_hop")?;
     let kind = match m.text(Filament, "filament_z_hop_types").ok().filter(|t| t != "nil") {
@@ -99,7 +87,7 @@ fn lift(m: &Machine) -> Result<(f64, f64), MachineError> {
     };
     let radius = match kind.as_str() {
         "Normal Lift" => 0.0,
-        "Spiral Lift" | "Auto Lift" => SPIRAL_LIFT_RADIUS,
+        "Spiral Lift" | "Auto Lift" => spiral_radius,
         other => return Err(MachineError::Unsupported(format!("the lift `{other}`"))),
     };
     Ok((z_hop, radius))
@@ -219,7 +207,9 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         .insert("max_additional_fan".into(), Value::Num(m.number(Filament, "additional_cooling_fan_speed")?));
     let max_z = m.number(M, "printable_height")?;
     let max_speed = m.number(M, "machine_max_speed_x")?.min(m.number(M, "machine_max_speed_y")?);
-    let (z_hop, lift_radius) = lift(m)?;
+    let printer = printer(&m.text(M, "printer_model")?)?;
+    let nozzle_shape = &printer.nozzle;
+    let (z_hop, lift_radius) = lift(m, printer.spiral_lift_radius)?;
     // The filament's overhang fan, when on: over bridges, and walls past its threshold.
     let (overhang_fan_speed, overhang_fan_share) =
         if m.number(Filament, "enable_overhang_bridge_fan").unwrap_or(0.0) > 0.0 {
@@ -238,7 +228,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 max_slope: MAX_SLOPE,
                 min_layer_height: layer_height * (1.0 - SLAB_SPREAD),
                 max_layer_height: layer_height * (1.0 + SLAB_SPREAD),
-                max_rise: (m.number(M, "nozzle_height")? - HEAD_MARGIN).max(0.0),
+                max_rise: (nozzle_shape.protrusion - printer.head_margin).max(0.0),
                 parallel_layers: 2,
                 cell: BEND_CELL * nozzle,
             }),
@@ -297,10 +287,16 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             // Bambu's quarters of a bead's width over air, then a bead wholly over it.
             overhang_speeds: if m.number(Process, "enable_overhang_speed").unwrap_or(0.0) > 0.0 {
-                ["overhang_1_4_speed", "overhang_2_4_speed", "overhang_3_4_speed", "overhang_4_4_speed", "overhang_totally_speed"]
-                    .iter()
-                    .map(|key| m.number(Process, key))
-                    .collect::<Result<_, _>>()?
+                [
+                    "overhang_1_4_speed",
+                    "overhang_2_4_speed",
+                    "overhang_3_4_speed",
+                    "overhang_4_4_speed",
+                    "overhang_totally_speed",
+                ]
+                .iter()
+                .map(|key| m.number(Process, key))
+                .collect::<Result<_, _>>()?
             } else {
                 Vec::new()
             },
@@ -348,9 +344,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 end: template(M, "machine_end_gcode"),
                 layer_change: template(M, "layer_change_gcode"),
                 filament_start: template(Filament, "filament_start_gcode"),
-                // Bambu Lab printers expect the filament's virtual tool named, and their
-                // spaghetti detector turned on, before the first layer.
-                prologue: ";VT[initial_filament_id] H[initial_no_support_hotend]\nM981 S1 P20000 ;open spaghetti detector\n".into(),
+                prologue: printer.prologue.clone(),
                 filament_end: template(Filament, "filament_end_gcode"),
             },
         },
@@ -362,12 +356,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             filament_diameter,
             max_volumetric_speed,
             toolhead: Toolhead {
-                tip_radius: nozzle / 2.0,
-                flare: NOZZLE_FLARE,
-                nozzle_height: m.number(M, "nozzle_height")?,
-                head_radius: m.number(M, "extruder_clearance_max_radius")?,
-                gantry_height: m.number(M, "extruder_clearance_height_to_rod")?,
-                margin: HEAD_MARGIN,
+                face_radius: nozzle_shape.face_diameter / 2.0,
+                flank_slope: nozzle_shape.flank_degrees.to_radians().tan(),
+                column_radius: nozzle_shape.column_diameter / 2.0,
+                protrusion: nozzle_shape.protrusion,
+                margin: printer.head_margin,
             },
         },
         scope,

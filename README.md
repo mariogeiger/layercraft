@@ -80,9 +80,11 @@ Benchy's program. This is still a proposal upstream; until it lands, it lives on
 ## Never harm the machine
 
 A wrong line of G-code can drive the nozzle into the bed. So no program leaves layercraft
-without passing `verify`: every position inside the build volume, the nozzle never below the
-layer it prints, speeds and flow within what the machine and the hot end allow, every number
-finite. A program that fails is an error, never a warning.
+without passing `verify`: every position inside the build volume, the head never coming down
+into what is printed, each bead on its layer's top, speeds and flow within what the machine and
+the hot end allow, every number finite. A program that fails is an error, never a warning. What
+the machine description does not tell of a printer, such as its nozzle's shape, is measured on
+the printer and kept in its folder of [`printers/`](printers/).
 
 And layercraft writes files. It never starts a print: that takes a person, every time.
 

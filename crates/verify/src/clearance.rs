@@ -1,19 +1,19 @@
 //! The toolhead against what is printed: no part of the head comes down into a bead laid before.
 //!
 //! Seen from below, the head is a solid of revolution about the nozzle's axis whose underside
-//! lies `floor(r)` above the tip at distance `r` from it: nothing on the tip's flat, then the
-//! nozzle's cone, the rest of the head out to `head_radius`, and past it the gantry; the head
-//! and the gantry taken `margin` lower, for beads that curl up and a plate not quite flat. A
-//! nozzle at `z` meets a printed point `p` standing `h(p)` high when `h(p) > z + floor(|p − tip|)`.
-//! On a bent layer the nozzle's cone meets the beads of its own layer as it lays them, beside
-//! and behind it up the slope: they lie on the layer's top, their flat tops standing above it by
-//! up to half a bead's width times the layer's steepest slope `s`, and the grid's cells place
-//! them up to a cell and a half's diagonal off. So within the cone's reach, out to where it meets
-//! the rest of the head, a point counts only when it also stands above the layer's top there,
-//! raised by that much. The layers before lie at least a slab lower than the layer's top. A bead stands as high as the nozzle that laid it, over its
-//! width. The heights are kept on a grid `CELL` fine, under a pyramid of maxima, each cell of a
-//! level the highest of the four under it, so a query descends only where something stands
-//! higher than the head clears there: nowhere, while each layer is laid over the last.
+//! lies `floor(r)` above the tip at distance `r` from it: nothing on the nozzle's flat face, then
+//! its flank up to its column, and past the column the plane of the rest of the head, the other
+//! nozzle and the gantry, taken `margin` lower, for beads that curl up and a plate not quite flat.
+//! A nozzle at `z` meets a printed point `p` standing `h(p)` high when `h(p) > z + floor(|p − tip|)`.
+//! On a bent layer the nozzle meets the beads of its own layer as it lays them, beside and behind
+//! it up the slope: they lie on the layer's top, their flat tops standing above it by up to half a
+//! bead's width times the layer's steepest slope `s`, and the grid's cells place them up to a cell
+//! and a half's diagonal off. So under the nozzle, out to its column, a point counts only when it
+//! also stands above the layer's top there, raised by that much; the layers before lie at least a
+//! slab lower. A bead stands as high as the nozzle that laid it, over its width. The heights are
+//! kept on a grid `CELL` fine, under a pyramid of maxima, each cell of a level the highest of the
+//! four under it, so a query descends only where something stands higher than the head clears
+//! there: nowhere, while each layer is laid over the last.
 
 use crate::Toolhead;
 use layercraft_motion::{Layer, Move};
@@ -28,22 +28,19 @@ const MAX_SIDE: usize = 2000;
 impl Toolhead {
     /// How high the head's underside stands above its tip at distance `r` from its axis.
     pub fn floor(&self, r: f64) -> f64 {
-        if r <= self.tip_radius {
-            return 0.0;
-        }
-        let body = (self.nozzle_height - self.margin).max(0.0);
-        if r > self.head_radius {
-            (self.gantry_height - self.margin).max(0.0)
-        } else if self.flare > 0.0 {
-            ((r - self.tip_radius) / self.flare).min(body)
+        if r <= self.face_radius {
+            0.0
+        } else if r <= self.column_radius {
+            ((r - self.face_radius) * self.flank_slope).min(self.protrusion)
         } else {
-            body
+            self.clearance()
         }
     }
 
-    /// How far the nozzle's cone reaches from its axis, to where it meets the rest of the head.
-    fn cone_reach(&self) -> f64 {
-        (self.tip_radius + self.flare * (self.nozzle_height - self.margin).max(0.0)).min(self.head_radius)
+    /// The most a printed point may stand above the tip past the nozzle: under the head's plane,
+    /// its margin kept.
+    pub fn clearance(&self) -> f64 {
+        (self.protrusion - self.margin).max(0.0)
     }
 }
 
@@ -135,7 +132,7 @@ impl Heights {
         // its lowest over a cell, up to a diagonal from the plastic in it.
         let rounding = CELL * (std::f64::consts::FRAC_1_SQRT_2 + std::f64::consts::SQRT_2) + blur;
         let lift = (self.widest / 2.0 + rounding) * steepest;
-        let reach = if steepest > 0.0 { head.cone_reach() } else { 0.0 };
+        let reach = if steepest > 0.0 { head.column_radius } else { 0.0 };
         let query = Query { head, tip, blur, layer, lift, reach };
         self.descend(&query, top, 0, 0)
     }
@@ -175,7 +172,7 @@ impl Heights {
 }
 
 /// A head at a tip, anywhere within `blur` of it, printing a layer whose beads stand up to
-/// `lift` above its top, out to `reach`.
+/// `lift` above its top, out to `reach` from the nozzle's axis.
 struct Query<'a> {
     head: &'a Toolhead,
     tip: [f64; 3],

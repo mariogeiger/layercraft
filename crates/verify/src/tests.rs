@@ -14,11 +14,10 @@ const ENVELOPE: Envelope = Envelope {
     filament_diameter: 1.75,
     max_volumetric_speed: 20.0,
     toolhead: Toolhead {
-        tip_radius: 0.2,
-        flare: 1.0,
-        nozzle_height: 4.0,
-        head_radius: 30.0,
-        gantry_height: 30.0,
+        face_radius: 0.2,
+        flank_slope: 1.0,
+        column_radius: 1.5,
+        protrusion: 4.0,
         margin: 1.0,
     },
 };
@@ -93,20 +92,21 @@ fn bead_layer(index: usize, z: f64, dy: f64) -> Layer {
 #[test]
 fn the_head_never_comes_down_into_what_is_printed() {
     let tower = |dx: f64| (0..10).map(move |k| bead_layer(k, 0.2 * (k + 1) as f64, dx));
-    // A tower 2 mm high, then a layer beside it from its foot: 10 mm away the nozzle clears it
-    // under the head, 2 mm away its cone does not, and over it the nozzle goes into it.
+    // A tower 2 mm high, then a layer beside it from its foot: 3 mm away, the nozzle's column
+    // passes it and the tower stands under the head's plane; 1 mm away the nozzle's flank meets
+    // it, and over it the nozzle goes into it.
     let beside = |dy: f64| {
         let mut layers: Vec<Layer> = tower(0.0).collect();
         layers.push(bead_layer(10, 0.2, dy));
         verify(&Program { layers }, &ENVELOPE)
     };
-    assert_eq!(beside(40.0), vec![], "past the head");
-    assert_eq!(beside(10.0), vec![], "past the cone");
-    assert!(!beside(2.0).is_empty(), "under the cone");
+    assert_eq!(beside(40.0), vec![], "far off");
+    assert_eq!(beside(3.0), vec![], "past the column");
+    assert!(!beside(1.0).is_empty(), "under the flank");
     assert!(!beside(0.0).is_empty(), "into the tower");
-    // A tower taller than the nozzle reaches below the head: the head meets it.
+    // A tower taller than the head's clearance reaches its plane, however far: the head meets it.
     let mut tall: Vec<Layer> = (0..25).map(|k| bead_layer(k, 0.2 * (k + 1) as f64, 0.0)).collect();
-    tall.push(bead_layer(25, 0.2, 15.0));
+    tall.push(bead_layer(25, 0.2, 60.0));
     assert!(!verify(&Program { layers: tall }, &ENVELOPE).is_empty(), "under the head");
     // Two towers side by side, each laid up a layer at a time, pass.
     let mut both: Vec<Layer> = Vec::new();
