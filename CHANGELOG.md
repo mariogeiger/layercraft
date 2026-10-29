@@ -2,6 +2,45 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.5.0
+
+### Added
+
+- Bent layers: under a top surface sloped gently, up to 20°, the layers bend to follow it, so
+  its last layers lie along it instead of stepping down it. Each layer's top is its height plus
+  a relief, piecewise linear on one triangulated grid of 1.25 nozzles (0.5 mm on the X2D), the
+  same for every layer; a flat layer is the relief zero. The reliefs lean at most 20° along the
+  grid's edges, rise at most as far as the nozzle reaches below the head less a millimetre
+  (3 mm on the X2D), and keep each slab between half and one and a half layer heights thick. A
+  layer is the exact section of the mesh by its bent middle, the mesh cut once along the grid's
+  lines; regions and paths are a flat layer's, a top surface on a bent layer hatched along its
+  fall line. Beads are cut where the reliefs bend and lie on their layer's top; travels hop over
+  the highest point on their way. On the Benchy, its sloped tops lie 9.8 µm from the model on
+  average instead of 54 µm, 90 % of their area within 20 µm instead of 20 %; the slabs hold the
+  model's volume to 0.05 % instead of 0.37 %. It prints in 33.1 min instead of 31.8, and
+  compiles in 57 s instead of 38.
+- `--flat` on `compile` and `view`: every layer flat, as before.
+- `verify` follows the toolhead: the head never comes down into what is printed, neither the
+  nozzle's cone, nor the head around it, nor the gantry above, from the machine description's
+  `nozzle_height`, `extruder_clearance_max_radius` and `extruder_clearance_height_to_rod` and a
+  cone of 60° half-angle, assumed until measured. This replaces the rule that each layer lies
+  above the last. Extrusions lie on their layer's top, within a quarter of its thickness on a
+  bent one, and no move drives the Z axis faster than it goes.
+
+### Changed
+
+- `limit`, formerly `melt`, holds every move to the hot end's melt limit and to the Z axis's
+  speed, up or down, once the beads are fitted and the layers cooled; the planner no longer
+  slows climbs itself.
+- `fit` takes runs of moves laying one bead at one speed, acceleration and fan. A move fits
+  where its vertices lie within the resolution `ε` in space and each move it replaces lays
+  within `2ε/w` of its plastic per mm, so the bead's edges stay within `ε`; an arc climbs evenly
+  about a centre within 1 m, which the printer's arithmetic holds.
+- On a bent slab `t` thick, a bead fills its strip, its spacing wide and `t` deep; on a flat one
+  that is its section, as before.
+- The stage files carry each layer's relief (`warp`), left out where it is zero: older files
+  load.
+
 ## 0.4.15
 
 ### Changed
