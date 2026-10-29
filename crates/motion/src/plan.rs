@@ -8,7 +8,7 @@
 
 use crate::leaf::Leaf;
 use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area, disc_area};
-use layercraft_geom::{Point, Relief, mean_bead_area};
+use layercraft_geom::{Point, Relief, bead_spacing};
 use layercraft_machine::{Scope, Value};
 use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
 use layercraft_tune::{Field, centre};
@@ -129,10 +129,15 @@ fn section_area(path: &Path, height: f64) -> f64 {
     if path.role.strand() { disc_area(path.width) } else { bead_area(path.width, height) }
 }
 
-/// The mean cross-section along a straight piece of bead over which the slab's thickness runs
-/// from `from` to `to`.
-fn mean_section(path: &Path, from: f64, to: f64) -> f64 {
-    if path.role.strand() { disc_area(path.width) } else { mean_bead_area(path.width, from, to) }
+/// The mean cross-section along a straight piece of bead on a layer `height` high, over which
+/// the slab's thickness runs from `from` to `to`: the strip the bead fills, as wide as beads lie
+/// apart, through the slab; on a flat slab, its section. A strand, round, keeps its disc.
+fn mean_section(path: &Path, height: f64, from: f64, to: f64) -> f64 {
+    if path.role.strand() {
+        disc_area(path.width)
+    } else {
+        bead_spacing(path.width, height) * (from + to) / 2.0
+    }
 }
 
 /// The speed of a bead: by role, the first layer's own, never past the melt limit.
@@ -431,7 +436,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
                 let mut from = a;
                 for q in leaf.pieces(a, b) {
                     let l = (q[0] - from[0]).hypot(q[1] - from[1]);
-                    let section = mean_section(path, leaf.thickness(from), leaf.thickness(q));
+                    let section = mean_section(path, layer.height, leaf.thickness(from), leaf.thickness(q));
                     s.push(Some([q[0], q[1], leaf.z(q)]), None, per_mm3 * section * l, speed, Some(bead));
                     s.bead.push(s.at);
                     from = q;

@@ -315,11 +315,8 @@ fn a_fields_range_over_a_box_is_exact() {
 }
 
 #[test]
-fn a_beads_mean_section_over_a_linear_height_is_exact() {
-    // The section is quadratic in the height, so Simpson's rule gives its mean exactly.
-    for (w, h0, h1) in [(0.4, 0.1, 0.3), (0.45, 0.2, 0.2), (0.6, 0.35, 0.05)] {
-        let simpson = (bead_area(w, h0) + 4.0 * bead_area(w, (h0 + h1) / 2.0) + bead_area(w, h1)) / 6.0;
-        assert!(close(mean_bead_area(w, h0, h1), simpson), "{w} {h0} {h1}");
+fn a_beads_strip_through_its_layer_holds_its_section() {
+    for (w, h) in [(0.4, 0.2), (0.45, 0.1), (0.62, 0.3)] {
+        assert!(close(bead_spacing(w, h) * h, bead_area(w, h)), "{w} {h}");
     }
-    assert!(close(mean_bead_area(0.4, 0.2, 0.2), bead_area(0.4, 0.2)));
 }

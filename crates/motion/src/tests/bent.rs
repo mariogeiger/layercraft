@@ -56,12 +56,10 @@ fn a_bead_on_a_bent_layer_lies_on_its_top_and_lays_its_slab() {
         let to = m.to.unwrap();
         assert!((to[2] - (0.4 + ramp().at([to[0], to[1]]))).abs() < 1e-12, "{to:?} off the layer");
     }
-    // The slab, 0.2 mm plus the ramp, runs from 0.3 to 0.7 mm thick, then stays: the bead's
-    // section `w·t − (1 − π/4)·t²` along it, integrated exactly where `t` is linear.
-    let c = 1.0 - FRAC_PI_4;
-    let integral =
-        |l: f64, ta: f64, tb: f64| l * (0.4 * (ta + tb) / 2.0 - c * (ta * ta + ta * tb + tb * tb) / 3.0);
-    let volume = integral(8.0, 0.3, 0.7) + integral(8.0, 0.7, 0.7);
+    // The slab, 0.2 mm plus the ramp, runs from 0.3 to 0.7 mm thick over 8 mm, then stays for
+    // 8 more: the bead fills its strip through it, as wide as beads 0.4 mm wide on a layer 0.2 mm
+    // high lie apart, `0.4 − 0.2·(1 − π/4)`.
+    let volume = (0.4 - 0.2 * (1.0 - FRAC_PI_4)) * (8.0 * 0.5 + 8.0 * 0.7);
     let pushed: f64 = traced.iter().map(|(_, m)| m.e).sum();
     let expected = p.flow_ratio * volume / disc_area(p.filament_diameter);
     assert!((pushed - expected).abs() < 1e-12 * expected, "{pushed} against {expected}");

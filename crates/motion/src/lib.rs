@@ -6,7 +6,8 @@
 //!
 //! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
 //! its sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length
-//! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament. A wall
+//! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament; over a
+//! bent slab `t` thick, it fills its strip, as wide as beads lie apart, `t` deep. A wall
 //! loop stops `seam_gap` short of its start. Speeds come by role, a wall's slowed by the share
 //! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
 //! share), capped by the hot end's volumetric limit. A layer too short to cool is slowed by a

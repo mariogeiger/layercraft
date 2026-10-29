@@ -15,7 +15,7 @@ mod relief;
 
 pub use axis::{Centreline, chordal_axis};
 pub use bands::{Bands, ON_EDGE_MM};
-pub use bead::{bead_area, bead_spacing, disc_area, mean_bead_area};
+pub use bead::{bead_area, bead_spacing, disc_area};
 pub use relief::{Crossing, Grid, Lines, MAX_VALUES, Relief, levels};
 
 pub use ops::{
