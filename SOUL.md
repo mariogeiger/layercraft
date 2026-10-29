@@ -25,7 +25,5 @@ mistakes before the code ever runs.
 - Open at every stage.
 - Small, independent pieces.
 - Each piece does exactly what it says.
-- Exact sections, volume-exact extrusion.
-- Starts a print only when a person asks.
 - Our own code; other slicers as references only.
-- Rust, for its feedback.
+- Rust.

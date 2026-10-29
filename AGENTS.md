@@ -1,24 +1,17 @@
 # layercraft — instructions for agents
 
-layercraft is an open-source, pure-Rust compiler from a solid to a print on a Bambu Lab X2D:
-a 3MF mesh goes through layer sections, regions, toolpaths and motion down to the `.gcode.3mf`
-the printer runs. Read [`SOUL.md`](SOUL.md) first; it holds the mission and outranks this file.
+layercraft is an open-source, pure-Rust compiler from a solid to a print.
+Read [`SOUL.md`](SOUL.md) first.
 Sibling: [`../solidcraft`](https://github.com/tangency-labs/solidcraft) (the CAD program whose
-3MF export is the first input, and the viewer for the toolpaths). The repository is
-github.com/mariogeiger/layercraft.
+3MF export is the first input, and the viewer for the toolpaths). 
+The repository is github.com/mariogeiger/layercraft.
+
+## Devices
+Bambu Lab X2D for now, many printers in the future.
 
 ## Never harm the machine
 A wrong G-code line can drive the nozzle into the bed, overheat a part or ruin a print. **This
 outranks feature work.**
-- **Every emitted program passes `verify`.** No G-code leaves the compiler unless the verify
-  stage accepts it: every position inside the build volume, the nozzle never below the layer
-  being printed, temperatures and speeds within the machine's limits, extrusion finite and
-  consistent with the volume it fills. A program that fails verify is an error, never a warning.
-- **Sending and starting are two acts.** An agent may read the printer's state and copy a verified
-  file to its storage. It starts, stops, pauses or changes a print **only when the owner
-  explicitly says so in chat, for that print**. Never touch the printer's firmware or settings.
-- **The LAN access code stays in its file.** Pass it with `--code-file ~/bambu.txt`; never print
-  it in chat, logs, test output or commits.
 
 ## Never crash
 - **No panics in non-test code:** no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`,
@@ -67,21 +60,3 @@ outranks feature work.**
 - Push only with the owner's authority. Never commit build directories, sliced output or the
   owner's designs; check `git status` and `git ls-files` before pushing.
 - Commit no design documents. The reason for a change goes in its commit message.
-
-## Running and looking
-- `layercraft compile part.3mf --out part.gcode.3mf` compiles; `--emit <stage>` writes a stage
-  file, `--from <file>` resumes from one.
-- **Experiment by place, not by script.** To compare settings, print several copies on one plate
-  and vary them with `--tune` (boxes by object or height band, any region, path or motion key)
-  rather than editing stage files by hand; edit a stage file only for what no setting reaches.
-- **Compare slicers on one plate.** `layercraft merge` prints program stages and G-code from any
-  slicer together, layer by layer, under one frame, cooled, held to the melt limit and verified:
-  slice the same part, placed apart, with each, and merge them.
-- **Look at any stage.** `--emit <stage>=FILE.ply` writes it as a PLY picture: points,
-  segments and triangles with properties to colour and filter by (`layercraft_view`).
-- **Look at the toolpaths in SolidCraft.** `layercraft view` writes a SolidCraft script (one sketch per layer,
-  one layer per role); run it with `solidcraft-cli` or in the open SolidCraft window and take a
-  screenshot (`../solidcraft/AGENTS.md`, “Running and looking at the app”).
-- **Compare with Bambu Studio** headless, in a throwaway data folder so the owner's settings
-  stay untouched (`--datadir "$(mktemp -d)"`), and compare layer count, filament length,
-  extruded volume per layer and estimated time.
