@@ -1,7 +1,8 @@
 //! Filament by volume, times against closed forms, the order of a travel, the shape of a lift,
 //! the geometry of an arc, beads fitted as lines and arcs, cooling, and the frame; beads on a
-//! bent layer: on its top, laying the exact plastic of the slab under them, written as few
-//! moves each within the resolution of what it replaces, travels hopping over its highest point.
+//! bent layer: on its top, laying the exact plastic of the slab under them, less what the face
+//! planes off, which the next layer gets back, written as few moves each within the resolution of
+//! what it replaces, travels hopping over its highest point.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -40,6 +41,7 @@ fn params() -> MotionParams {
         retract_before_wipe: 0.0,
         z_hop: 0.4,
         lift_radius: 0.0,
+        face_radius: 0.0,
         slow_down_layer_time: 0.0,
         slow_down_min_speed: 10.0,
         fan_speed: 1.0,
@@ -806,4 +808,49 @@ fn a_travel_across_a_bent_layer_hops_over_its_highest_point_on_the_way() {
     assert_eq!(hops.len(), 3, "{moves:?}");
     assert!((hops[1] - (0.4 + 0.075 + 0.4)).abs() < 1e-12, "{hops:?}");
     assert!((hops[2] - (0.4 + 0.5 + 0.4)).abs() < 1e-12, "{hops:?}");
+}
+
+/// The plastic each layer pushes, with the nozzle's face `face_radius` round.
+fn pushed_by_layer(paths: &Paths, face_radius: f64) -> Vec<f64> {
+    let program = compiled(paths, &MotionParams { face_radius, ..params() });
+    program.layers.iter().map(|l| l.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.e).sum()).collect()
+}
+
+#[test]
+fn a_bead_down_the_ramp_pushes_only_what_its_face_leaves() {
+    // Down from x = 8 to x = 2, 0.05 mm per mm: a point δ short of the end keeps the face, 0.5 mm
+    // round, `0.05·min(δ, √(ρ² − o²))` lower over it, `o` across, as the bead goes on down and
+    // climbs off its end. Over the strip's thirds at 0 and ±s/3, that takes `0.05·(6r − r²/2)`
+    // off the slab's 2.7 mm² along it, `r` the reach along of each third.
+    let down = bent(vec![bead(vec![[8.0, 5.5], [2.0, 5.5]])]);
+    let s = 0.4 - 0.2 * (1.0 - FRAC_PI_4);
+    let cut = |r: f64| 0.05 * (6.0 * r - r * r / 2.0);
+    let r = (0.25 - (s / 3.0) * (s / 3.0)).sqrt();
+    let kept = 1.0 - (cut(0.5) + 2.0 * cut(r)) / 3.0 / 2.7;
+    let (bare, planed) = (pushed_by_layer(&down, 0.0), pushed_by_layer(&down, 0.5));
+    assert!((planed[1] / bare[1] - kept).abs() < 1e-4, "{} against {kept}", planed[1] / bare[1]);
+    // Up the ramp, the face only ever stands higher: every bead keeps its plastic.
+    let up = bent(vec![bead(vec![[2.0, 5.5], [8.0, 5.5]])]);
+    assert_eq!(pushed_by_layer(&up, 0.5), pushed_by_layer(&up, 0.0));
+    // Level, nothing changes.
+    let program = |face_radius| compiled(&line(10.0), &MotionParams { face_radius, ..params() });
+    assert_eq!(program(0.5), program(0.0));
+}
+
+#[test]
+fn what_the_face_takes_off_a_layer_the_next_gets_back() {
+    // Down the ramp, then up it again on a layer bent alike over it: the second lays its slab
+    // and what the first lost, the plastic of both as without the face.
+    let mut paths = bent(vec![bead(vec![[8.0, 5.5], [2.0, 5.5]])]);
+    let next = PathLayer {
+        index: 2,
+        top: 0.6,
+        paths: vec![bead(vec![[2.0, 5.5], [8.0, 5.5]])],
+        ..paths.layers[1].clone()
+    };
+    paths.layers.push(next);
+    let (bare, planed) = (pushed_by_layer(&paths, 0.0), pushed_by_layer(&paths, 0.5));
+    assert!(planed[1] < 0.95 * bare[1] && planed[2] > 1.05 * bare[2], "{planed:?} against {bare:?}");
+    let total = |v: &[f64]| v.iter().sum::<f64>();
+    assert!((total(&planed) - total(&bare)).abs() < 1e-12 * total(&bare), "{planed:?} against {bare:?}");
 }

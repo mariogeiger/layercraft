@@ -7,8 +7,9 @@
 //! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
 //! its sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length
 //! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament; over a
-//! bent slab `t` thick, it fills its strip, as wide as beads lie apart, `t` deep. A wall
-//! loop stops `seam_gap` short of its start. Speeds come by role, a wall's slowed by the share
+//! bent slab `t` thick, it fills its strip, as wide as beads lie apart, `t` deep, less what the
+//! nozzle's face, passing later and lower, planes off (`room`). A wall loop stops `seam_gap`
+//! short of its start. Speeds come by role, a wall's slowed by the share
 //! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
 //! share), capped by the hot end's volumetric limit. A layer too short to cool is slowed by a
 //! pass of its own (`cool`), and waits out the rest off the part when even its slowest is too
@@ -26,6 +27,7 @@ mod limit;
 mod merge;
 mod moves;
 mod plan;
+mod room;
 mod time;
 
 pub use cool::cool;
@@ -195,6 +197,10 @@ pub struct MotionParams {
     pub z_hop: f64,
     /// The radius of the helix a lift turns, in mm (0: straight up).
     pub lift_radius: f64,
+    /// The radius of the nozzle's flat face, in mm, which levels the beads it passes over later
+    /// and lower on a bent layer: each bead pushes only the plastic that stays (0: none planed).
+    #[serde(default)]
+    pub face_radius: f64,
     /// The least time a layer takes, to cool before the next lands on it, in seconds: slowed
     /// down to `slow_down_min_speed`, then waiting off the part.
     pub slow_down_layer_time: f64,

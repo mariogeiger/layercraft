@@ -4,9 +4,11 @@
 //! mean section; a travel that stays inside the part slides along the layer, and one that leaves
 //! it climbs straight up over the highest the layer reaches on its way, the helix kept for where
 //! the layer is level around the nozzle. A layer starts over its own highest point, the layer
-//! before left at least over its own. No move runs faster than the Z axis lets it climb.
+//! before left at least over its own; done, its beads keep the room the nozzle's face leaves them
+//! (`room`). No move runs faster than the Z axis lets it climb.
 
 use crate::leaf::Leaf;
+use crate::room::{self, Cuts};
 use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area, disc_area};
 use layercraft_geom::{Point, Relief, bead_spacing};
 use layercraft_machine::{Scope, Value};
@@ -76,11 +78,18 @@ pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
     if !p.overhang_speeds.iter().all(|v| v.is_finite() && *v >= 0.0) || p.overhang_speeds.len() > 100 {
         return Err(MotionError::BadParams("overhang speeds must be finite, not negative, and few".into()));
     }
-    let non_negative =
-        [p.retract_length, p.retract_min_travel, p.z_hop, p.lift_radius, p.slow_down_layer_time, p.fan_speed];
-    let bounded = p.fan_speed <= 1.0 && p.z_hop <= 10.0 && p.lift_radius <= 10.0;
+    let non_negative = [
+        p.retract_length,
+        p.retract_min_travel,
+        p.z_hop,
+        p.lift_radius,
+        p.face_radius,
+        p.slow_down_layer_time,
+        p.fan_speed,
+    ];
+    let bounded = p.fan_speed <= 1.0 && p.z_hop <= 10.0 && p.lift_radius <= 10.0 && p.face_radius <= 10.0;
     if !non_negative.iter().all(|v| v.is_finite() && *v >= 0.0) || !bounded {
-        return Err(MotionError::BadParams("retraction, hop, lift, cooling out of range".into()));
+        return Err(MotionError::BadParams("retraction, hop, lift, face, cooling out of range".into()));
     }
     Ok(())
 }
@@ -315,6 +324,16 @@ impl State {
         self.lift(p, self.at[2] + p.z_hop, self.heading, leaf);
     }
 
+    /// Leaves the layer `leaf`, done: off its last bead, laid with `p`, while still on it, where
+    /// the nozzle is known, and over its highest point, where the next layer starts from; the
+    /// layer's moves.
+    fn close(&mut self, p: &MotionParams, leaf: &Leaf) -> Vec<Move> {
+        self.leave(p, leaf);
+        let heading = self.heading;
+        self.lift(p, leaf.highest() + p.z_hop, heading, leaf);
+        std::mem::take(&mut self.moves)
+    }
+
     /// Slides along the layer `leaf` to `to`, through every point where it bends.
     fn glide(&mut self, leaf: &Leaf, to: Point, speed: f64) {
         let from = [self.at[0], self.at[1]];
@@ -385,15 +404,12 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
     let bed = Relief::default();
     let mut below = &bed;
     let mut previous_leaf: Option<Leaf> = None;
+    // How deep the nozzle's face, one for the whole print, cut into the layer below's top.
+    let mut cuts = Cuts::default();
     for layer in &paths.layers {
         if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
-            // Off the last bead while still on the layer below, where the nozzle is known, and
-            // over its highest point, where the next layer starts from.
-            s.leave(&last, left);
-            let heading = s.heading;
-            let over = left.highest() + last.z_hop;
-            s.lift(&last, over, heading, left);
-            previous.moves = std::mem::take(&mut s.moves);
+            previous.moves = s.close(&last, left);
+            cuts = room::keep(&mut previous.moves, left, &cuts, base.face_radius);
         }
         let leaf = Leaf { top: layer.top, height: layer.height, warp: &layer.warp, below };
         layers.push(Layer {
@@ -449,13 +465,9 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         previous_leaf = Some(leaf);
     }
     // Off the part at once, before the machine's own slow end sequence.
-    if let Some(left) = &previous_leaf {
-        s.leave(&last, left);
-        let heading = s.heading;
-        s.lift(&last, left.highest() + last.z_hop, heading, left);
-    }
-    if let Some(previous) = layers.last_mut() {
-        previous.moves = std::mem::take(&mut s.moves);
+    if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
+        previous.moves = s.close(&last, left);
+        room::keep(&mut previous.moves, left, &cuts, base.face_radius);
     }
     Ok(Program { layers })
 }

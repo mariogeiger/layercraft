@@ -335,6 +335,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 / 100.0,
             z_hop,
             lift_radius,
+            face_radius: nozzle_shape.face_diameter / 2.0,
             // Every layer takes its time to cool, whatever `slow_down_for_layer_cooling` says: one
             // laid faster stays soft under the next, and sags or smears.
             slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,

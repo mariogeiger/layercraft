@@ -2,6 +2,25 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.8.0
+
+### Fixed
+
+- On a bent layer each bead pushes only the plastic that stays. The nozzle's flat face, passing
+  later and lower in the same layer (on down its own bead, wiping back over it, gliding to the
+  next, laying the next line downhill), levels whatever stands above it, and a bead that pushed
+  its whole slab had the rest squeezed out at its sides: the bulges along the side walls of the
+  sloped ramps, where descending walls cross the layers' bands. A bead now pushes its slab less
+  what the face cuts off it later, and the layer over it the more room that leaves. Replayed on
+  a height map of the ramp, the plastic levelled off its outer walls falls from 0.26 to
+  0.01 mm³, off everything from 2.63 to 1.44 mm³ of 900; what is left lies where the infill
+  overlaps the walls. The Benchy takes 3598 mm of filament (3620) and 32.9 min (32.8).
+
+### Changed
+
+- `MotionParams` gains `face_radius`, the radius of the nozzle's flat face, half the printer's
+  `face_diameter` (0, the default, levels nothing).
+
 ## 0.7.0
 
 ### Fixed
