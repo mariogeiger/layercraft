@@ -115,6 +115,7 @@ fn bent() -> Layering {
             max_rise: 3.0,
             parallel_layers: 2,
             cell: 0.5,
+            face_radius: 0.5,
         }),
     }
 }
@@ -218,6 +219,58 @@ fn bent_layers_follow_a_sloped_top_exactly() {
         );
         let v = filled(&sections, [0.0, 0.0], [10.0, 8.0], 0.05);
         assert!((v - volume).abs() < 2e-3 * volume, "{name}: the layers fill {v} mm³ of {volume}");
+    }
+}
+
+/// How far, at worst, the leaf below stands above the nozzle's flat face, of radius `face`,
+/// printing each layer: over the face's disc about points of the rectangle, every vertex of the
+/// leaves' grid and a point inside each of its cells.
+fn face_contact(sections: &Sections, lo: [f64; 2], hi: [f64; 2], face: f64) -> f64 {
+    let grid = sections.layers.iter().find(|l| !l.warp.is_zero()).unwrap().warp.grid;
+    let [i0, j0] = grid.coords(lo).map(|c| c.floor() as i64);
+    let [i1, j1] = grid.coords(hi).map(|c| c.ceil() as i64);
+    let mut worst = f64::NEG_INFINITY;
+    for pair in sections.layers.windows(2) {
+        let (below, layer) = (&pair[0], &pair[1]);
+        if below.warp.is_zero() && layer.warp.is_zero() {
+            continue;
+        }
+        for j in j0..=j1 {
+            for i in i0..=i1 {
+                for [a, b] in [[0.0, 0.0], [0.62, 0.29]] {
+                    let v = grid.vertex(i, j);
+                    let x = [v[0] + a * grid.cell, v[1] + b * grid.cell];
+                    let tip = layer.top + layer.warp.at(x);
+                    for r in [face, face / 2.0] {
+                        for k in 0..64 {
+                            let phi = k as f64 * std::f64::consts::TAU / 64.0;
+                            let y = [x[0] + r * phi.cos(), x[1] + r * phi.sin()];
+                            worst = worst.max(below.top + below.warp.at(y) - tip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    worst
+}
+
+#[test]
+fn the_leaf_below_never_stands_above_the_nozzle_face() {
+    // Slopes of 17° along the plate's diagonal, which the grid's triangles take worst, and 16.7°
+    // along its side, steep enough that the face, not the thinnest slab, bounds how far the
+    // leaves below come back to flat.
+    type Surface = (&'static str, fn(f64, f64) -> f64);
+    let surfaces: [Surface; 2] =
+        [("diagonal", |x, y| 2.0 + 0.216 * (x + y)), ("gable", |x, _| 4.0 - 0.3 * (x - 5.0).abs())];
+    let layering = bent();
+    let face = layering.foliation.as_ref().unwrap().face_radius;
+    for (name, top) in surfaces {
+        let mesh = Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)] };
+        let sections = section(&mesh, &layering).unwrap();
+        assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
+        let contact = face_contact(&sections, [0.0, 0.0], [10.0, 8.0], face);
+        assert!(contact <= 1e-9, "{name}: the leaf below stands {contact} mm above the face");
     }
 }
 

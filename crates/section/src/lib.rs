@@ -12,6 +12,7 @@
 //! edges.
 
 mod cut;
+mod face;
 mod foliate;
 mod patches;
 mod refine;

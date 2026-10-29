@@ -231,6 +231,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 max_rise: (nozzle_shape.protrusion - printer.head_margin).max(0.0),
                 parallel_layers: 2,
                 cell: BEND_CELL * nozzle,
+                face_radius: nozzle_shape.face_diameter / 2.0,
             }),
         },
         region: RegionParams {

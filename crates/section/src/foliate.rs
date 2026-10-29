@@ -3,23 +3,23 @@
 //!
 //! Slab `k` lies between the leaves `k − 1` and `k`; leaf `k` lies at `z_k + d_k(x, y)`, `z_k`
 //! the top of the flat layer and `d_k` a field on the grid; the bed and the first leaf stay flat.
-//! A patch (`patches`) pins `d` on one leaf `K`, the flat layer nearest the middle of its heights:
-//! `d_K = S − z_K` at its pins, and the same on the `parallel_layers − 1` leaves below, which keep
-//! its shape. Every other value obeys difference constraints: each slab between `min_layer_height`
-//! and `max_layer_height` thick (`d_k − d_{k−1}` within `t_min − h` and `t_max − h`), each leaf
-//! leaning no more than `tan(max_slope)` between neighbouring grid vertices, and rising no more
-//! than `max_rise` anywhere, what the nozzle reaches below the rest of the head. They make a
-//! quasi-distance `δ` between (leaf, vertex) pairs, and the fields obeying them a lattice, closed
-//! under max and min: between the least, `Lo(x) = max_p (A_p − δ(x, p))`, and the greatest,
-//! `U(x) = min_p (A_p + δ(p, x))`, over pins `p` of value `A_p`, each leaf takes the value nearest
-//! flat, `d = max(Lo, min(0, U))`. It meets every pin and keeps every bound, bending no more than
-//! the pins demand. Pins are accepted one by one, the largest patch first and in each the pins
-//! nearest the leaf's plane first, each only when it keeps the set consistent: `A_p − A_q` within
-//! `δ(q, p)` and `A_q − A_p` within `δ(p, q)`, along straight lines, never longer than the grid's
-//! paths, so the envelopes `U` and `Lo`, taken along the grid by Dijkstra's algorithm, meet the
-//! pins. A patch rising more than `max_rise` is followed in bands, each on a leaf of its own.
+//! A patch (`patches`) pins `d` on one leaf `K`, the flat layer nearest the middle of its heights,
+//! and on the `parallel_layers − 1` leaves below, which keep its shape. Every other value obeys
+//! difference constraints: each slab `min_layer_height` to `max_layer_height` thick, each leaf
+//! leaning no more than `tan(max_slope)` between neighbouring vertices and rising no more than
+//! `max_rise`, and the leaf below no higher than the one printed over it within the nozzle's
+//! flat face, `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ face_radius`, between vertices too (`face`).
+//! They make a quasi-distance `δ` between (leaf, vertex) pairs, and the fields obeying them a
+//! lattice, closed under max and min: between the least, `Lo(x) = max_p (A_p − δ(x, p))`, and the
+//! greatest, `U(x) = min_p (A_p + δ(p, x))`, over pins `p` of value `A_p`, each leaf takes the
+//! value nearest flat, `d = max(Lo, min(0, U))`, meeting every pin and bending no more than they
+//! demand. Pins are accepted largest patch first, nearest the plane first, each only when it
+//! agrees with those held, `A_p − A_q ≤ δ(q, p)` by a bound never above the grid's paths, so the
+//! envelopes, cones along the grid by Dijkstra's algorithm closed across leaves, meet the pins.
+//! A patch rising more than `max_rise` is followed in bands, each on a leaf of its own.
 
 use crate::SectionError;
+use crate::face::{Laps, laps};
 use crate::patches::{Pin, patches};
 use layercraft_geom::{Grid, MAX_VALUES, Point, Relief};
 use layercraft_mesh::Mesh;
@@ -42,6 +42,9 @@ pub struct Foliation {
     pub parallel_layers: usize,
     /// The side of the grid's squares, in mm.
     pub cell: f64,
+    /// The radius of the nozzle's flat face, in mm: within it of where a leaf is printed, the
+    /// leaf below lies no higher.
+    pub face_radius: f64,
 }
 
 /// Fractions of a cell by which the grid is set off the plate's origin, irrational so that its
@@ -60,6 +63,10 @@ struct Metric {
     down: f64,
     slope: f64,
     rise: f64,
+    /// The edges to the leaf below, under the nozzle's face.
+    laps: Laps,
+    /// The most leaves a path crosses.
+    leaves: usize,
 }
 
 impl Metric {
@@ -67,9 +74,25 @@ impl Metric {
         if to >= from { (to - from) as f64 * self.up } else { (from - to) as f64 * self.down }
     }
 
+    /// The most `d` may change from `from` to `to`, at least: a path crossing `m` leaves down and
+    /// `m − n` up costs `down` and `up` each and, sideways, `m · fall(r / m)` across the leaves,
+    /// `fall` convex and no steeper than the slope, or the slope along a leaf, or the rise.
     fn dist(&self, from: (usize, Point), to: (usize, Point)) -> f64 {
         let r = (from.1[0] - to.1[0]).hypot(from.1[1] - to.1[1]);
-        self.vert(from.0, to.0) + (self.slope * r).min(self.rise)
+        let (falls, rises) = (from.0.saturating_sub(to.0), to.0.saturating_sub(from.0));
+        let sideways = |m: usize| {
+            let along = if m == 0 { self.slope * r } else { m as f64 * self.laps.fall(r / m as f64) };
+            along.min(self.rise)
+        };
+        let mut best = f64::INFINITY;
+        for extra in 0..=self.leaves {
+            let crossing = (falls + extra) as f64 * self.down + (rises + extra) as f64 * self.up;
+            if crossing >= best {
+                break;
+            }
+            best = best.min(crossing + sideways(falls + extra));
+        }
+        best
     }
 }
 
@@ -144,6 +167,9 @@ fn check(p: &Foliation, layer_height: f64) -> Result<(), SectionError> {
     }
     if !(p.cell.is_finite() && (0.05..=5.0).contains(&p.cell)) || p.parallel_layers > 50 {
         return bad("the cell must be 0.05 to 5 mm, and parallel layers at most 50");
+    }
+    if !(p.face_radius.is_finite() && (0.0..=10.0).contains(&p.face_radius)) {
+        return bad("the nozzle's face must be 0 to 10 mm across its radius");
     }
     Ok(())
 }
@@ -225,41 +251,6 @@ fn cones(width: usize, height: usize, sources: &[(usize, f64)], step: f64) -> Ve
     best
 }
 
-/// The pins held on one leaf, with the envelopes they cast over a window of vertices.
-struct Group {
-    leaf: usize,
-    start: [i64; 2],
-    size: [usize; 2],
-    lowest: f64,
-    highest: f64,
-    upper: Vec<f64>,
-    lower: Vec<f64>,
-}
-
-fn group(leaf: usize, pins: &[Held], slope_per_cell: f64) -> Option<Group> {
-    let (mut lo, mut hi) = ([i64::MAX; 2], [i64::MIN; 2]);
-    let (mut lowest, mut highest) = (f64::INFINITY, f64::NEG_INFINITY);
-    for p in pins {
-        lo = [lo[0].min(p.vertex[0]), lo[1].min(p.vertex[1])];
-        hi = [hi[0].max(p.vertex[0]), hi[1].max(p.vertex[1])];
-        lowest = lowest.min(p.value);
-        highest = highest.max(p.value);
-    }
-    // Past `|A| / slope` from every pin, the cones cross zero and no longer matter.
-    let reach = (lowest.abs().max(highest.abs()) / slope_per_cell).ceil() as i64 + 1;
-    let start = [lo[0] - reach, lo[1] - reach];
-    let size = [(hi[0] - lo[0] + 2 * reach + 1) as usize, (hi[1] - lo[1] + 2 * reach + 1) as usize];
-    if pins.is_empty() || size[0].saturating_mul(size[1]) > MAX_VALUES {
-        return None;
-    }
-    let index = |v: [i64; 2]| (v[1] - start[1]) as usize * size[0] + (v[0] - start[0]) as usize;
-    let up: Vec<(usize, f64)> = pins.iter().map(|p| (index(p.vertex), p.value)).collect();
-    let down: Vec<(usize, f64)> = pins.iter().map(|p| (index(p.vertex), -p.value)).collect();
-    let upper = cones(size[0], size[1], &up, slope_per_cell);
-    let lower = cones(size[0], size[1], &down, slope_per_cell).into_iter().map(|v| -v).collect();
-    Some(Group { leaf, start, size, lowest, highest, upper, lower })
-}
-
 /// Each leaf's displacement from its plane, for slabs with tops `tops` and every slab but the
 /// first `layer_height` high, on a grid over the mesh; all zero when `max_slope` is.
 pub fn foliate(
@@ -276,11 +267,14 @@ pub fn foliate(
     if slope < 1e-3 {
         return Ok(flat);
     }
+    let down = layer_height - p.min_layer_height;
     let metric = Metric {
         up: p.max_layer_height - layer_height,
-        down: layer_height - p.min_layer_height,
+        down,
         slope,
         rise: p.max_rise,
+        laps: laps(s, p.face_radius, slope, down, p.min_layer_height),
+        leaves: tops.len(),
     };
     // Bands this wide put every pin within half the rise of its leaf's plane, the plane half a
     // layer from the band's middle at most, the band's edges half a layer past it at most: two
@@ -289,10 +283,12 @@ pub fn foliate(
     let band = (p.max_rise - 2.0 * layer_height).max(0.0);
     let bound = band / 2.0 + layer_height;
     let least = metric.up.min(metric.down);
+    let leaves_apart = if least > 1e-6 { (2.0 * bound / least).ceil() as usize } else { tops.len() };
     let mut accepted = Accepted {
         metric: &metric,
-        bucket: (2.0 * bound / slope).max(s),
-        leaves: if least > 1e-6 { (2.0 * bound / least).ceil() as usize } else { usize::MAX },
+        // Sideways, `d` changes no slower than this, whichever leaves it crosses.
+        bucket: (2.0 * bound / metric.laps.rate()).max(s),
+        leaves: leaves_apart,
         cells: HashMap::new(),
         all: Vec::new(),
     };
@@ -340,59 +336,185 @@ pub fn foliate(
     leaves(&grid, &metric, tops.len(), &accepted.all)
 }
 
-/// The leaves the held pins make: `d = max(Lo, min(0, U))` on each.
-fn leaves(grid: &Grid, metric: &Metric, count: usize, held: &[Held]) -> Result<Vec<Relief>, SectionError> {
-    let mut by_leaf: BTreeMap<usize, Vec<Held>> = BTreeMap::new();
-    for h in held {
-        by_leaf.entry(h.leaf).or_default().push(*h);
+/// The vertices the leaves may bend over: around every pin, as far as its envelopes stay on the
+/// side of zero they bend the leaves to.
+struct Window {
+    start: [i64; 2],
+    size: [usize; 2],
+}
+
+impl Window {
+    fn around(held: &[Held], metric: &Metric, cell: f64) -> Option<Window> {
+        let (mut lo, mut hi) = ([i64::MAX; 2], [i64::MIN; 2]);
+        let mut most = 0.0f64;
+        for p in held {
+            lo = [lo[0].min(p.vertex[0]), lo[1].min(p.vertex[1])];
+            hi = [hi[0].max(p.vertex[0]), hi[1].max(p.vertex[1])];
+            most = most.max(p.value.abs());
+        }
+        // Past `|A|` over the least rate `d` changes sideways at, the envelopes cross zero.
+        let reach = (most / metric.laps.rate() / cell).ceil() as i64 + 1;
+        let start = [lo[0].checked_sub(reach)?, lo[1].checked_sub(reach)?];
+        let side = |a: i64, b: i64| usize::try_from(b - a + 2 * reach + 1).ok();
+        let size = [side(lo[0], hi[0])?, side(lo[1], hi[1])?];
+        (!held.is_empty() && size[0].saturating_mul(size[1]) <= MAX_VALUES).then_some(Window { start, size })
     }
-    let step = metric.slope * grid.cell;
-    let groups: Vec<Group> = by_leaf.iter().filter_map(|(&leaf, pins)| group(leaf, pins, step)).collect();
-    let mut out = Vec::with_capacity(count);
-    for k in 0..count {
-        // The groups whose envelopes reach this leaf on either side of zero.
-        let near: Vec<&Group> = groups
-            .iter()
-            .filter(|g| {
-                k >= 1
-                    && (g.lowest + metric.vert(g.leaf, k) < 0.0 || g.highest - metric.vert(k, g.leaf) > 0.0)
-            })
-            .collect();
-        let Some(first) = near.first() else {
-            out.push(Relief::zero(*grid));
-            continue;
-        };
-        let (mut lo, mut hi) = (first.start, first.start);
-        for g in &near {
-            lo = [lo[0].min(g.start[0]), lo[1].min(g.start[1])];
-            hi = [hi[0].max(g.start[0] + g.size[0] as i64), hi[1].max(g.start[1] + g.size[1] as i64)];
+
+    fn index(&self, v: [i64; 2]) -> usize {
+        (v[1] - self.start[1]) as usize * self.size[0] + (v[0] - self.start[0]) as usize
+    }
+}
+
+/// An envelope on the window where it bends a leaf: below zero, the rest past caring; `None`
+/// when nowhere.
+fn bending(values: Vec<f64>) -> Option<Vec<f64>> {
+    let mut any = false;
+    let values: Vec<f64> = values
+        .into_iter()
+        .map(|v| {
+            any |= v < 0.0;
+            if v < 0.0 { v } else { f64::INFINITY }
+        })
+        .collect();
+    any.then_some(values)
+}
+
+/// Lowers an envelope to another where that one is lower; whether anywhere.
+fn lower(slot: &mut Option<Vec<f64>>, other: Option<Vec<f64>>) -> bool {
+    let Some(other) = other else { return false };
+    match slot {
+        Some(values) => {
+            let mut changed = false;
+            for (x, y) in values.iter_mut().zip(other) {
+                if y < *x {
+                    *x = y;
+                    changed = true;
+                }
+            }
+            changed
         }
-        let size = [(hi[0] - lo[0]) as usize, (hi[1] - lo[1]) as usize];
-        if size[0].saturating_mul(size[1]) > MAX_VALUES {
-            return Err(SectionError::BadLayering(format!("a leaf of {size:?} vertices is too large")));
+        None => {
+            *slot = Some(other);
+            true
         }
-        let mut upper = vec![metric.vert(0, k); size[0] * size[1]];
-        let mut lower = vec![-metric.vert(k, 0); size[0] * size[1]];
-        for g in &near {
-            let (rise, fall) = (metric.vert(g.leaf, k), metric.vert(k, g.leaf));
-            for gj in 0..g.size[1] {
-                for gi in 0..g.size[0] {
-                    let (i, j) = ((g.start[0] - lo[0]) as usize + gi, (g.start[1] - lo[1]) as usize + gj);
-                    let (src, dst) = (gj * g.size[0] + gi, j * size[0] + i);
-                    if let (Some(u), Some(slot)) = (g.upper.get(src), upper.get_mut(dst)) {
-                        *slot = slot.min(u + rise);
-                    }
-                    if let (Some(l), Some(slot)) = (g.lower.get(src), lower.get_mut(dst)) {
-                        *slot = slot.max(l - fall);
-                    }
+    }
+}
+
+/// One leaf on from an envelope, by `shift` alone, where the slabs thicken.
+fn shifted(f: &Option<Vec<f64>>, shift: f64) -> Option<Vec<f64>> {
+    f.as_ref().and_then(|f| bending(f.iter().map(|v| v + shift).collect()))
+}
+
+/// One leaf on from an envelope where the slabs thin or the face laps: by each lap's weight to
+/// its offset, then no steeper than the slope. The laps are symmetric, their weights depending
+/// on the offset's length alone, so one leaf on is the same either way.
+fn lapped(f: &Option<Vec<f64>>, w: &Window, metric: &Metric, cell: f64) -> Option<Vec<f64>> {
+    let f = f.as_ref()?;
+    let [width, height] = w.size;
+    let mut next = vec![f64::INFINITY; f.len()];
+    for j in 0..height as i64 {
+        for i in 0..width as i64 {
+            let mut best = f64::INFINITY;
+            for &([di, dj], weight) in &metric.laps.edges {
+                let (ni, nj) = (i - di, j - dj);
+                if ni >= 0 && nj >= 0 && ni < width as i64 && nj < height as i64 {
+                    let v = f.get(nj as usize * width + ni as usize).copied().unwrap_or(f64::INFINITY);
+                    best = best.min(v + weight);
+                }
+            }
+            if let Some(slot) = next.get_mut(j as usize * width + i as usize) {
+                *slot = best;
+            }
+        }
+    }
+    let sources: Vec<(usize, f64)> =
+        next.iter().enumerate().filter(|(_, v)| v.is_finite() && **v < 0.0).map(|(k, &v)| (k, v)).collect();
+    bending(cones(width, height, &sources, metric.slope * cell))
+}
+
+/// Closes envelopes under the bounds between leaves, each leaf's own to begin with: from a leaf
+/// to the next by `up`, to the one before by the laps, pass after pass until neither lowers
+/// anything, a leaf casting each way only once lowered since it last did. A path that turns
+/// costs a slab's thickening and thinning, which in practice the slope beats: the second pass
+/// up then lowers nothing.
+fn close(env: &mut [Option<Vec<f64>>], w: &Window, metric: &Metric, cell: f64) -> Result<(), SectionError> {
+    let n = env.len();
+    // Whether each leaf is still to cast up, and down.
+    let mut due = vec![(true, true); n];
+    let mark = |due: &mut Vec<(bool, bool)>, k: usize| {
+        if let Some(d) = due.get_mut(k) {
+            *d = (true, true);
+        }
+    };
+    for _ in 0..=n {
+        for k in 1..n {
+            if due.get(k - 1).is_some_and(|d| d.0) {
+                let next = env.get(k - 1).and_then(|f| shifted(f, metric.up));
+                if env.get_mut(k).is_some_and(|slot| lower(slot, next)) {
+                    mark(&mut due, k);
                 }
             }
         }
-        out.push(Relief::from_fn(*grid, lo, size, |i, j| {
-            let at = (j - lo[1]) as usize * size[0] + (i - lo[0]) as usize;
-            let (u, l) = (upper.get(at).copied().unwrap_or(0.0), lower.get(at).copied().unwrap_or(0.0));
-            l.max(u.min(0.0))
-        }));
+        due.iter_mut().for_each(|d| d.0 = false);
+        for k in (0..n.saturating_sub(1)).rev() {
+            if due.get(k + 1).is_some_and(|d| d.1) {
+                let next = env.get(k + 1).and_then(|f| lapped(f, w, metric, cell));
+                if env.get_mut(k).is_some_and(|slot| lower(slot, next)) {
+                    mark(&mut due, k);
+                }
+            }
+        }
+        due.iter_mut().for_each(|d| d.1 = false);
+        if !due.iter().any(|d| d.0) {
+            return Ok(());
+        }
+    }
+    Err(SectionError::BadLayering("foliation: the bounds between leaves do not settle".into()))
+}
+
+/// The leaves the held pins make: `d = max(Lo, min(0, U))` on each. The greatest field `U`
+/// below the pins is their cones closed under the bounds between leaves; the least, `Lo = −N`,
+/// the same of the pins negated on the leaves in reverse, every bound reversed: `N` comes down
+/// the leaves where they thicken and up where they thin or the face laps.
+fn leaves(grid: &Grid, metric: &Metric, count: usize, held: &[Held]) -> Result<Vec<Relief>, SectionError> {
+    let Some(w) = Window::around(held, metric, grid.cell) else {
+        return if held.is_empty() {
+            Ok(vec![Relief::zero(*grid); count])
+        } else {
+            Err(SectionError::BadLayering("the leaves bend over too many vertices".into()))
+        };
+    };
+    let mut by_leaf: BTreeMap<usize, Vec<(usize, f64)>> = BTreeMap::new();
+    for h in held {
+        by_leaf.entry(h.leaf).or_default().push((w.index(h.vertex), h.value));
+    }
+    let step = metric.slope * grid.cell;
+    let own = |k: usize, sign: f64| -> Option<Vec<f64>> {
+        let pins = by_leaf.get(&k)?;
+        let sources: Vec<(usize, f64)> = pins.iter().map(|&(at, v)| (at, sign * v)).collect();
+        bending(cones(w.size[0], w.size[1], &sources, step))
+    };
+    let mut upper: Vec<Option<Vec<f64>>> = (0..count).map(|k| own(k, 1.0)).collect();
+    close(&mut upper, &w, metric, grid.cell)?;
+    let mut lower: Vec<Option<Vec<f64>>> = (0..count).rev().map(|k| own(k, -1.0)).collect();
+    close(&mut lower, &w, metric, grid.cell)?;
+    lower.reverse();
+    let mut out = vec![Relief::zero(*grid); count];
+    for k in 1..count {
+        let (u, n) = (upper.get(k).and_then(Option::as_ref), lower.get(k).and_then(Option::as_ref));
+        if u.is_none() && n.is_none() {
+            continue;
+        }
+        let at = |values: Option<&Vec<f64>>, i: usize| values.and_then(|v| v.get(i)).copied();
+        let relief = Relief::from_fn(*grid, w.start, w.size, |i, j| {
+            let index = (j - w.start[1]) as usize * w.size[0] + (i - w.start[0]) as usize;
+            let up = at(u, index).unwrap_or(f64::INFINITY);
+            let lo = -at(n, index).unwrap_or(f64::INFINITY);
+            lo.max(up.min(0.0))
+        });
+        if let Some(slot) = out.get_mut(k) {
+            *slot = relief;
+        }
     }
     Ok(out)
 }
