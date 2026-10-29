@@ -5,7 +5,7 @@
 
 use crate::settings::{Settings, plate_code};
 use layercraft_machine::Machine;
-use layercraft_motion::Program;
+use layercraft_motion::{MoveLimits, Program};
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
@@ -27,14 +27,21 @@ pub struct Delivery<'a> {
     pub out: &'a Path,
 }
 
-/// Cools, frames, verifies, writes and packages `program`; a line saying what was written.
+/// Fits, cools, holds to the machine's limits, frames, verifies, writes and packages `program`;
+/// a line saying what was written.
 pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let settings = &d.setup.settings;
     let motion = &settings.motion;
     let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
-    layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
-    let slowed = layercraft_motion::melt(&mut program, motion.max_volumetric_speed, motion.filament_diameter);
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
+    layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
+    // Held to the machine's limits last: slowing only lengthens the layers cooled.
+    let limits = MoveLimits {
+        max_volumetric_speed: motion.max_volumetric_speed,
+        filament_diameter: motion.filament_diameter,
+        max_speed_z: motion.limits.max_speed_z,
+    };
+    let slowed = layercraft_motion::limit(&mut program, &limits);
     let frame =
         layercraft_motion::frame(&program, &motion.templates, &settings.scope).map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);

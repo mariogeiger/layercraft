@@ -285,3 +285,41 @@ fn fields_combine_trim_and_check() {
     let plane = sampled(|p| 0.25 * p[0]);
     assert!((plane.steepest() - 0.25).abs() < 1e-9 || plane.steepest() > 0.25, "{}", plane.steepest());
 }
+
+#[test]
+fn a_fields_range_over_a_box_is_exact() {
+    // A plane reaches its extremes at the box's corners.
+    let plane = sampled(|p| 0.2 * p[0] - 0.1 * p[1]);
+    let [lo, hi] = plane.range_over([-1.0, -1.0], [1.0, 0.5]);
+    assert!(close(lo, -0.2 - 0.05) && close(hi, 0.2 + 0.1), "{lo} {hi}");
+    // A bump peaks at the vertex (0.3, −0.7) inside the box, between the samples of any finer
+    // sampling, and dips to zero past its foot: the range holds every value and no more.
+    let bump = sampled(|p| (1.0 - (p[0] - 0.3).hypot(p[1] + 0.7) / 1.5).max(0.0));
+    for (a, b) in [([-0.11, -1.37], [0.93, -0.02]), ([0.8, -0.9], [1.6, 0.4]), ([-3.0, -3.0], [3.0, 3.0])] {
+        let [lo, hi] = bump.range_over(a, b);
+        let n = 300;
+        let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
+        for j in 0..=n {
+            for i in 0..=n {
+                let (s, t) = (i as f64 / n as f64, j as f64 / n as f64);
+                let v = bump.at([a[0] + s * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+                (min, max) = (min.min(v), max.max(v));
+            }
+        }
+        // Sampled at 1/300 of the box, the bump, 2/3 mm per mm steep, strays less than that.
+        let stray = (2.0 / 3.0) * (b[0] - a[0]).hypot(b[1] - a[1]) / n as f64;
+        assert!(lo <= min + 1e-12 && min - lo <= stray, "{a:?}–{b:?}: {lo} under {min}");
+        assert!(hi >= max - 1e-12 && hi - max <= stray, "{a:?}–{b:?}: {hi} over {max}");
+    }
+    assert!(close(bump.range_over([-0.11, -1.37], [0.93, -0.02])[1], 1.0));
+}
+
+#[test]
+fn a_beads_mean_section_over_a_linear_height_is_exact() {
+    // The section is quadratic in the height, so Simpson's rule gives its mean exactly.
+    for (w, h0, h1) in [(0.4, 0.1, 0.3), (0.45, 0.2, 0.2), (0.6, 0.35, 0.05)] {
+        let simpson = (bead_area(w, h0) + 4.0 * bead_area(w, (h0 + h1) / 2.0) + bead_area(w, h1)) / 6.0;
+        assert!(close(mean_bead_area(w, h0, h1), simpson), "{w} {h0} {h1}");
+    }
+    assert!(close(mean_bead_area(0.4, 0.2, 0.2), bead_area(0.4, 0.2)));
+}

@@ -497,3 +497,23 @@ fn a_reversed_bead_keeps_each_segment_overhang() {
     assert_eq!(bead.points, [[3.0, 0.0], [1.0, 0.0], [0.0, 0.0]]);
     assert_eq!(bead.overhang, [0.5, 0.0]);
 }
+
+#[test]
+fn a_top_on_a_bent_layer_is_hatched_along_its_fall_line() {
+    use crate::dense::fall_line;
+    use layercraft_geom::{Grid, Relief};
+    let grid = Grid { origin: [0.0, 0.0], cell: 0.5 };
+    let relief =
+        |f: &dyn Fn(Point) -> f64| Relief::from_fn(grid, [0, 0], [41, 41], |i, j| f(grid.vertex(i, j)));
+    let piece: Region = vec![vec![vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0], [5.0, 15.0]]]];
+    // A plane falling along 30°: hatched along 30°.
+    let (s, c) = 30f64.to_radians().sin_cos();
+    let plane = relief(&|p| 0.2 * (c * p[0] + s * p[1]));
+    assert!((fall_line(&piece, &plane).unwrap() - 30.0).abs() < 1e-9);
+    // A roof, its two sides falling opposite ways along x: their axes agree, along x.
+    let roof = relief(&|p| 0.2 * (10.0 - (p[0] - 10.0).abs()));
+    assert!(fall_line(&piece, &roof).unwrap().abs() < 1e-9);
+    // Under a degree, or flat: no fall line, the layer's own angles.
+    assert_eq!(fall_line(&piece, &relief(&|p| 0.01 * p[0])), None);
+    assert_eq!(fall_line(&piece, &Relief::default()), None);
+}

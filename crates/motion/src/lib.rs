@@ -11,7 +11,8 @@
 //! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
 //! share), capped by the hot end's volumetric limit. A layer too short to cool is slowed by a
 //! pass of its own (`cool`), and waits out the rest off the part when even its slowest is too
-//! short; the beads are written as the fewest lines and arcs within the resolution (`fit`). Leaving
+//! short; the beads are written as the fewest lines and arcs within the resolution (`fit`), and
+//! every move is held to the hot end's melt limit and the Z axis's speed (`limit`). Leaving
 //! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
 //! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
 //! takes the parameters at its centre; `finish` reads a program's summary from its moves.
@@ -20,7 +21,7 @@ mod cool;
 mod fit;
 mod frame;
 mod leaf;
-mod melt;
+mod limit;
 mod merge;
 mod moves;
 mod plan;
@@ -29,7 +30,7 @@ mod time;
 pub use cool::cool;
 pub use fit::fit;
 pub use frame::{Frame, finish, frame};
-pub use melt::melt;
+pub use limit::{MoveLimits, limit};
 pub use merge::merge;
 pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};

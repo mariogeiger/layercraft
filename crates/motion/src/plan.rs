@@ -185,8 +185,6 @@ struct State {
     bead_speed: f64,
     /// The direction of the last move across the plate, a unit vector.
     heading: [f64; 2],
-    /// The fastest the Z axis moves, in mm/s.
-    z_speed: f64,
     /// The filament pulled back, in mm, which the next bead pushes again.
     retracted: f64,
     accel: f64,
@@ -201,17 +199,9 @@ impl State {
         if l > 1e-9 { [d[0] / l, d[1] / l] } else { self.heading }
     }
 
-    /// A move to `to` (or in place), with the nozzle's state; a line no faster than the Z axis
-    /// lets it climb.
+    /// A move to `to` (or in place), with the nozzle's state, at the speed asked: the machine's
+    /// limits hold it later (`limit`).
     fn push(&mut self, to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>) {
-        let speed = match to {
-            Some(to) if arc.is_none() => {
-                let (d, dz) = ([to[0] - self.at[0], to[1] - self.at[1]], (to[2] - self.at[2]).abs());
-                let length = (d[0] * d[0] + d[1] * d[1] + dz * dz).sqrt();
-                if self.placed && dz > 0.0 { speed.min(self.z_speed * length / dz) } else { speed }
-            }
-            _ => speed,
-        };
         self.moves.push(Move { to, arc, e, speed, accel: self.accel, fan: self.fan, bead, wait: 0.0 });
         if let Some(to) = to {
             if arc.is_none() {
@@ -289,7 +279,7 @@ impl State {
         }
     }
 
-    /// Climbs to `z`, as fast as the travel speed and the Z axis allow: one turn of a helix of
+    /// Climbs to `z` at the travel speed, which the Z axis holds (`limit`): one turn of a helix of
     /// the lift radius that sets off along `heading`, so it flows into a travel that way, and
     /// comes back over its start; straight up with no radius, or where the layer `leaf` is not
     /// level under the helix, which would climb slower than the layer.
@@ -307,9 +297,7 @@ impl State {
             centre: [self.at[0] - r * heading[1], self.at[1] + r * heading[0]],
             turn: std::f64::consts::TAU,
         });
-        let length = (std::f64::consts::TAU * r).hypot(dz);
-        let speed = p.travel.speed.min(p.limits.max_speed_z * length / dz);
-        self.push(Some([self.at[0], self.at[1], z]), arc, 0.0, speed, None);
+        self.push(Some([self.at[0], self.at[1], z]), arc, 0.0, p.travel.speed, None);
     }
 
     /// Leaves the bead just laid on `leaf`: pulls the filament back while wiping over the bead,
@@ -385,7 +373,6 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         retracted: 0.0,
         accel: base.travel.accel,
         fan: 0.0,
-        z_speed: base.limits.max_speed_z,
     };
     // The parameters of the bead last laid, which leaving it takes.
     let mut last = Rc::new(base.clone());

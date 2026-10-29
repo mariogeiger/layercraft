@@ -10,6 +10,7 @@ layercraft-motion = { path = "../motion" }
 serde.workspace = true
 
 [dev-dependencies]
+layercraft-geom = { path = "../geom" }
 layercraft-path = { path = "../path" }
 
 [lints]

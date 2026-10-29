@@ -1,7 +1,8 @@
-//! Each unsafe move is caught; a safe program passes.
+//! Each unsafe move is caught; a safe program passes, on flat layers and on bent ones.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
+use layercraft_geom::{Grid, Relief};
 use layercraft_motion::{Arc, Bead, Layer};
 use layercraft_path::Role;
 
@@ -9,6 +10,7 @@ const ENVELOPE: Envelope = Envelope {
     area: [[0.0, 0.0], [256.0, 256.0]],
     max_z: 250.0,
     max_speed: 1000.0,
+    max_speed_z: 20.0,
     filament_diameter: 1.75,
     max_volumetric_speed: 20.0,
     toolhead: Toolhead {
@@ -34,11 +36,11 @@ fn program(moves: Vec<Move>) -> Program {
     Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] }
 }
 
-/// Over at the hop from wherever the layer starts, down, then a bead.
+/// Over at the hop from wherever the layer starts, down as fast as the Z axis goes, then a bead.
 fn safe() -> Vec<Move> {
     vec![
         mv([10.0, 10.0, 0.6], 0.0, 500.0),
-        mv([10.0, 10.0, 0.2], 0.0, 500.0),
+        mv([10.0, 10.0, 0.2], 0.0, 20.0),
         mv([20.0, 10.0, 0.2], 0.3, 50.0),
     ]
 }
@@ -53,7 +55,9 @@ fn each_danger_is_caught() {
     let cases: Vec<(usize, Move)> = vec![
         (2, mv([300.0, 10.0, 0.2], 0.3, 50.0)),
         (2, mv([20.0, 10.0, 0.1], 0.3, 50.0)),
-        (1, mv([10.0, 10.0, 0.0], 0.0, 500.0)),
+        (1, mv([10.0, 10.0, 0.0], 0.0, 20.0)),
+        // Down faster than the Z axis goes.
+        (1, mv([10.0, 10.0, 0.2], 0.0, 21.0)),
         (2, mv([20.0, 10.0, 0.2], 10.0, 50.0)),
         (2, mv([20.0, 10.0, 0.2], f64::NAN, 50.0)),
         (0, mv([10.0, 10.0, 0.6], 0.0, 5000.0)),
@@ -79,9 +83,9 @@ fn each_danger_is_caught() {
 fn bead_layer(index: usize, z: f64, dy: f64) -> Layer {
     let moves = vec![
         mv([10.0, 10.0 + dy, z + 0.4], 0.0, 500.0),
-        mv([10.0, 10.0 + dy, z], 0.0, 500.0),
+        mv([10.0, 10.0 + dy, z], 0.0, 20.0),
         mv([20.0, 10.0 + dy, z], 0.3, 50.0),
-        mv([20.0, 10.0 + dy, z + 0.4], 0.0, 500.0),
+        mv([20.0, 10.0 + dy, z + 0.4], 0.0, 20.0),
     ];
     Layer { index, z, height: 0.2, warp: Default::default(), moves }
 }
@@ -140,4 +144,30 @@ fn an_arc_turns_inside_the_plate_from_a_known_place_and_ends_on_its_circle() {
     assert!(!verify(&program(first), &ENVELOPE).is_empty());
     // Never below the layer.
     assert!(!check(vec![mv([20.0, 10.0, 0.1], 0.0, 20.0)]).is_empty());
+}
+
+/// Over a flat first layer's bead, a second layer bent up a ramp 0.02 mm per mm from x = 0
+/// to 20, its beads at `z(x)`: up the ramp along y = 10, then back down beside it.
+fn ramped(z: impl Fn(f64) -> f64) -> Program {
+    let warp = Relief::from_fn(Grid { origin: [0.0, 0.0], cell: 1.0 }, [0, 0], [41, 21], |i, _| {
+        0.02 * i.min(20) as f64
+    });
+    let mut moves = vec![mv([10.0, 10.0, 1.2], 0.0, 500.0), mv([10.0, 10.0, z(10.0)], 0.0, 20.0)];
+    moves.extend((11..=20).map(|x| mv([x as f64, 10.0, z(x as f64)], 0.03, 50.0)));
+    moves.push(mv([20.0, 10.4, z(20.0)], 0.0, 20.0));
+    moves.extend((10..20).rev().map(|x| mv([x as f64, 10.4, z(x as f64)], 0.03, 50.0)));
+    moves.push(mv([10.0, 10.4, 1.2], 0.0, 20.0));
+    let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, moves };
+    Program { layers: vec![bead_layer(0, 0.2, 0.0), bent] }
+}
+
+#[test]
+fn beads_on_a_bent_layer_pass_on_its_top_and_are_caught_off_it() {
+    // On its top, laid against each other: they pass.
+    assert_eq!(verify(&ramped(|x| 0.4 + 0.02 * x), &ENVELOPE), vec![]);
+    // Within a quarter of the layer's thickness of it, as fitted beads may be: they pass.
+    assert_eq!(verify(&ramped(|x| 0.4 + 0.02 * x - 0.04), &ENVELOPE), vec![]);
+    // Level at the layer's height, 0.2 to 0.4 mm below its top: caught.
+    let level = verify(&ramped(|_| 0.4), &ENVELOPE);
+    assert!(level.iter().any(|v| v.reason.starts_with("extrusion at z")), "{level:?}");
 }

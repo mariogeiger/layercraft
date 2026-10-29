@@ -358,6 +358,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             area: area(m)?,
             max_z,
             max_speed,
+            max_speed_z: m.number(M, "machine_max_speed_z")?,
             filament_diameter,
             max_volumetric_speed,
             toolhead: Toolhead {

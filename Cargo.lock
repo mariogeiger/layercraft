@@ -450,6 +450,7 @@ dependencies = [
 name = "layercraft-verify"
 version = "0.4.15"
 dependencies = [
+ "layercraft-geom",
  "layercraft-motion",
  "layercraft-path",
  "serde",

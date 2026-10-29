@@ -4,9 +4,10 @@
 //! Checked for every move, compiled or read from another slicer: finite numbers; the whole
 //! path inside the plate's printable area, an arc's sweep included, and below its printable
 //! height; the head never down into what is printed before (`clearance`), the nozzle never
-//! below the lowest layer, and extrusions on their layer's top, flat or bent, at both ends and
-//! halfway; speeds within the machine's
-//! limits, accelerations positive; filament flowing no faster than the hot end melts it; wipes
+//! below the lowest layer, and extrusions on their layer's top, at both ends and halfway: at its
+//! height on a flat layer, within a quarter of its thickness on a bent one, whose beads are
+//! written within the printer's resolution; speeds within the machine's
+//! limits, the Z axis's too, accelerations positive; filament flowing no faster than the hot end melts it; wipes
 //! that move; arcs that end on their circle, at most a turn; fan between 0 and 1; waits finite
 //! and not negative. The machine's own G-code between layers is the maker's and is not
 //! interpreted: after it the nozzle may be anywhere, so a layer's first move must be a straight
@@ -42,6 +43,8 @@ pub struct Envelope {
     pub area: [[f64; 2]; 2],
     pub max_z: f64,
     pub max_speed: f64,
+    /// The fastest the Z axis moves, in mm/s.
+    pub max_speed_z: f64,
     pub filament_diameter: f64,
     /// The hot end's melt limit, in mm³/s.
     pub max_volumetric_speed: f64,
@@ -117,10 +120,18 @@ fn check(m: &Move, from: Option<[f64; 3]>, layer: &Layer, bed: f64, e: &Envelope
         return Some(format!("move to ({:.3}, {:.3}) leaves the printable area", to[0], to[1]));
     }
     let length = m.length(from);
+    let dz = (to[2] - from[2]).abs();
+    if m.speed * dz > (e.max_speed_z + SLACK) * length {
+        let vz = m.speed * dz / length;
+        return Some(format!("{vz:.2} mm/s up or down is faster than the Z axis's {}", e.max_speed_z));
+    }
     if m.e > 0.0 {
         let on = |p: [f64; 3]| layer.z + layer.warp.at([p[0], p[1]]);
         let half = m.point(from, 0.5);
-        if (to[2] - on(to)).abs() > SLACK || (half[2] - on(half)).abs() > SLACK {
+        // On a flat layer, at its height; on a bent one, within a quarter of the layer's
+        // thickness of its top, short of the layer below by far.
+        let stray = if layer.warp.is_zero() { SLACK } else { layer.height / 4.0 };
+        if (to[2] - on(to)).abs() > stray || (half[2] - on(half)).abs() > stray {
             return Some(format!("extrusion at z = {} on the layer whose top is at {}", to[2], on(to)));
         }
         let filament_area = disc_area(e.filament_diameter);
@@ -172,7 +183,7 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                         k,
                         i,
                         format!(
-                            "the head comes {depth:.6} mm down into what is printed, moving to ({:.3}, {:.3}, {:.3})",
+                            "the head comes {depth:.3} mm down into what is printed, moving to ({:.3}, {:.3}, {:.3})",
                             to[0], to[1], to[2]
                         ),
                     );

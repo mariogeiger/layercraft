@@ -1,22 +1,24 @@
-//! The beads written as the fewest moves: each run of moves laying one bead the same way (at one
-//! height, with one speed, acceleration, fan and plastic per mm) becomes lines and, when allowed,
-//! arcs, each from a vertex of the run to a later one and within the resolution `ε` of the run.
+//! The beads written as the fewest moves: each run of moves laying one bead (one width and
+//! role, with one speed, acceleration and fan) becomes lines and, when allowed, arcs, each from a
+//! vertex of the run to the farthest later one it fits, within the resolution `ε`.
 //!
-//! From a vertex, a move reaches the farthest vertex it can. A line fits when every vertex
-//! between lies within `ε` of it; so then does every edge, the distance to a segment being
-//! convex. An arc runs through both ends, its centre `c = m + t·n` on their bisector, with `t` by
-//! least squares on `|q − c|² − r²` over the vertices between, which is linear in `t`: the
-//! algebraic circle fit, held to its ends. It fits when the vertices turn one way about `c`, by
-//! less than a turn, each within `ε` of the circle, and each edge too: along an edge the distance
-//! to `c` is convex, so it strays most at its ends or at its foot nearest `c`. Every ray from `c`
-//! then meets the arc and the polyline within `ε` of each other: the arc strays no more from the
-//! polyline than it from the arc. A move keeps its plastic per mm, which its length multiplies.
-//! On a bent layer only beads where the layer is level within `ε` of them are fitted: elsewhere
-//! a move off the traced line would leave the layer.
+//! A line fits when every vertex between lies within `ε` of it, in space; so then does every
+//! edge, the distance to a segment being convex. An arc runs through both ends across the plate,
+//! climbing evenly, each vertex within `ε` of the height it passes it at; its centre `c = m + t·n`
+//! on their bisector, `t` by least squares on `|q − c|² − r²` over the vertices between, linear
+//! in `t`: the algebraic circle fit, held to its ends. It fits when `c` lies within `MAX_RADIUS`
+//! and the vertices turn one way about it, by less than a turn, each vertex and edge within `ε`
+//! of the circle: along an edge the distance to `c` is convex, so it strays most at its ends or
+//! at its foot nearest `c`, and every ray from `c` meets arc and polyline within `ε`.
+//!
+//! A move lays the mean plastic per mm across the plate of the moves it replaces, and fits only
+//! if each lays within `2ε/w` of it, `w` the bead's width: on a bent layer the slab, and so the
+//! plastic, changes along a bead. The nozzle holding a bead's top, plastic amiss widens it: a
+//! share `2ε/w` of a bead no larger than `w` by its thickness widens it by at most `2ε`, each
+//! edge by `ε`, as the path strays. The machine's limits come after (`limit`).
 
 use crate::moves::chained;
 use crate::{Arc, Move, Program};
-use layercraft_geom::segment_distance;
 use std::f64::consts::TAU;
 
 type P2 = [f64; 2];
@@ -39,11 +41,10 @@ enum Shape {
     Arc(Arc),
 }
 
-/// The line from the first vertex to the last, if every vertex lies within `eps` of it.
-fn line(v: &[P2], eps: f64) -> bool {
-    let (Some(&a), Some(&b)) = (v.first(), v.last()) else { return false };
-    v.iter().all(|&p| segment_distance(p, a, b) <= eps)
-}
+/// The widest circle an arc may run about, in mm. The machine works its arcs in single
+/// precision, 24 bits, which hold a circle of 1 m to well under a micrometre; far wider, an arc
+/// barely bows from its chord, and its centre, far off, is lost to rounding, here and there.
+const MAX_RADIUS: f64 = 1000.0;
 
 /// The arc from the first vertex to the last, if it lies within `eps` of the polyline.
 fn arc(v: &[P2], eps: f64) -> Option<Arc> {
@@ -68,6 +69,9 @@ fn arc(v: &[P2], eps: f64) -> Option<Arc> {
     let t = num / den;
     let centre = [a[0] + m[0] + t * n[0], a[1] + m[1] + t * n[1]];
     let r = norm(sub(a, centre));
+    if r > MAX_RADIUS {
+        return None;
+    }
     let mut turn = 0.0;
     for w in v.windows(2) {
         let (&p, &q) = (w.first()?, w.get(1)?);
@@ -85,41 +89,115 @@ fn arc(v: &[P2], eps: f64) -> Option<Arc> {
     }
     (turn.abs() < TAU).then_some(Arc { centre, turn })
 }
+type P3 = [f64; 3];
 
-/// The fewest moves through the vertices `v` of a run laying `bead`'s plastic per mm at `z`,
-/// each within `eps` of the run.
-fn fit_run(v: &[P2], z: f64, bead: &Move, per_mm: f64, eps: f64, arcs: bool, out: &mut Vec<Move>) {
-    let shape = |w: &[P2]| {
-        if line(w, eps) {
-            Some(Shape::Line)
-        } else if arcs {
-            arc(w, eps).map(Shape::Arc)
+/// The distance from `p` to the segment from `a` to `b`, in space.
+fn distance3(p: P3, a: P3, b: P3) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let q = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let t = if len2 > 0.0 { ((q[0] * d[0] + q[1] * d[1] + q[2] * d[2]) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    ((q[0] - t * d[0]).powi(2) + (q[1] - t * d[1]).powi(2) + (q[2] - t * d[2]).powi(2)).sqrt()
+}
+
+/// The line from the first vertex to the last, if every vertex lies within `eps` of it.
+fn line3(v: &[P3], eps: f64) -> bool {
+    let (Some(&a), Some(&b)) = (v.first(), v.last()) else { return false };
+    v.iter().all(|&p| distance3(p, a, b) <= eps)
+}
+
+/// Whether the vertices' heights lie within `eps` of the helix that climbs evenly along the arc
+/// from the first to the last.
+fn climbs(w: &[P3], arc: &Arc, eps: f64) -> bool {
+    let (Some(&a), Some(&b)) = (w.first(), w.last()) else { return false };
+    let start = (a[1] - arc.centre[1]).atan2(a[0] - arc.centre[0]);
+    w.iter().all(|p| {
+        let angle = (p[1] - arc.centre[1]).atan2(p[0] - arc.centre[0]);
+        // The share of the turn made by the vertex, the turn's sign taken.
+        let mut swept = angle - start;
+        if arc.turn > 0.0 {
+            swept = swept.rem_euclid(TAU);
         } else {
-            None
+            swept = -(-swept).rem_euclid(TAU);
         }
-    };
-    let mut i = 0;
-    while i + 1 < v.len() {
-        let (mut j, mut best) = (i + 1, Shape::Line);
-        while let Some(s) = v.get(i..j + 2).and_then(shape) {
-            (j, best) = (j + 1, s);
-        }
-        let (Some(&from), Some(&to)) = (v.get(i), v.get(j)) else { break };
-        let (arc, length) = match best {
-            Shape::Line => (None, norm(sub(to, from))),
-            Shape::Arc(a) => (Some(a), norm(sub(from, a.centre)) * a.turn.abs()),
-        };
-        out.push(Move { to: Some([to[0], to[1], z]), arc, e: per_mm * length, ..bead.clone() });
-        i = j;
+        let share = if arc.turn != 0.0 { (swept / arc.turn).clamp(0.0, 1.0) } else { 0.0 };
+        (p[2] - (a[2] + share * (b[2] - a[2]))).abs() <= eps
+    })
+}
+
+/// What one move of a run lays: its plastic and its length across the plate, both positive.
+#[derive(Clone, Copy)]
+struct Piece {
+    e: f64,
+    plate: f64,
+}
+
+impl Piece {
+    /// What a move from `from` lays, if it lays a bead along a line.
+    fn of(from: Option<P3>, m: &Move) -> Option<Piece> {
+        let (from, to) = (from?, m.to?);
+        let plate = (to[0] - from[0]).hypot(to[1] - from[1]);
+        let piece = Piece { e: m.e, plate };
+        (m.bead.is_some() && m.arc.is_none() && m.e > 0.0 && plate > 0.0).then_some(piece)
     }
 }
 
-/// A move that lays a bead along a line at one height, with its plastic per mm and the height.
-fn bead_line(from: Option<[f64; 3]>, m: &Move) -> Option<(f64, f64)> {
-    let (from, to) = (from?, m.to?);
-    let length = (to[0] - from[0]).hypot(to[1] - from[1]);
-    (m.bead.is_some() && m.arc.is_none() && m.e > 0.0 && from[2] == to[2] && length > 0.0)
-        .then(|| (m.e / length, to[2]))
+/// A run of moves laying one bead the same way: the first move, the run's vertices from where it
+/// starts, and what the move ending at each later vertex lays.
+struct Run {
+    first: Move,
+    vertices: Vec<P3>,
+    pieces: Vec<Piece>,
+}
+
+impl Run {
+    /// The move along `shape` in place of the run's moves from vertex `i` to vertex `j`, if
+    /// each lays within `spread` of it, as a share of its own.
+    fn replace(&self, i: usize, j: usize, shape: &Shape, spread: f64) -> Option<Move> {
+        let (&from, &to) = (self.vertices.get(i)?, self.vertices.get(j)?);
+        let pieces = self.pieces.get(i..j)?;
+        let (arc, plate) = match shape {
+            Shape::Line => (None, norm(sub([to[0], to[1]], [from[0], from[1]]))),
+            Shape::Arc(a) => (Some(*a), norm(sub([from[0], from[1]], a.centre)) * a.turn.abs()),
+        };
+        let covered: f64 = pieces.iter().map(|p| p.plate).sum();
+        if covered <= 0.0 {
+            return None;
+        }
+        let per_mm = pieces.iter().map(|p| p.e).sum::<f64>() / covered;
+        let near = |p: &Piece| (p.e / p.plate - per_mm).abs() <= spread * p.e / p.plate;
+        pieces.iter().all(near).then(|| Move { to: Some(to), arc, e: per_mm * plate, ..self.first.clone() })
+    }
+
+    /// The fewest moves through the run's vertices, each within `eps` of the run; arcs too, with
+    /// `arcs`.
+    fn fit(&self, eps: f64, arcs: bool, out: &mut Vec<Move>) {
+        let v = &self.vertices;
+        let spread = self.first.bead.map_or(0.0, |b| 2.0 * eps / b.width);
+        let shape = |w: &[P3]| {
+            if line3(w, eps) {
+                Some(Shape::Line)
+            } else if arcs {
+                let plane: Vec<P2> = w.iter().map(|p| [p[0], p[1]]).collect();
+                arc(&plane, eps).filter(|a| climbs(w, a, eps)).map(Shape::Arc)
+            } else {
+                None
+            }
+        };
+        let fitted =
+            |i: usize, j: usize| v.get(i..=j).and_then(shape).and_then(|s| self.replace(i, j, &s, spread));
+        let mut i = 0;
+        while i + 1 < v.len() {
+            // A move alone stays as it is.
+            let Some(mut best) = self.replace(i, i + 1, &Shape::Line, f64::INFINITY) else { break };
+            let mut j = i + 1;
+            while let Some(m) = fitted(i, j + 1) {
+                (j, best) = (j + 1, m);
+            }
+            out.push(best);
+            i = j;
+        }
+    }
 }
 
 /// Writes every run of moves laying one bead the same way as the fewest lines (and arcs, with
@@ -131,48 +209,36 @@ pub fn fit(program: &mut Program, resolution: f64, arcs: bool) {
     let mut at = None;
     for layer in &mut program.layers {
         let mut out = Vec::with_capacity(layer.moves.len());
-        // The run so far: its vertices, its first move, its plastic per mm and height.
-        let mut run: Vec<P2> = Vec::new();
-        let mut first: Option<(Move, f64, f64)> = None;
+        let mut run: Option<Run> = None;
         let start = at;
         at = layer.moves.iter().rev().find_map(|m| m.to).or(at);
-        let warp = &layer.warp;
-        let level = |from: Option<[f64; 3]>, m: &Move| match (from, m.to) {
-            (Some(a), Some(b)) => {
-                let lo = [a[0].min(b[0]) - resolution, a[1].min(b[1]) - resolution];
-                let hi = [a[0].max(b[0]) + resolution, a[1].max(b[1]) + resolution];
-                let [l, h] = warp.range_over(lo, hi);
-                l == h
-            }
-            _ => false,
-        };
         for (from, m) in chained(&layer.moves, start) {
-            let line = bead_line(from, m).filter(|_| warp.is_zero() || level(from, m));
-            let same = match (&first, line) {
-                (Some((f, per_mm, z)), Some((pm, mz))) => {
+            let piece = Piece::of(from, m);
+            let joins = match (&run, piece) {
+                (Some(r), Some(_)) => {
+                    let f = &r.first;
                     (f.speed, f.accel, f.fan, f.bead) == (m.speed, m.accel, m.fan, m.bead)
-                        && *z == mz
-                        && (pm - per_mm).abs() <= 1e-9 * per_mm
                 }
                 _ => false,
             };
-            if !same {
-                if let Some((f, per_mm, z)) = first.take() {
-                    fit_run(&run, z, &f, per_mm, resolution, arcs, &mut out);
+            if !joins {
+                if let Some(r) = run.take() {
+                    r.fit(resolution, arcs, &mut out);
                 }
-                run.clear();
-                if let (Some((per_mm, z)), Some(from)) = (line, from) {
-                    run.push([from[0], from[1]]);
-                    first = Some((m.clone(), per_mm, z));
+                if let (Some(_), Some(from)) = (piece, from) {
+                    run = Some(Run { first: m.clone(), vertices: vec![from], pieces: Vec::new() });
                 }
             }
-            match (&first, m.to) {
-                (Some(_), Some(to)) => run.push([to[0], to[1]]),
+            match (&mut run, m.to, piece) {
+                (Some(r), Some(to), Some(p)) => {
+                    r.vertices.push(to);
+                    r.pieces.push(p);
+                }
                 _ => out.push(m.clone()),
             }
         }
-        if let Some((f, per_mm, z)) = first.take() {
-            fit_run(&run, z, &f, per_mm, resolution, arcs, &mut out);
+        if let Some(r) = run.take() {
+            r.fit(resolution, arcs, &mut out);
         }
         layer.moves = out;
     }

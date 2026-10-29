@@ -1,11 +1,14 @@
 //! Filament by volume, times against closed forms, the order of a travel, the shape of a lift,
-//! the geometry of an arc, beads fitted as lines and arcs, cooling, and the frame.
+//! the geometry of an arc, beads fitted as lines and arcs, cooling, and the frame; beads on a
+//! bent layer (`bent`).
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
 use crate::moves::chained;
 use layercraft_path::{Path, PathLayer, Paths};
 use layercraft_tune::Field;
+
+mod bent;
 
 fn role(speed: f64) -> RoleMotion {
     RoleMotion { speed, accel: 1000.0, flow: 1.0 }
@@ -487,16 +490,24 @@ fn programs_merge_layer_by_layer_nearest_first_with_their_filament_as_they_left_
 }
 
 #[test]
-fn beads_are_held_to_what_the_hot_end_melts() {
+fn moves_are_held_to_what_the_hot_end_melts_and_the_z_axis_moves() {
     let bead = Some(Bead { role: Role::SOLID, width: 0.4 });
+    let limits = MoveLimits { max_volumetric_speed: 24.0, filament_diameter: 1.75, max_speed_z: 20.0 };
     // 1 mm pushing 1 mm of 1.75 mm filament, 2.405 mm³, asks 240 mm³/s at 100 mm/s: held to 24 mm³/s.
-    let mut program =
-        single(vec![travel([0.0; 3], 300.0), Move { e: 1.0, bead, ..travel([1.0, 0.0, 0.0], 100.0) }]);
-    assert_eq!(melt(&mut program, 24.0, 1.75), 1);
+    // A travel down 3 mm over 4 across, 5 long, at 300 mm/s drives Z at 180 mm/s: held to 20.
+    let mut program = single(vec![
+        travel([0.0; 3], 300.0),
+        Move { e: 1.0, bead, ..travel([1.0, 0.0, 0.0], 100.0) },
+        travel([5.0, 0.0, -3.0], 300.0),
+    ]);
+    assert_eq!(limit(&mut program, &limits), 1);
     let area = std::f64::consts::PI * 0.875 * 0.875;
     assert!((program.layers[0].moves[1].speed - 24.0 / area).abs() < 1e-9);
+    assert!((program.layers[0].moves[2].speed - 20.0 * 5.0 / 3.0).abs() < 1e-9);
     // Held already: left alone.
-    assert_eq!(melt(&mut program, 24.0, 1.75), 0);
+    let held = program.clone();
+    assert_eq!(limit(&mut program, &limits), 0);
+    assert_eq!(program, held);
 }
 
 #[test]
