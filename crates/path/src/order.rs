@@ -6,9 +6,9 @@ use crate::hatch::{bridge_angle, hatch};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
 use crate::tour::tour;
-use crate::{Face, Kind, Path, PathError, PathParams, Role, Support, check};
+use crate::{Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
-    Bands, Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, disc_area, edges, encloses,
+    Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, clip_lines, disc_area, edges, encloses,
     intersection, offset, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
@@ -151,9 +151,33 @@ fn back_right(contour: &[Point]) -> Point {
     contour.iter().fold([f64::MIN, f64::MIN], |m, p| [m[0].max(p[0]), m[1].max(p[1])])
 }
 
+/// The width of a layer's sparse beads, and how far apart they lie for the requested density
+/// by volume: beads `s` apart in effect, every `S`, fill `s/S` of the area.
+pub fn sparse_bead(layer: &RegionLayer, p: &PathParams) -> (f64, f64) {
+    let width = if layer.index == 0 { p.first_layer_width } else { p.sparse_width };
+    let spacing = if p.sparse_density > 0.0 {
+        bead_spacing(width, layer.height) / p.sparse_density
+    } else {
+        f64::INFINITY
+    };
+    (width, spacing)
+}
+
+/// A point on a line, for asking which island holds it: the middle of its middle segment.
+fn on_line(line: &[Point]) -> Option<Point> {
+    let k = line.len().checked_sub(2)? / 2;
+    let (a, b) = (line.get(k)?, line.get(k + 1)?);
+    Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
+}
+
 /// Splits a layer, or a part of one, into islands, each holding its walls, the infill inside
-/// them and the part's infill areas for joining their lines.
-pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathError> {
+/// them and the part's infill areas for joining their lines; the sparse lines are `rolls`, cut
+/// to the part, where its parameters ask for rolls and the layer has them.
+pub fn islands(
+    layer: &RegionLayer,
+    p: &PathParams,
+    rolls: Option<&[Polyline]>,
+) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| {
@@ -219,14 +243,10 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
     let odd = layer.index % 2 == 1;
     let solid_angle = p.infill_angle + if odd { 90.0 } else { 0.0 };
     let h = layer.height;
-    // Beads `s` apart in effect, every `S`, fill `s/S` of the area. One direction per layer,
-    // turning a quarter turn each layer: two beads never cross on one layer, where a crossing
-    // would lay plastic twice in one place.
-    let sparse_spacing = if p.sparse_density > 0.0 {
-        bead_spacing(w(p.sparse_width), h) / p.sparse_density
-    } else {
-        f64::INFINITY
-    };
+    // One direction per layer, turning a quarter turn each layer: two beads never cross on one
+    // layer, where a crossing would lay plastic twice in one place.
+    let (_, sparse_spacing) = sparse_bead(layer, p);
+    let rolls = rolls.filter(|_| matches!(p.sparse_pattern, SparsePattern::Rolls { .. }));
     let (top, solid) = (w(p.top_surface_width), w(p.solid_width));
     // Bridge strands are round, a nozzle wide. Over air they hang, touching side by side. Over
     // sparse infill they rest on its lines, a solid layer like any other: spaced so that each
@@ -284,12 +304,15 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         } else if role.face == Face::Top && !layer.warp.is_zero() {
             let fall = |piece: &Region| fall_line(piece, &layer.warp);
             lines = best_hatch(&reach, spacing, h, solid_angle, 0.0, fall)?;
+        } else if let Some(rolls) = rolls.filter(|_| role == Role::SPARSE) {
+            // A stroke shorter than two beads would lay a blob.
+            lines = clip_lines(rolls, &reach)?;
+            lines.retain(|line| polyline_length(line) >= 2.0 * width);
         } else {
             lines = hatch(&reach, spacing, solid_angle)?;
         }
         for line in lines {
-            let (Some(&a), Some(&b)) = (line.first(), line.last()) else { continue };
-            let Some(i) = home(&islands, [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]) else { continue };
+            let Some(i) = on_line(&line).and_then(|q| home(&islands, q)) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 island.infill.push(Path::new(role, width, false, line));
             }

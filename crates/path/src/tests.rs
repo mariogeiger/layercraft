@@ -1,4 +1,4 @@
-//! Beads of analytic solids: coverage, seams and order.
+//! Beads of analytic solids: coverage, seams, order, and the rolls' shape.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -22,6 +22,7 @@ const PATHS: PathParams = PathParams {
     bridge_width: 0.4,
     monotone: Vec::new(),
     resolution: 0.0,
+    sparse_pattern: SparsePattern::Lines,
 };
 
 fn region_params() -> RegionParams {
@@ -516,4 +517,123 @@ fn a_top_on_a_bent_layer_is_hatched_along_its_fall_line() {
     // Under a degree, or flat: no fall line, the layer's own angles.
     assert_eq!(fall_line(&piece, &relief(&|p| 0.01 * p[0])), None);
     assert_eq!(fall_line(&piece, &Relief::default()), None);
+}
+
+/// A pentagon with no symmetry, 16 by 8 mm.
+const PENTAGON: [Point; 5] = [[0.0, 0.0], [16.0, 0.0], [16.0, 4.0], [7.0, 8.0], [0.0, 8.0]];
+
+/// Layers of sparse infill alone over `shape`, 0.2 mm each from z = 0.4, rolls `tilt` degrees
+/// off square, the other way every millimetre: their sparse beads.
+fn rolls_over(shape: &[Point], tilt: f64, layers: usize) -> Vec<Vec<Path>> {
+    let layer = |k: usize| layercraft_region::RegionLayer {
+        index: k,
+        top: 0.2 * (k + 1) as f64,
+        height: 0.2,
+        sparse: vec![vec![shape.to_vec()]],
+        ..Default::default()
+    };
+    let regions = Regions { layers: (1..=layers).map(layer).collect() };
+    let params = PathParams { sparse_pattern: SparsePattern::Rolls { tilt, ply: 1.0 }, ..PATHS };
+    let paths = trace(&regions, &Field::uniform(params)).unwrap();
+    paths
+        .layers
+        .into_iter()
+        .map(|l| l.paths.into_iter().filter(|p| p.role == Role::SPARSE).collect())
+        .collect()
+}
+
+/// How far `p` lies from the nearest of `lines`.
+fn distance_to(p: Point, lines: &[Vec<Point>]) -> f64 {
+    let segment = |a: Point, b: Point| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]).max(1e-30))
+            .clamp(0.0, 1.0);
+        (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+    };
+    lines.iter().flat_map(|l| l.windows(2).map(|w| segment(w[0], w[1]))).fold(f64::INFINITY, f64::min)
+}
+
+/// At each end of each bead, the angle in degrees from the wall it meets to the bead, signed
+/// anticlockwise from the wall's way round the shape; with how far the end lies from the wall.
+fn wall_angles(beads: &[Path], shape: &[Point]) -> Vec<(f64, f64)> {
+    let walls: Vec<(Point, Point)> =
+        (0..shape.len()).map(|k| (shape[k], shape[(k + 1) % shape.len()])).collect();
+    let mut out = Vec::new();
+    for bead in beads {
+        let n = bead.points.len();
+        for (end, inner) in [
+            (bead.points[0], bead.points[1.min(n - 1)]),
+            (bead.points[n - 1], bead.points[n.saturating_sub(2)]),
+        ] {
+            let (a, b) = *walls
+                .iter()
+                .min_by(|x, y| {
+                    distance_to(end, &[vec![x.0, x.1]]).total_cmp(&distance_to(end, &[vec![y.0, y.1]]))
+                })
+                .unwrap();
+            let gap = distance_to(end, &[vec![a, b]]);
+            let (wall, into) =
+                ((b[1] - a[1]).atan2(b[0] - a[0]), (inner[1] - end[1]).atan2(inner[0] - end[0]));
+            out.push((((into - wall).to_degrees() + 360.0) % 360.0, gap));
+        }
+    }
+    out
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(f64::total_cmp);
+    v[v.len() / 2]
+}
+
+#[test]
+fn rolls_run_from_wall_to_wall_square_to_them_and_lay_the_lines_plastic() {
+    let layers = rolls_over(&PENTAGON, 0.0, 2);
+    let beads = &layers[0];
+    assert!(beads.len() >= 5, "{} strokes", beads.len());
+    // Every stroke ends on a wall: no loose end inside.
+    let angles = wall_angles(beads, &PENTAGON);
+    assert!(angles.iter().all(|&(_, gap)| gap < 0.01), "{angles:?}");
+    // Square to the walls, but where a corner bends them round.
+    let off_square: Vec<f64> = angles.iter().map(|&(a, _)| (a - 90.0).abs()).collect();
+    assert!(median(off_square.clone()) < 8.0, "{off_square:?}");
+    // As much plastic as straight lines at the spacing: the area over it.
+    let spacing = (0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4)) / 0.2;
+    let length: f64 = beads.iter().map(|b| polyline_length(&b.points)).sum();
+    let lines = area(&vec![vec![PENTAGON.to_vec()]]) / spacing;
+    assert!((length / lines - 1.0).abs() < 0.12, "{length} mm of rolls for {lines} mm of lines");
+}
+
+#[test]
+fn tilted_rolls_rest_on_those_below_and_turn_the_other_way_each_ply() {
+    // Layers at z = 0.4 … 1.4: the first three below a millimetre, the rest above.
+    let layers = rolls_over(&PENTAGON, 30.0, 6);
+    let tilt = |beads: &[Path]| median(wall_angles(beads, &PENTAGON).iter().map(|&(a, _)| a).collect());
+    let (first, second) = (tilt(&layers[0]), tilt(&layers[4]));
+    assert!((first - 60.0).abs() < 10.0 || (first - 120.0).abs() < 10.0, "{first}°");
+    assert!(((first - 90.0) + (second - 90.0)).abs() < 12.0, "{first}° then {second}°");
+    // Within a ply, a layer's lines lie on those below, to half a bead.
+    let below: Vec<Vec<Point>> = layers[1].iter().map(|b| b.points.clone()).collect();
+    let points: Vec<Point> = layers[2].iter().flat_map(|b| b.points.clone()).collect();
+    let resting = points.iter().filter(|&&p| distance_to(p, &below) <= 0.2).count();
+    assert!(resting as f64 >= 0.95 * points.len() as f64, "{resting} of {} points", points.len());
+}
+
+#[test]
+fn rolls_turn_and_move_with_their_part() {
+    let (s, c) = 40f64.to_radians().sin_cos();
+    let moved = |p: Point| [30.0 + c * p[0] - s * p[1], -5.0 + s * p[0] + c * p[1]];
+    let back = |p: Point| [c * (p[0] - 30.0) + s * (p[1] + 5.0), -s * (p[0] - 30.0) + c * (p[1] + 5.0)];
+    let shape: Vec<Point> = PENTAGON.iter().map(|&p| moved(p)).collect();
+    let (here, there) = (rolls_over(&PENTAGON, 30.0, 2), rolls_over(&shape, 30.0, 2));
+    let lines: Vec<Vec<Point>> = here[1].iter().map(|b| b.points.clone()).collect();
+    let length = |beads: &[Path]| beads.iter().map(|b| polyline_length(&b.points)).sum::<f64>();
+    assert!(
+        (length(&here[1]) - length(&there[1])).abs() < 1e-3,
+        "{} against {}",
+        length(&here[1]),
+        length(&there[1])
+    );
+    for p in there[1].iter().flat_map(|b| b.points.iter()) {
+        assert!(distance_to(back(*p), &lines) < 1e-3, "{p:?} off the lines turned back");
+    }
 }

@@ -54,6 +54,10 @@ enum Command {
         /// gently sloped tops.
         #[arg(long)]
         flat: bool,
+        /// What sparse areas are filled with: straight lines crossing from layer to layer, or
+        /// convection rolls from wall to wall, stacked, tilted the other way every five layers.
+        #[arg(long, value_enum, default_value = "lines")]
+        infill: Infill,
     },
     /// Print several programs together on one plate, layer by layer under one frame: program
     /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
@@ -98,7 +102,17 @@ enum Command {
         /// Keep every layer flat, as for `compile`.
         #[arg(long)]
         flat: bool,
+        /// What sparse areas are filled with, as for `compile`.
+        #[arg(long, value_enum, default_value = "lines")]
+        infill: Infill,
     },
+}
+
+/// What sparse areas are filled with.
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
+enum Infill {
+    Lines,
+    Rolls,
 }
 
 #[derive(Subcommand)]
@@ -144,13 +158,23 @@ fn load_machine(name: &str) -> Result<Machine, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The machine, its settings and the tuning; with `flat`, layers that never bend.
-fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>, flat: bool) -> Result<Setup, String> {
+/// The machine, its settings and the tuning; with `flat`, layers that never bend; the sparse
+/// areas filled with `infill`.
+fn setup(
+    machine: &str,
+    bed: Option<&str>,
+    tune: Option<&Path>,
+    flat: bool,
+    infill: Infill,
+) -> Result<Setup, String> {
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
     let machine = load_machine(machine)?;
     let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
     if flat {
         settings.layering.foliation = None;
+    }
+    if infill == Infill::Rolls {
+        settings.path.sparse_pattern = settings::rolls(&settings);
     }
     Ok(Setup { machine, settings, tuning })
 }
@@ -192,8 +216,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}\nvariant: {}", machine.source, machine.variant);
             Ok(())
         }
-        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune, flat } => {
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), flat)?;
+        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune, flat, infill } => {
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), flat, infill)?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -212,7 +236,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), false)?;
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), false, Infill::Lines)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
             let limits = &s.settings.motion.limits;
@@ -230,11 +254,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, machine, layers, tune, flat } => {
+        Command::View { input, out, machine, layers, tune, flat, infill } => {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s = setup(&machine, None, tune.as_deref(), flat)?;
+                let s = setup(&machine, None, tune.as_deref(), flat, infill)?;
                 let output =
                     pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?

@@ -320,3 +320,23 @@ fn a_beads_strip_through_its_layer_holds_its_section() {
         assert!(close(bead_spacing(w, h) * h, bead_area(w, h)), "{w} {h}");
     }
 }
+
+#[test]
+fn a_line_clipped_runs_on_as_one_piece_until_it_leaves_the_region() {
+    let a = union_contours(&[square(0.0, 0.0, 10.0)]).unwrap();
+    // Turning back leftward then rightward, twice, inside: one piece, the line itself, either way.
+    let zigzag = vec![[8.0, 1.0], [2.0, 3.0], [8.0, 5.0], [2.0, 7.0], [8.0, 9.0]];
+    let backward: Vec<Point> = zigzag.iter().rev().copied().collect();
+    for line in [zigzag, backward] {
+        assert_eq!(clip_lines(std::slice::from_ref(&line), &a).unwrap(), vec![line]);
+    }
+    // Out through the right side and back in: two pieces, each running the way the line runs.
+    let out = vec![[8.0, 1.0], [2.0, 3.0], [12.0, 5.0], [2.0, 7.0], [8.0, 9.0]];
+    let pieces = clip_lines(&[out], &a).unwrap();
+    assert_eq!(pieces.len(), 2, "{pieces:?}");
+    assert_eq!((pieces[0][0], pieces[1][pieces[1].len() - 1]), ([8.0, 1.0], [8.0, 9.0]), "{pieces:?}");
+    // A loop half outside, closed at a corner inside: what lies inside, in one piece.
+    let ring = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 8.0], [5.0, 8.0], [5.0, 5.0]];
+    let pieces = clip_lines(&[ring], &a).unwrap();
+    assert_eq!(pieces, vec![vec![[10.0, 8.0], [5.0, 8.0], [5.0, 5.0], [10.0, 5.0]]]);
+}

@@ -2,6 +2,29 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.9.0
+
+### Added
+
+- Sparse infill as convection rolls: `--infill rolls` on `compile` and `view`. The lines are
+  the zeros of a Swift–Hohenberg field relaxed over each layer's sparse area, one line spacing
+  apart, the spacing of straight lines: they run from wall to wall, welded to the walls, which
+  they meet 30° off square, the other way every millimetre of height (five layers), and each
+  layer's field starts from the one below, so its lines rest on those below. The grid lies in
+  the frame of the sparse areas' principal axes, so the lines turn and move with what is
+  printed; the parts of one plate share it. Corners, which the rolls round, take a little less
+  line than straight lines would: on the ramps 5 % less sparse line and 0.5 % less filament
+  (751 mm against 755), on the Benchy 3582 mm against 3598 and 33.1 min against 32.9.
+- `PathParams` gains `sparse_pattern`: `lines`, the default, or `rolls` with its `tilt` off
+  square in degrees and its `ply`, the height between turns, in mm.
+
+### Fixed
+
+- `clip_lines` no longer cuts a line in two inside the region where it turns back from going
+  left to going right: `i_overlay` walks each run inside from its least point, so where that
+  point was a turn it handed the run back in two halves, which are now joined again. An inner
+  wall's stretch under the layer above could come back in two strokes.
+
 ## 0.8.0
 
 ### Fixed

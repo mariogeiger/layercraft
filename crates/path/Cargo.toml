@@ -9,6 +9,7 @@ repository.workspace = true
 layercraft-geom = { path = "../geom" }
 layercraft-region = { path = "../region" }
 layercraft-tune = { path = "../tune" }
+rustfft.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

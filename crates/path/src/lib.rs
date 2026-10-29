@@ -3,16 +3,18 @@
 //! Walls become closed loops, starting at the vertex nearest the island's back right corner
 //! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
 //! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
-//! volume, also alternating, so no two beads cross on a layer. Bridges are strands one nozzle
-//! wide: side by side over air, where they hang; over sparse infill, where they rest, spaced to
-//! fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the move between
-//! neighbouring lines is marked as staying inside the part, so it needs no retraction, as is
-//! any move over what the layer above covers. Each island is printed whole — inner walls, outer
-//! wall, then its infill — and islands follow each other nearest first. Within an island, the
-//! beads of each kind follow the tour that retracts least often, then travels least;
-//! the lines of a `monotone` role are laid in sweeps instead, each against the one before. The first layer's beads
-//! are all `first_layer_width` wide. Each wall segment carries the share of its bead that hangs
-//! past the layer below (`overhang`). Each island is traced by the parameters at its centre.
+//! volume, also alternating, so no two beads cross on a layer, or convection rolls as far apart
+//! (`rolls`), running from wall to wall and resting on those below. Bridges are strands one
+//! nozzle wide: side by side over air, where they hang; over sparse infill, where they rest,
+//! spaced to fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the
+//! move between neighbouring lines is marked as staying inside the part, so it needs no
+//! retraction, as is any move over what the layer above covers. Each island is printed whole —
+//! inner walls, outer wall, then its infill — and islands follow each other nearest first.
+//! Within an island, the beads of each kind follow the tour that retracts least often, then
+//! travels least; the lines of a `monotone` role are laid in sweeps instead, each against the
+//! one before. The first layer's beads are all `first_layer_width` wide. Each wall segment
+//! carries the share of its bead that hangs past the layer below (`overhang`). Each island is
+//! traced by the parameters at its centre.
 
 mod dense;
 mod gap;
@@ -21,6 +23,7 @@ mod link;
 mod order;
 mod overhang;
 mod role;
+mod rolls;
 mod tour;
 
 pub use role::{Face, Kind, Role, Support};
@@ -112,6 +115,21 @@ pub struct PathParams {
     /// best to within its quanta; 0 hatches every piece at the layer's angle.
     #[serde(default)]
     pub resolution: f64,
+    /// What the sparse lines draw, at the same spacing.
+    #[serde(default)]
+    pub sparse_pattern: SparsePattern,
+}
+
+/// What a sparse area's lines draw.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SparsePattern {
+    /// Straight lines, turning a quarter turn from layer to layer.
+    #[default]
+    Lines,
+    /// Convection rolls from wall to wall, meeting the walls `tilt` degrees off square, the
+    /// other way every `ply` mm of height, each layer's resting on the one below.
+    Rolls { tilt: f64, ply: f64 },
 }
 
 /// Why the path stage failed.
@@ -147,6 +165,13 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     if !p.infill_angle.is_finite() {
         return Err(PathError::BadParams("infill angle must be finite".into()));
     }
+    if let SparsePattern::Rolls { tilt, ply } = p.sparse_pattern
+        && !(tilt.is_finite() && tilt.abs() < 90.0 && ply.is_finite() && ply >= 0.0)
+    {
+        return Err(PathError::BadParams(
+            "rolls tilt less than 90° off square, by plies not negative".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -155,10 +180,29 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     check(field.base())?;
     let mut layers = Vec::with_capacity(regions.layers.len());
     let mut at: Point = [0.0, 0.0];
+    // Made on the first layer whose sparse area asks for them, over all the layers.
+    let mut rolls: Option<rolls::Rolls> = None;
     for layer in &regions.layers {
+        let parts = order::parts(layer, field)?;
+        let asked = parts.iter().find_map(|(p, _)| match p.sparse_pattern {
+            SparsePattern::Rolls { tilt, ply } if !layer.sparse.is_empty() => Some((p, tilt, ply)),
+            _ => None,
+        });
+        let lines = match asked {
+            Some((p, tilt, ply)) => {
+                let (width, spacing) = order::sparse_bead(layer, p);
+                let grow = p.infill_wall_overlap * width;
+                if rolls.is_none() {
+                    rolls = rolls::Rolls::new(&regions.layers, spacing, grow, tilt, ply);
+                }
+                let area = layercraft_geom::offset(&layer.sparse, grow)?;
+                rolls.as_mut().map(|r| r.lines(layer, &area, spacing)).transpose()?
+            }
+            None => None,
+        };
         let mut islands = Vec::new();
-        for (params, part) in order::parts(layer, field)? {
-            islands.extend(order::islands(&part, &params)?);
+        for (params, part) in parts {
+            islands.extend(order::islands(&part, &params, lines.as_deref())?);
         }
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);

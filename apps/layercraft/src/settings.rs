@@ -9,7 +9,7 @@
 use crate::printers::printer;
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::{Face, PathParams};
+use layercraft_path::{Face, PathParams, SparsePattern};
 use layercraft_region::RegionParams;
 use layercraft_section::{Foliation, Layering};
 use layercraft_verify::{Envelope, Toolhead};
@@ -81,6 +81,12 @@ const SLAB_SPREAD: f64 = 0.5;
 /// a smooth top surface within a micrometre and that the grid's triangles cost the nozzle's face
 /// little of its reach (`face`), coarse enough that a bead crosses few lines.
 const BEND_CELL: f64 = 0.625;
+
+/// Convection rolls for sparse infill: 30° off square to the walls, which braces them against
+/// each other and against shear alike, the other way every five layers.
+pub fn rolls(s: &Settings) -> SparsePattern {
+    SparsePattern::Rolls { tilt: 30.0, ply: 5.0 * s.layering.layer_height }
+}
 
 /// The hop and the radius of the helix a lift turns, a spiral one's `spiral_radius`; a filament's
 /// own lift wins over the printer's. Bambu's automatic lift is taken as the spiral one.
@@ -281,6 +287,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 .map(|(_, face)| face)
                 .collect(),
             resolution: m.number(Process, "resolution")?,
+            sparse_pattern: SparsePattern::Lines,
         },
         motion: MotionParams {
             filament_diameter,
