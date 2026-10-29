@@ -116,6 +116,7 @@ fn bent() -> Layering {
             parallel_layers: 2,
             cell: 0.5,
             face_reach: 0.5 + 0.42 / 2.0,
+            ironing: 0.3,
         }),
     }
 }
@@ -272,6 +273,23 @@ fn the_leaf_below_never_stands_above_the_nozzle_face() {
         let contact = face_contact(&sections, [0.0, 0.0], [10.0, 8.0], face);
         assert!(contact <= 1e-9, "{name}: the leaf below stands {contact} mm above the face");
     }
+}
+
+#[test]
+fn a_leaf_leans_no_more_than_the_ironing_allows() {
+    // The wedge of 11.3°: followed when the face may iron 0.3 mm, not when only 0.1 mm, which
+    // over the face's reach of 0.71 mm allows some 7°.
+    let mesh =
+        Mesh { bodies: vec![height_field("wedge", [0.0, 0.0], [10.0, 8.0], 10, |x, _| 3.0 + 0.2 * x)] };
+    let bends = |ironing: f64| {
+        let mut layering = bent();
+        layering.foliation.as_mut().unwrap().ironing = ironing;
+        section(&mesh, &layering).unwrap().layers.iter().any(|l| !l.warp.is_zero())
+    };
+    let f = bent().foliation.unwrap();
+    let steepest = 0.1 / crate::face::lean(f.cell, f.face_reach);
+    assert!(steepest < 0.2 && steepest > 0.1, "{steepest}");
+    assert!(bends(0.3) && !bends(0.1));
 }
 
 #[test]

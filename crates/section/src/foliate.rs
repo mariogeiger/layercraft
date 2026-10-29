@@ -19,7 +19,7 @@
 //! A patch rising more than `max_rise` is followed in bands, each on a leaf of its own.
 
 use crate::SectionError;
-use crate::face::{Laps, laps};
+use crate::face::{Laps, laps, lean};
 use crate::patches::{Pin, patches};
 use layercraft_geom::{Grid, MAX_VALUES, Point, Relief};
 use layercraft_mesh::Mesh;
@@ -46,6 +46,9 @@ pub struct Foliation {
     /// the nozzle's flat face, and half the widest bead, whose flat top stands across its width
     /// as high as its middle.
     pub face_reach: f64,
+    /// How deep the face may iron the beads of the leaf it prints, in mm: no leaf leans more than
+    /// lets one rise by that over the face's reach (`face::lean`).
+    pub ironing: f64,
 }
 
 /// Fractions of a cell by which the grid is set off the plate's origin, irrational so that its
@@ -182,6 +185,9 @@ fn check(p: &Foliation, layer_height: f64) -> Result<(), SectionError> {
     if !(p.face_reach.is_finite() && (0.0..=10.0).contains(&p.face_reach)) {
         return bad("the nozzle's face must reach 0 to 10 mm");
     }
+    if !(p.ironing.is_finite() && p.ironing >= 0.0) {
+        return bad("the ironing must be finite and not negative");
+    }
     Ok(())
 }
 
@@ -274,7 +280,7 @@ pub fn foliate(
     let s = p.cell;
     let grid = Grid { origin: [s * GENERIC[0], s * GENERIC[1]], cell: s };
     let flat = vec![Relief::zero(grid); tops.len()];
-    let slope = p.max_slope.to_radians().tan();
+    let slope = p.max_slope.to_radians().tan().min(p.ironing / lean(s, p.face_reach));
     if slope < 1e-3 {
         return Ok(flat);
     }
@@ -299,7 +305,7 @@ pub fn foliate(
         all: Vec::new(),
     };
     let parallel = p.parallel_layers.max(1);
-    for patch in patches(mesh, &grid, p.max_slope.to_radians()) {
+    for patch in patches(mesh, &grid, slope.atan()) {
         let mut remaining: Vec<Pin> = patch.pins;
         for _ in 0..MAX_BANDS {
             let mut heights: Vec<f64> = remaining.iter().filter(|q| q.exact).map(|q| q.height).collect();
@@ -358,7 +364,8 @@ struct Window {
 
 impl Window {
     fn around(held: &[Held], metric: &Metric, cell: f64) -> Option<Window> {
-        let (mut lo, mut hi) = ([i64::MAX; 2], [i64::MIN; 2]);
+        let first = held.first()?;
+        let (mut lo, mut hi) = (first.vertex, first.vertex);
         let mut most = 0.0f64;
         for p in held {
             lo = [lo[0].min(p.vertex[0]), lo[1].min(p.vertex[1])];
@@ -366,11 +373,15 @@ impl Window {
             most = most.max(p.value.abs());
         }
         // Past `|A|` over the least rate `d` changes sideways at, the envelopes cross zero.
-        let reach = (most / metric.laps.rate() / cell).ceil() as i64 + 1;
+        let cells = (most / metric.laps.rate() / cell).ceil();
+        if cells.is_nan() || cells >= MAX_VALUES as f64 {
+            return None;
+        }
+        let reach = cells as i64 + 1;
         let start = [lo[0].checked_sub(reach)?, lo[1].checked_sub(reach)?];
-        let side = |a: i64, b: i64| usize::try_from(b - a + 2 * reach + 1).ok();
+        let side = |a: i64, b: i64| usize::try_from(b.checked_sub(a)?.checked_add(2 * reach + 1)?).ok();
         let size = [side(lo[0], hi[0])?, side(lo[1], hi[1])?];
-        (!held.is_empty() && size[0].saturating_mul(size[1]) <= MAX_VALUES).then_some(Window { start, size })
+        (size[0].saturating_mul(size[1]) <= MAX_VALUES).then_some(Window { start, size })
     }
 
     fn index(&self, v: [i64; 2]) -> usize {

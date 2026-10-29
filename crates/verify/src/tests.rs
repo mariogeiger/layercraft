@@ -20,6 +20,8 @@ const ENVELOPE: Envelope = Envelope {
         protrusion: 4.0,
         margin: 1.0,
     },
+    ironing: 0.2,
+    resolution: 0.012,
 };
 
 fn mv(to: [f64; 3], e: f64, speed: f64) -> Move {
@@ -170,4 +172,49 @@ fn beads_on_a_bent_layer_pass_on_its_top_and_are_caught_off_it() {
     // Level at the layer's height, 0.2 to 0.4 mm below its top: caught.
     let level = verify(&ramped(|_| 0.4), &ENVELOPE);
     assert!(level.iter().any(|v| v.reason.starts_with("extrusion at z")), "{level:?}");
+}
+
+/// A bead along y = 10 at z = 0.6 over a first layer far off; then, on its layer or the next, the
+/// nozzle comes straight down beside it at `(15, y)` to `z`.
+fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
+    let bead = vec![
+        mv([10.0, 10.0, 1.0], 0.0, 500.0),
+        mv([10.0, 10.0, 0.6], 0.0, 20.0),
+        mv([20.0, 10.0, 0.6], 0.3, 50.0),
+    ];
+    let down = vec![mv([15.0, y, 1.0], 0.0, 200.0), mv([15.0, y, z], 0.0, 20.0)];
+    let mut layers = vec![bead_layer(0, 0.2, 60.0)];
+    if same_layer {
+        layers.push(Layer {
+            index: 1,
+            z: 0.6,
+            height: 0.4,
+            warp: Default::default(),
+            moves: [bead, down].concat(),
+        });
+    } else {
+        layers.push(Layer { index: 1, z: 0.6, height: 0.4, warp: Default::default(), moves: bead });
+        layers.push(Layer { index: 2, z: 0.8, height: 0.2, warp: Default::default(), moves: down });
+    }
+    Program { layers }
+}
+
+#[test]
+fn the_face_irons_its_own_layer_as_allowed_and_no_layer_before() {
+    // The bead's flat top reaches 0.21 mm from its middle; 0.15 mm past its edge, the tip is
+    // within the face of 0.2 mm radius, which meets the top's edge as the tip comes lower.
+    let y = 10.0 + 0.21 + 0.15;
+    // A layer later: within the rounding of written positions, no deeper.
+    assert_eq!(verify(&beside_bead(y, 0.599, false), &ENVELOPE), vec![]);
+    let into = verify(&beside_bead(y, 0.57, false), &ENVELOPE);
+    assert!(into.iter().any(|v| v.reason.starts_with("the head comes 0.028")), "{into:?}");
+    // Past the face's rim, the flank rises faster than the tip sank.
+    assert_eq!(verify(&beside_bead(y + 0.1, 0.57, false), &ENVELOPE), vec![]);
+    // On its own layer, ironed 0.1 mm of the 0.2 allowed; then 0.25.
+    assert_eq!(verify(&beside_bead(y, 0.5, true), &ENVELOPE), vec![]);
+    let ironed = verify(&beside_bead(y, 0.35, true), &ENVELOPE);
+    assert!(
+        ironed.iter().any(|v| v.reason.starts_with("the nozzle irons its own layer 0.050")),
+        "{ironed:?}"
+    );
 }

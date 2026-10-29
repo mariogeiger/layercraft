@@ -68,6 +68,11 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
 /// layer then leans at most `√2 · tan 20°`, 27°, under the X2D nozzle's flank of 50° (`printers/`).
 const MAX_SLOPE: f64 = 20.0;
 
+/// How deep the nozzle's face may iron the beads of the layer it prints, in mm: on a bent layer
+/// it passes over those it laid just before, up the slope. The layers lean no more than keeps it
+/// so, about 0.78 mm times their slope with the X2D's face and beads: here 20.9°.
+const IRONING: f64 = 0.3;
+
 /// How much thinner and thicker than the layer height a bent slab may be: a half, as the bead
 /// then stays between half and three quarters of the nozzle's width high.
 const SLAB_SPREAD: f64 = 0.5;
@@ -238,6 +243,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 parallel_layers: 2,
                 cell: BEND_CELL * nozzle,
                 face_reach: (nozzle_shape.face_diameter + widest) / 2.0,
+                ironing: IRONING,
             }),
         },
         region: RegionParams {
@@ -369,6 +375,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 protrusion: nozzle_shape.protrusion,
                 margin: printer.head_margin,
             },
+            ironing: IRONING,
+            resolution: m.number(Process, "resolution")?,
         },
         scope,
         filament_kind: m.text(Filament, "filament_type")?,

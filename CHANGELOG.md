@@ -2,6 +2,41 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.7.0
+
+### Fixed
+
+- On a bent layer the nozzle's flat face no longer comes down into the beads of the layer
+  below. Where a slab thinned under a slope, the face's uphill rim reached into them: on the
+  Benchy, up to 177 µm into their flat tops, 113 µm at their middles. The leaf below now lies
+  under the face across its reach, its radius and half the widest bead, whose top stands as
+  high as its middle: `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ face_reach`, 0.725 mm on the X2D.
+  It holds between the grid's vertices too, exactly: for leaves linear on the grid's triangles,
+  bounds at the vertices give their interpolation everywhere and nothing more, so the face
+  holds when that interpolation stays under `h` over its disc. The grid needs a larger reach
+  for it, found by bisection: 0.80 mm.
+- `verify` sees that: within the nozzle's column, the beads laid so far are capsules, flat
+  across and as high as the nozzle that laid them, met exactly by the nozzle's underside, the
+  tip followed along each move until a bound or a point decides. The nozzle may iron the beads of
+  its own layer by `Envelope::ironing`, those before not at all: within the rounding of written
+  positions and, on a bent layer, the resolution its moves are written within
+  (`Envelope::resolution`). Past the column, no bead stands higher than the head's plane. This
+  replaces a grid of heights 0.2 mm fine, under which a bent layer's nozzle was let into
+  anything within its column lower than the layer's top raised by a lift: up to 0.25 mm.
+
+### Changed
+
+- `Foliation` gains `face_reach` and `ironing`. A layer leans no more than lets the face iron the
+  beads of its own layer by `ironing`, 0.3 mm on the X2D: about 0.78 mm times its slope, 20.9°,
+  so the 20° of `max_slope` stands.
+- Under a followed top, the copies of its shape a slab lower are as thick as the face lets
+  parallel slabs be on its slope, `max(h, s·R)`, and none are made where no slab is that thick.
+- The leaves bend on a grid of 0.625 nozzles, 0.25 mm on the X2D, instead of 1.25: its
+  triangles cost the face less of its reach.
+- The Benchy's sloped tops lie 11.8 µm from the model on average (10.0 µm in 0.6.0, which let the
+  face into the layer below), 86.7 % of them within 20 µm; it prints in 32.8 min with 3620 mm of
+  filament and compiles in 54 s.
+
 ## 0.6.0
 
 ### Added

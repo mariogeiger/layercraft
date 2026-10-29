@@ -13,9 +13,11 @@
 //! interpreted: after it the nozzle may be anywhere, so a layer's first move must be a straight
 //! travel to a named point, checked against the print from where the layer before left it.
 
+mod beads;
 mod clearance;
 
-use clearance::{Heights, intrusion, lay};
+use beads::{Allowed, Beads};
+use clearance::intrusion;
 use layercraft_motion::{Layer, Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +52,11 @@ pub struct Envelope {
     /// The hot end's melt limit, in mm³/s.
     pub max_volumetric_speed: f64,
     pub toolhead: Toolhead,
+    /// How deep the nozzle's face may iron the beads of the layer it prints, in mm: on a bent
+    /// layer it passes over those it laid just before, up the slope.
+    pub ironing: f64,
+    /// How far from its layer's top a move is written, in space, in mm: the motion stage's fit.
+    pub resolution: f64,
 }
 
 /// One unsafe move.
@@ -156,10 +163,49 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
         }
     };
     let bed = program.layers.iter().map(|l| l.z).fold(f64::INFINITY, f64::min);
-    let mut heights = Heights::new(envelope.area);
+    // The lowest the tip comes on each layer, where a move ends or the layer before left it, and
+    // from each layer on.
+    let mut last = f64::INFINITY;
+    let lows: Vec<f64> = program
+        .layers
+        .iter()
+        .map(|l| {
+            let low = l.moves.iter().filter_map(|m| m.to).map(|to| to[2]).fold(last, f64::min);
+            last = l.moves.iter().rev().find_map(|m| m.to).map_or(last, |to| to[2]);
+            low
+        })
+        .collect();
+    let mut later = f64::INFINITY;
+    let mut lowest: Vec<f64> = lows
+        .iter()
+        .rev()
+        .map(|&low| {
+            later = later.min(low);
+            later
+        })
+        .collect();
+    lowest.reverse();
+    let mut beads = Beads::new();
     // Where the layer before left the nozzle, which the machine's layer change keeps.
     let mut left: Option<[f64; 3]> = None;
     for (k, layer) in program.layers.iter().enumerate() {
+        if let Some(&low) = lowest.get(k) {
+            beads.forget_below(low);
+        }
+        // A bent layer's moves are written within the resolution of its top in space, so in
+        // height within that times `√(1 + G²)`, `G` its steepest lean; a flat one's on it.
+        let lift = if layer.warp.is_zero() {
+            0.0
+        } else {
+            envelope.resolution.max(0.0) * layer.warp.steepest().hypot(1.0)
+        };
+        let allowed = Allowed {
+            head: &envelope.toolhead,
+            layer: k,
+            lift,
+            ironing: envelope.ironing.max(0.0),
+            written: WRITTEN,
+        };
         let z = layer.z;
         if !(z.is_finite() && layer.height.is_finite() && layer.height > 0.0 && z > 0.0) {
             note(k, 0, format!("layer at z = {z} with height {}", layer.height));
@@ -167,7 +213,6 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
         if z > envelope.max_z {
             note(k, 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
         }
-        let steepest = layer.warp.steepest();
         // After the machine's layer change the nozzle may be anywhere.
         let mut at: Option<[f64; 3]> = None;
         for (i, m) in layer.moves.iter().enumerate() {
@@ -178,18 +223,19 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                 && m.to.is_some()
                 && m.to.iter().flatten().all(|v| v.is_finite())
             {
-                if let Some(depth) = intrusion(&heights, &envelope.toolhead, m, from, layer, steepest) {
+                if let Some((depth, own)) = intrusion(&beads, &allowed, m, from) {
                     let to = m.to.unwrap_or(from);
-                    note(
-                        k,
-                        i,
+                    let what = if own {
                         format!(
-                            "the head comes {depth:.3} mm down into what is printed, moving to ({:.3}, {:.3}, {:.3})",
-                            to[0], to[1], to[2]
-                        ),
-                    );
+                            "the nozzle irons its own layer {depth:.3} mm deeper than the {} allowed",
+                            allowed.ironing
+                        )
+                    } else {
+                        format!("the head comes {depth:.3} mm down into what is printed")
+                    };
+                    note(k, i, format!("{what}, moving to ({:.3}, {:.3}, {:.3})", to[0], to[1], to[2]));
                 }
-                lay(&mut heights, m, from);
+                beads.lay(m, from, k, lift);
             }
             if m.to.is_some() {
                 at = m.to;

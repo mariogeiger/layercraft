@@ -56,6 +56,33 @@ fn fall(l: f64, slope: f64, thin: f64, reach: f64) -> f64 {
     (slope * l).min((thin * l / reach).max(thin + slope * (l - reach)))
 }
 
+/// The offsets of the grid within `span` mm of the origin, in cells.
+fn offsets(cell: f64, span: f64) -> Vec<[i64; 2]> {
+    let n = (span / cell).ceil() as i64;
+    (-n..=n)
+        .flat_map(|j| (-n..=n).map(move |i| [i, j]))
+        .filter(|&[i, j]| (i as f64).hypot(j as f64) * cell <= span)
+        .collect()
+}
+
+/// The length of the shortest path from the origin to an offset along the grid's sides and
+/// diagonals, in mm.
+fn octile([i, j]: [i64; 2], cell: f64) -> f64 {
+    let (a, b) = (i.abs().max(j.abs()) as f64, i.abs().min(j.abs()) as f64);
+    (a + (SQRT_2 - 1.0) * b) * cell
+}
+
+/// How much a leaf leaning a slope of 1 along the grid's sides and diagonals may rise, at most,
+/// within `reach` mm of a point, on its triangles: the greatest of the interpolated path lengths
+/// over the disc. A leaf leaning `s` rises `s` times that; 0 without a reach.
+pub(crate) fn lean(cell: f64, reach: f64) -> f64 {
+    if reach <= 0.0 {
+        return 0.0;
+    }
+    let lengths = offsets(cell, reach + SQRT_2 * cell).into_iter().map(|o| (o, octile(o, cell))).collect();
+    disc_max(&lengths, reach / cell)
+}
+
 /// The edges for a face reaching `face` mm on a grid of `cell` mm, leaves leaning up to `slope`,
 /// `d` falling by `down` straight down, the thinnest slab `thin`.
 pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> Laps {
@@ -65,11 +92,7 @@ pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> La
     }
     // Every triangle that meets the disc has its corners within this of its centre.
     let span = face + SQRT_2 * cell;
-    let n = (span / cell).ceil() as i64;
-    let offsets: Vec<[i64; 2]> = (-n..=n)
-        .flat_map(|j| (-n..=n).map(move |i| [i, j]))
-        .filter(|&[i, j]| (i as f64).hypot(j as f64) * cell <= span)
-        .collect();
+    let offsets = offsets(cell, span);
     let weights = |reach: f64| -> HashMap<[i64; 2], f64> {
         offsets
             .iter()
@@ -77,7 +100,7 @@ pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> La
             .collect()
     };
     let sound = |reach: f64| disc_max(&weights(reach), face / cell) <= down + thin;
-    // At `span` every weight is at most `h`, so is their interpolation.
+    // Reaching this far, every weight is at most `h`, so is their interpolation.
     let (mut lo, mut hi) = (face, span);
     if sound(lo) {
         hi = lo;
@@ -88,14 +111,11 @@ pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> La
         }
     }
     let all = weights(hi);
-    let octile = |[i, j]: [i64; 2]| {
-        let (a, b) = (i.abs().max(j.abs()) as f64, i.abs().min(j.abs()) as f64);
-        (a + (SQRT_2 - 1.0) * b) * cell * slope
-    };
     let mut edges: Vec<([i64; 2], f64)> = all
         .iter()
         .filter(|&(&o, &w)| {
-            !all.iter().any(|(&p, &v)| p != o && v + octile([o[0] - p[0], o[1] - p[1]]) < w - SLACK)
+            !all.iter()
+                .any(|(&p, &v)| p != o && v + slope * octile([o[0] - p[0], o[1] - p[1]], cell) < w - SLACK)
         })
         .map(|(&o, &w)| (o, w))
         .collect();
