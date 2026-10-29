@@ -20,7 +20,8 @@
 //! below and above it, and each shape is split by the parameters at its centre (`layercraft_tune`).
 
 use layercraft_geom::{
-    GeomError, Region, Shape, bead_spacing, difference, intersection, offset, opening, signed_area, union,
+    GeomError, Region, Relief, Shape, bead_spacing, difference, intersection, offset, opening, signed_area,
+    union,
 };
 use layercraft_section::{Layer, Sections};
 use layercraft_tune::{Field, TuneError, centre};
@@ -59,6 +60,9 @@ pub struct RegionLayer {
     pub index: usize,
     pub top: f64,
     pub height: f64,
+    /// How far the layer's top lies above `top` over the plate, as its section gives it.
+    #[serde(default, skip_serializing_if = "Relief::is_zero")]
+    pub warp: Relief,
     /// Wall centre lines, outermost first.
     pub walls: Vec<Region>,
     /// Where inner walls are drawn, when not everywhere: under the layer above.
@@ -279,6 +283,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             index: layer.index,
             top: layer.top,
             height: layer.height,
+            warp: layer.warp.clone(),
             support: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
             above: next.clone(),
             ..RegionLayer::default()

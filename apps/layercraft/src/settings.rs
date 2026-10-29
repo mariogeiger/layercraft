@@ -9,7 +9,7 @@ use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
 use layercraft_path::{Face, PathParams};
 use layercraft_region::RegionParams;
-use layercraft_section::Layering;
+use layercraft_section::{Foliation, Layering};
 use layercraft_verify::{Envelope, Toolhead};
 
 /// Everything the stages need, read once.
@@ -75,6 +75,18 @@ const NOZZLE_FLARE: f64 = 1.732_050_807_568_877_2;
 /// The room kept under the head past the nozzle's tip, in mm: for overhangs that curl up and a
 /// plate not quite flat.
 const HEAD_MARGIN: f64 = 1.0;
+
+/// The steepest top surface the layers bend to follow, in degrees: across a grid triangle a
+/// layer then leans at most `√2 · tan 20°`, 27°, under the nozzle's cone of `atan(1 / flare)`, 30°.
+const MAX_SLOPE: f64 = 20.0;
+
+/// How much thinner and thicker than the layer height a bent slab may be: a half, as the bead
+/// then stays between half and three quarters of the nozzle's width high.
+const SLAB_SPREAD: f64 = 0.5;
+
+/// The side of the grid layers bend on, in nozzle diameters: fine enough that a bent layer meets
+/// a smooth top surface within a micrometre, coarse enough that a bead crosses few lines.
+const BEND_CELL: f64 = 1.25;
 
 /// The hop and the radius of the helix a lift turns; a filament's own lift wins over the
 /// printer's. Bambu's automatic lift is taken as the spiral one.
@@ -220,6 +232,16 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         layering: Layering {
             first_layer_height: m.number(Process, "initial_layer_print_height")?,
             layer_height,
+            // The rise a layer may take: what the nozzle reaches below the rest of the head,
+            // less the room kept under it.
+            foliation: Some(Foliation {
+                max_slope: MAX_SLOPE,
+                min_layer_height: layer_height * (1.0 - SLAB_SPREAD),
+                max_layer_height: layer_height * (1.0 + SLAB_SPREAD),
+                max_rise: (m.number(M, "nozzle_height")? - HEAD_MARGIN).max(0.0),
+                parallel_layers: 2,
+                cell: BEND_CELL * nozzle,
+            }),
         },
         region: RegionParams {
             walls: m.number(Process, "wall_loops")?.max(0.0) as usize,

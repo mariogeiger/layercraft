@@ -1,8 +1,9 @@
 //! Solids with known volumes and sections, built in code: the references tests compare against.
 //!
-//! Every solid is a closed prism: a counterclockwise outline in the plane, extruded from `z0`
-//! to `z1`. Its volume is the outline's area times the height, and each section between the
-//! two planes is the outline itself.
+//! A prism is a counterclockwise outline in the plane, extruded from `z0` to `z1`: its volume is
+//! the outline's area times the height, and each section between the two planes is the outline
+//! itself. A height field stands on z = 0 over a rectangle up to a surface sampled on a grid of
+//! squares, each split by a diagonal: its volume is the integral of that piecewise linear surface.
 
 use crate::{Body, Vertex};
 
@@ -39,4 +40,45 @@ fn centroid(outline: &[[f64; 2]]) -> (f64, f64) {
 pub fn cuboid(name: &str, min: Vertex, max: Vertex) -> Body {
     let outline = [[min[0], min[1]], [max[0], min[1]], [max[0], max[1]], [min[0], max[1]]];
     prism(name, &outline, min[2], max[2])
+}
+
+/// A solid over the rectangle from `lo` to `hi`, from z = 0 up to `top(x, y)` sampled at the
+/// corners of `n × n` squares, each split by its diagonal from its lower left corner.
+pub fn height_field(name: &str, lo: [f64; 2], hi: [f64; 2], n: usize, top: impl Fn(f64, f64) -> f64) -> Body {
+    let n = n.max(1);
+    let side = n + 1;
+    let at = |i: usize, j: usize| {
+        [lo[0] + (hi[0] - lo[0]) * i as f64 / n as f64, lo[1] + (hi[1] - lo[1]) * j as f64 / n as f64]
+    };
+    let mut vertices: Vec<Vertex> = Vec::with_capacity(2 * side * side);
+    for z in [true, false] {
+        for j in 0..side {
+            for i in 0..side {
+                let [x, y] = at(i, j);
+                vertices.push([x, y, if z { top(x, y) } else { 0.0 }]);
+            }
+        }
+    }
+    let up = |i: usize, j: usize| (j * side + i) as u32;
+    let down = |i: usize, j: usize| (side * side + j * side + i) as u32;
+    let mut triangles = Vec::new();
+    for j in 0..n {
+        for i in 0..n {
+            triangles.push([up(i, j), up(i + 1, j), up(i + 1, j + 1)]);
+            triangles.push([up(i, j), up(i + 1, j + 1), up(i, j + 1)]);
+            triangles.push([down(i, j), down(i + 1, j + 1), down(i + 1, j)]);
+            triangles.push([down(i, j), down(i, j + 1), down(i + 1, j + 1)]);
+        }
+    }
+    // The boundary, counterclockwise seen from above, each step walled from the floor up.
+    let mut ring: Vec<(usize, usize)> = (0..n).map(|i| (i, 0)).collect();
+    ring.extend((0..n).map(|j| (n, j)));
+    ring.extend((1..=n).rev().map(|i| (i, n)));
+    ring.extend((1..=n).rev().map(|j| (0, j)));
+    for (k, &(i, j)) in ring.iter().enumerate() {
+        let (ni, nj) = ring.get((k + 1) % ring.len()).copied().unwrap_or((i, j));
+        triangles.push([down(i, j), down(ni, nj), up(ni, nj)]);
+        triangles.push([down(i, j), up(ni, nj), up(i, j)]);
+    }
+    Body { name: name.to_string(), vertices, triangles }
 }

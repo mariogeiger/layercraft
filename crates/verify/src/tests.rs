@@ -31,7 +31,7 @@ fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
 }
 
 fn program(moves: Vec<Move>) -> Program {
-    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, moves }] }
+    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] }
 }
 
 /// Over at the hop from wherever the layer starts, down, then a bead.
@@ -71,7 +71,7 @@ fn each_danger_is_caught() {
         assert!(!verify(&program(moves), &ENVELOPE).is_empty(), "{m:?} passed");
     }
     let mut layers = program(safe()).layers;
-    layers.push(Layer { index: 1, z: -1.0, height: 0.2, moves: safe() });
+    layers.push(Layer { index: 1, z: -1.0, height: 0.2, warp: Default::default(), moves: safe() });
     assert!(!verify(&Program { layers }, &ENVELOPE).is_empty());
 }
 
@@ -83,7 +83,7 @@ fn bead_layer(index: usize, z: f64, dy: f64) -> Layer {
         mv([20.0, 10.0 + dy, z], 0.3, 50.0),
         mv([20.0, 10.0 + dy, z + 0.4], 0.0, 500.0),
     ];
-    Layer { index, z, height: 0.2, moves }
+    Layer { index, z, height: 0.2, warp: Default::default(), moves }
 }
 
 #[test]

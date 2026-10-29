@@ -5,9 +5,12 @@
 //! program after another, each next the one nearest where the last ended. Each program's moves
 //! expect the filament as that program left it, pulled back so far: where the piece before
 //! left it otherwise, the difference is pushed or pulled in place first. A layer is as thick as
-//! the step from the one below it.
+//! the step from the one below it, and bent where any of its pieces is: their reliefs add up,
+//! side by side on the plate, when they lie on one grid; a piece on another grid keeps its own
+//! bend out of the layer, and its beads then fail verification.
 
 use crate::{Layer, Move, Program};
+use layercraft_geom::Relief;
 
 /// How far a program's filament is pulled back after each of its moves: retractions and wipes
 /// pull, pushes in place give back, beads leave it as it is.
@@ -48,7 +51,13 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
         rest = next;
         let mut left: Vec<&Piece> = here.iter().map(|(_, p)| p).collect();
         let height = left.first().map_or(0.0, |p| p.layer.z);
-        let mut layer = Layer { index: layers.len(), z: height, height: height - below, moves: Vec::new() };
+        let mut layer = Layer {
+            index: layers.len(),
+            z: height,
+            height: height - below,
+            warp: Default::default(),
+            moves: Vec::new(),
+        };
         below = height;
         while !left.is_empty() {
             let start = |p: &Piece| p.layer.moves.iter().find_map(|m| m.to);
@@ -78,6 +87,13 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
                 });
             }
             layer.moves.extend(piece.layer.moves.iter().cloned());
+            if !piece.layer.warp.is_zero() {
+                layer.warp = if layer.warp.is_zero() {
+                    piece.layer.warp.clone()
+                } else {
+                    Relief::combine(&layer.warp, &piece.layer.warp, |a, b| a + b).unwrap_or(layer.warp)
+                };
+            }
             state = piece.after;
             at = piece.layer.moves.iter().rev().find_map(|m| m.to).or(at);
         }

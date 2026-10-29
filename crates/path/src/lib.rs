@@ -25,7 +25,7 @@ mod tour;
 
 pub use role::{Face, Kind, Role, Support};
 
-use layercraft_geom::{Bands, GeomError, Point};
+use layercraft_geom::{Bands, GeomError, Point, Relief};
 use layercraft_region::Regions;
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,9 @@ pub struct PathLayer {
     pub index: usize,
     pub top: f64,
     pub height: f64,
+    /// How far the layer's top lies above `top` over the plate: the beads lie on it.
+    #[serde(default, skip_serializing_if = "Relief::is_zero")]
+    pub warp: Relief,
     pub paths: Vec<Path>,
 }
 
@@ -159,7 +162,13 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         }
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
-        layers.push(PathLayer { index: layer.index, top: layer.top, height: layer.height, paths });
+        layers.push(PathLayer {
+            index: layer.index,
+            top: layer.top,
+            height: layer.height,
+            warp: layer.warp.clone(),
+            paths,
+        });
     }
     Ok(Paths { layers })
 }

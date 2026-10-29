@@ -107,7 +107,7 @@ fn wait_off(layer: &mut Layer, start: Option<[f64; 3]>, p: &MotionParams, area: 
         wait: 0.0,
     };
     if let Some(end) = end {
-        let z = end[2].max(layer.z + p.z_hop);
+        let z = end[2].max(layer.highest() + p.z_hop);
         if end[2] < z {
             layer.moves.push(go([end[0], end[1], z]));
         }

@@ -107,7 +107,10 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
                 if let Some((_, moves)) = layers.last_mut() {
                     moves.append(&mut raws);
                 }
-                layers.push((Layer { index, z: *z, height: *h, moves: Vec::new() }, Vec::new()));
+                layers.push((
+                    Layer { index, z: *z, height: *h, warp: Default::default(), moves: Vec::new() },
+                    Vec::new(),
+                ));
                 prelude = index > 0;
                 pending = None;
             }

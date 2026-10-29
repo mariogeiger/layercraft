@@ -11,6 +11,8 @@
 //! to `c` is convex, so it strays most at its ends or at its foot nearest `c`. Every ray from `c`
 //! then meets the arc and the polyline within `ε` of each other: the arc strays no more from the
 //! polyline than it from the arc. A move keeps its plastic per mm, which its length multiplies.
+//! On a bent layer only beads where the layer is level within `ε` of them are fitted: elsewhere
+//! a move off the traced line would leave the layer.
 
 use crate::moves::chained;
 use crate::{Arc, Move, Program};
@@ -134,8 +136,18 @@ pub fn fit(program: &mut Program, resolution: f64, arcs: bool) {
         let mut first: Option<(Move, f64, f64)> = None;
         let start = at;
         at = layer.moves.iter().rev().find_map(|m| m.to).or(at);
+        let warp = &layer.warp;
+        let level = |from: Option<[f64; 3]>, m: &Move| match (from, m.to) {
+            (Some(a), Some(b)) => {
+                let lo = [a[0].min(b[0]) - resolution, a[1].min(b[1]) - resolution];
+                let hi = [a[0].max(b[0]) + resolution, a[1].max(b[1]) + resolution];
+                let [l, h] = warp.range_over(lo, hi);
+                l == h
+            }
+            _ => false,
+        };
         for (from, m) in chained(&layer.moves, start) {
-            let line = bead_line(from, m);
+            let line = bead_line(from, m).filter(|_| warp.is_zero() || level(from, m));
             let same = match (&first, line) {
                 (Some((f, per_mm, z)), Some((pm, mz))) => {
                     (f.speed, f.accel, f.fan, f.bead) == (m.speed, m.accel, m.fan, m.bead)

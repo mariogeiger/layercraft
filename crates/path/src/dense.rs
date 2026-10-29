@@ -9,15 +9,52 @@
 //! times `h`, are the interior's error. Each way is ranked by that error, then by its plastic,
 //! each counted in whole quanta `ε³` of the printer's resolution `ε`: what it cannot tell apart
 //! ties, and the earlier way wins. Both sum over the pieces, so the best layer is each piece's
-//! best way.
+//! best way. A top surface on a bent layer is hatched along its fall line instead, the mean
+//! direction of the layer's slope over the piece: each bead then climbs the slope while its
+//! neighbours lie level beside it, where across the slope each would stand a step above the
+//! last and the nozzle's flat tip would scrape it.
 
 use crate::PathError;
 use crate::hatch::hatch;
-use layercraft_geom::{Contour, GeomError, Point, Polyline, Region, area, edges, intersection, union};
+use layercraft_geom::{
+    Contour, GeomError, Point, Polyline, Region, Relief, area, bounds, edges, encloses, intersection, union,
+};
 use std::f64::consts::PI;
 
 /// The longest edges whose directions a piece is tried along.
 const EDGES_TRIED: usize = 4;
+
+/// The mean slope under which a piece counts as flat: a degree.
+const FLAT_SLOPE: f64 = 0.017_455_064_928_217_585;
+
+/// The samples of a piece's slope along each side of its box.
+const SLOPE_SAMPLES: usize = 24;
+
+/// The direction of the fall line of `warp` over `piece`, in degrees, when its mean slope there is
+/// past `FLAT_SLOPE`. Slopes are averaged as axes, each gradient `g` at angle `φ` adding
+/// `|g|²·(cos 2φ, sin 2φ)`, so that the two sides of a ridge agree on their line.
+pub(crate) fn fall_line(piece: &Region, warp: &Relief) -> Option<f64> {
+    if warp.is_zero() {
+        return None;
+    }
+    let [lo, hi] = bounds(piece)?;
+    let edges: Vec<(Point, Point)> = piece.iter().flatten().flat_map(|c| edges(c)).collect();
+    let (mut axis, mut slope, mut n) = ([0.0f64; 2], 0.0, 0usize);
+    for j in 0..SLOPE_SAMPLES {
+        for i in 0..SLOPE_SAMPLES {
+            let f = |k: usize| (k as f64 + 0.5) / SLOPE_SAMPLES as f64;
+            let p = [lo[0] + (hi[0] - lo[0]) * f(i), lo[1] + (hi[1] - lo[1]) * f(j)];
+            if !encloses(edges.iter().copied(), p) {
+                continue;
+            }
+            let g = warp.gradient(p);
+            axis = [axis[0] + g[0] * g[0] - g[1] * g[1], axis[1] + 2.0 * g[0] * g[1]];
+            slope += g[0].hypot(g[1]);
+            n += 1;
+        }
+    }
+    (n > 0 && slope / n as f64 > FLAT_SLOPE).then(|| axis[1].atan2(axis[0]).to_degrees() / 2.0)
+}
 
 /// The angles, in degrees, a piece may be hatched at: `preferred`, across it, and along its
 /// longest edges, each once.
@@ -99,17 +136,23 @@ pub(crate) fn rank(
 }
 
 /// The lines filling `reach`, `spacing` apart on a layer `height` high, each of its pieces at
-/// its best angle, for a printer of resolution `resolution`.
+/// the angle `fixed` gives it, or else at its best angle for a printer of resolution
+/// `resolution`.
 pub fn best_hatch(
     reach: &Region,
     spacing: f64,
     height: f64,
     preferred: f64,
     resolution: f64,
+    fixed: impl Fn(&Region) -> Option<f64>,
 ) -> Result<Vec<Polyline>, PathError> {
     let mut lines = Vec::new();
     for shape in reach {
         let piece = vec![shape.clone()];
+        if let Some(angle) = fixed(&piece) {
+            lines.extend(hatch(&piece, spacing, angle)?);
+            continue;
+        }
         let mut best: Option<((u64, u64), Vec<Polyline>)> = None;
         for angle in angles(&piece, preferred) {
             let way = hatch(&piece, spacing, angle)?;

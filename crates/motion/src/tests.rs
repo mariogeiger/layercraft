@@ -60,8 +60,14 @@ fn line(len: f64) -> Paths {
     };
     Paths {
         layers: vec![
-            PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![path.clone()] },
-            PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![path] },
+            PathLayer {
+                index: 0,
+                top: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                paths: vec![path.clone()],
+            },
+            PathLayer { index: 1, top: 0.4, height: 0.2, warp: Default::default(), paths: vec![path] },
         ],
     }
 }
@@ -81,7 +87,7 @@ fn all(program: &Program) -> Vec<&Move> {
 
 /// A program of one layer at 0.2 mm of these moves.
 fn single(moves: Vec<Move>) -> Program {
-    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, moves }] }
+    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] }
 }
 
 fn travel(to: [f64; 3], speed: f64) -> Move {
@@ -231,8 +237,20 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
     };
     let paths = Paths {
         layers: vec![
-            PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![square.clone()] },
-            PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![square, bridge] },
+            PathLayer {
+                index: 0,
+                top: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                paths: vec![square.clone()],
+            },
+            PathLayer {
+                index: 1,
+                top: 0.4,
+                height: 0.2,
+                warp: Default::default(),
+                paths: vec![square, bridge],
+            },
         ],
     };
     let mut p = params();
@@ -269,6 +287,7 @@ fn a_move_inside_the_part_neither_retracts_nor_lifts() {
             index: 1,
             top: 0.2,
             height: 0.2,
+            warp: Default::default(),
             paths: vec![line(10.0, false), line(15.0, true)],
         }],
     };
@@ -297,7 +316,13 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
         overhang: Vec::new(),
     };
     let paths = Paths {
-        layers: vec![PathLayer { index: 0, top: 0.2, height: 0.2, paths: vec![line(10.0), line(30.0)] }],
+        layers: vec![PathLayer {
+            index: 0,
+            top: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            paths: vec![line(10.0), line(30.0)],
+        }],
     };
     let mut p = params();
     p.lift_radius = 1.0;
@@ -428,7 +453,13 @@ fn programs_merge_layer_by_layer_nearest_first_with_their_filament_as_they_left_
     };
     let program = |x: f64, pull: f64, layers: usize| Program {
         layers: (0..layers)
-            .map(|i| Layer { index: i, z: 0.2 * (i + 1) as f64, height: 0.2, moves: piece(x, pull, i == 0) })
+            .map(|i| Layer {
+                index: i,
+                z: 0.2 * (i + 1) as f64,
+                height: 0.2,
+                warp: Default::default(),
+                moves: piece(x, pull, i == 0),
+            })
             .collect(),
     };
     // A far one pulling 0.4, a near one pulling 0.8 and one layer taller.
@@ -479,7 +510,15 @@ fn a_wall_slows_by_how_far_it_hangs() {
         travel_inside: false,
         overhang: vec![0.0, 0.3, 0.75, 1.0],
     };
-    let paths = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall] }] };
+    let paths = Paths {
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.4,
+            height: 0.2,
+            warp: Default::default(),
+            paths: vec![wall],
+        }],
+    };
     let mut p = params();
     // By quarters, each closed above, then wholly over air; a bead on solid keeps its speed.
     p.overhang_speeds = vec![0.0, 50.0, 30.0, 10.0, 5.0];
@@ -513,6 +552,7 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
             index: 1,
             top: 0.4,
             height: 0.2,
+            warp: Default::default(),
             paths: vec![line(Role::OUTER_WALL, 10.0), line(Role::SPARSE, 10.5)],
         }],
     };
@@ -549,7 +589,15 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
         travel_inside: false,
         overhang: Vec::new(),
     };
-    let paths = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall] }] };
+    let paths = Paths {
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.4,
+            height: 0.2,
+            warp: Default::default(),
+            paths: vec![wall],
+        }],
+    };
     let traced = compiled(&paths, &params());
     let beads = |program: &Program| -> Vec<(Option<[f64; 3]>, Move)> {
         chained(&program.layers[0].moves, None)

@@ -8,7 +8,7 @@
 
 use crate::moves::chained;
 use crate::time::{Limits, estimate};
-use crate::{MotionError, Program, Summary, Templates, disc_area};
+use crate::{Layer, MotionError, Program, Summary, Templates, disc_area};
 use layercraft_machine::{Scope, Value, expand};
 
 /// The machine's G-code around a program's layers.
@@ -68,7 +68,7 @@ pub fn finish(program: &Program, limits: &Limits, filament_diameter: f64) -> Sum
         |layer: &crate::Layer| layer.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.e).sum::<f64>();
     Summary {
         layers: program.layers.len(),
-        max_z: program.layers.iter().map(|l| l.z).fold(0.0, f64::max),
+        max_z: program.layers.iter().map(Layer::highest).fold(0.0, f64::max),
         filament_mm: program.layers.iter().map(pushed).sum(),
         volume_per_layer: program.layers.iter().map(|l| pushed(l) * filament_area).collect(),
         motion_seconds: total,
@@ -84,7 +84,7 @@ pub fn frame(program: &Program, templates: &Templates, scope: &Scope) -> Result<
     let num = Value::Num;
     let pair = |a: f64, b: f64| Value::List(vec![num(a), num(b)]);
     let bounds = first_layer_bounds(program);
-    let max_z = program.layers.iter().map(|l| l.z).fold(0.0, f64::max);
+    let max_z = program.layers.iter().map(Layer::highest).fold(0.0, f64::max);
     scope.insert("first_layer_print_min".into(), pair(bounds[0][0], bounds[0][1]));
     scope.insert(
         "first_layer_print_size".into(),
@@ -105,10 +105,13 @@ pub fn frame(program: &Program, templates: &Templates, scope: &Scope) -> Result<
     pieces.push("G90\nG21\nM83 ; use relative distances for extrusion\n".into());
     let start = pieces.iter().map(|p| lines(p)).collect();
     let mut layers = Vec::with_capacity(program.layers.len());
+    // The highest any layer so far reaches, a bent one above its plane.
+    let mut highest = 0.0f64;
     for layer in &program.layers {
+        highest = highest.max(layer.highest());
         scope.insert("layer_num".into(), num(layer.index as f64));
-        scope.insert("layer_z".into(), num(layer.z));
-        scope.insert("max_layer_z".into(), num(layer.z));
+        scope.insert("layer_z".into(), num(layer.highest()));
+        scope.insert("max_layer_z".into(), num(highest));
         layers.push(lines(&expand_text("layer change", &t.layer_change, &scope)?));
     }
     let end = lines(&format!(

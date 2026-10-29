@@ -19,6 +19,7 @@
 mod cool;
 mod fit;
 mod frame;
+mod leaf;
 mod melt;
 mod merge;
 mod moves;
@@ -33,6 +34,7 @@ pub use merge::merge;
 pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};
 
+use layercraft_geom::Relief;
 pub use layercraft_geom::{bead_area, disc_area};
 use layercraft_machine::TemplateError;
 use layercraft_path::Role;
@@ -82,14 +84,25 @@ fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
 
-/// One layer: the moves printed at `z`, after the machine's own layer change, from wherever
-/// that leaves the nozzle.
+/// One layer: the moves printed at `z`, or on the layer's top bent from it, after the machine's
+/// own layer change, from wherever that leaves the nozzle.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
     pub index: usize,
     pub z: f64,
     pub height: f64,
+    /// How far the layer's top, where its beads lie, rises above `z` over the plate: zero where
+    /// it is flat.
+    #[serde(default, skip_serializing_if = "Relief::is_zero")]
+    pub warp: Relief,
     pub moves: Vec<Move>,
+}
+
+impl Layer {
+    /// The highest the layer's top reaches.
+    pub fn highest(&self) -> f64 {
+        self.z + self.warp.range()[1]
+    }
 }
 
 /// The output of the motion stage: what it does is read from it (`finish`), never stored.

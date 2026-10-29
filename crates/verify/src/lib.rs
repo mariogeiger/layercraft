@@ -4,7 +4,8 @@
 //! Checked for every move, compiled or read from another slicer: finite numbers; the whole
 //! path inside the plate's printable area, an arc's sweep included, and below its printable
 //! height; the head never down into what is printed before (`clearance`), the nozzle never
-//! below the lowest layer, and extrusions at their layer's height; speeds within the machine's
+//! below the lowest layer, and extrusions on their layer's top, flat or bent, at both ends and
+//! halfway; speeds within the machine's
 //! limits, accelerations positive; filament flowing no faster than the hot end melts it; wipes
 //! that move; arcs that end on their circle, at most a turn; fan between 0 and 1; waits finite
 //! and not negative. The machine's own G-code between layers is the maker's and is not
@@ -14,7 +15,7 @@
 mod clearance;
 
 use clearance::{Heights, intrusion, lay};
-use layercraft_motion::{Move, Program, disc_area};
+use layercraft_motion::{Layer, Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
 /// The toolhead's underside, about the nozzle's axis, in mm (`clearance`).
@@ -65,9 +66,9 @@ const MAX_LISTED: usize = 50;
 /// The most filament pulled or pushed in place, in mm.
 const MAX_IN_PLACE: f64 = 20.0;
 
-/// What is wrong with move `m` from `from` on the layer at `z`, over the lowest layer at `bed`,
-/// if anything.
-fn check(m: &Move, from: Option<[f64; 3]>, z: f64, bed: f64, e: &Envelope) -> Option<String> {
+/// What is wrong with move `m` from `from` on `layer`, over the lowest layer at `bed`, if
+/// anything.
+fn check(m: &Move, from: Option<[f64; 3]>, layer: &Layer, bed: f64, e: &Envelope) -> Option<String> {
     let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
     if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
         return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
@@ -117,8 +118,10 @@ fn check(m: &Move, from: Option<[f64; 3]>, z: f64, bed: f64, e: &Envelope) -> Op
     }
     let length = m.length(from);
     if m.e > 0.0 {
-        if (to[2] - z).abs() > SLACK {
-            return Some(format!("extrusion at z = {} on the layer at {z}", to[2]));
+        let on = |p: [f64; 3]| layer.z + layer.warp.at([p[0], p[1]]);
+        let half = m.point(from, 0.5);
+        if (to[2] - on(to)).abs() > SLACK || (half[2] - on(half)).abs() > SLACK {
+            return Some(format!("extrusion at z = {} on the layer whose top is at {}", to[2], on(to)));
         }
         let filament_area = disc_area(e.filament_diameter);
         let flow = if length > 0.0 { m.e * filament_area * m.speed / length } else { f64::INFINITY };
@@ -152,18 +155,27 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
         if z > envelope.max_z {
             note(k, 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
         }
+        let steepest = layer.warp.steepest();
         // After the machine's layer change the nozzle may be anywhere.
         let mut at: Option<[f64; 3]> = None;
         for (i, m) in layer.moves.iter().enumerate() {
-            if let Some(reason) = check(m, at, z, bed, envelope) {
+            if let Some(reason) = check(m, at, layer, bed, envelope) {
                 note(k, i, reason);
             }
             if let Some(from) = at.or(left)
                 && m.to.is_some()
                 && m.to.iter().flatten().all(|v| v.is_finite())
             {
-                if let Some(depth) = intrusion(&heights, &envelope.toolhead, m, from) {
-                    note(k, i, format!("the head comes {depth:.3} mm down into what is printed"));
+                if let Some(depth) = intrusion(&heights, &envelope.toolhead, m, from, layer, steepest) {
+                    let to = m.to.unwrap_or(from);
+                    note(
+                        k,
+                        i,
+                        format!(
+                            "the head comes {depth:.6} mm down into what is printed, moving to ({:.3}, {:.3}, {:.3})",
+                            to[0], to[1], to[2]
+                        ),
+                    );
                 }
                 lay(&mut heights, m, from);
             }

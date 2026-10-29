@@ -216,3 +216,72 @@ fn a_segment_lies_in_a_region_along_its_edge_but_not_across_its_hole() {
     assert!(bands.holds([2.0, 8.0], [4.0, 6.0]) && bands.holds([6.0, 4.0], [8.0, 2.0]));
     assert!(bands.holds([3.0, 7.0], [5.0, 7.0]), "touching the hole's corner");
 }
+
+/// A field from a function sampled at every vertex of a block.
+fn sampled(f: impl Fn(Point) -> f64) -> Relief {
+    let grid = Grid { origin: [0.3, -0.7], cell: 0.5 };
+    Relief::from_fn(grid, [-4, -3], [9, 8], |i, j| f(grid.vertex(i, j)))
+}
+
+#[test]
+fn a_field_is_linear_on_each_triangle_and_continuous() {
+    // A plane is reproduced exactly inside the block.
+    let plane = sampled(|p| 0.2 * p[0] - 0.1 * p[1] + 0.05);
+    for p in [[0.31, 0.2], [-1.0, -1.5], [1.1, 0.9], [0.8, 0.8 + 1e-12]] {
+        assert!(close(plane.at(p), 0.2 * p[0] - 0.1 * p[1] + 0.05), "{p:?}");
+        let g = plane.gradient(p);
+        assert!(close(g[0], 0.2) && close(g[1], -0.1), "{g:?}");
+    }
+    // A bump: values at vertices, zero far away, continuous across every kind of line.
+    let bump = sampled(|p| (1.0 - p[0].hypot(p[1]) / 2.0).max(0.0));
+    let v = bump.grid.vertex(1, 1);
+    assert!(close(bump.at(v), (1.0 - v[0].hypot(v[1]) / 2.0).max(0.0)));
+    assert_eq!(bump.at([40.0, 40.0]), 0.0);
+    let c = bump.grid.vertex(0, 0);
+    for d in [[0.2, 0.0], [0.0, 0.2], [0.13, 0.13], [0.2, 0.2]] {
+        let p = [c[0] + d[0], c[1] + d[1]];
+        let eps = [1e-9, -1e-9];
+        let (a, b) = (bump.at([p[0] + eps[0], p[1] + eps[1]]), bump.at([p[0] + eps[1], p[1] + eps[0]]));
+        assert!((a - b).abs() < 1e-8, "a jump at {p:?}: {a} {b}");
+    }
+}
+
+#[test]
+fn a_field_is_linear_between_its_breaks() {
+    let bump = sampled(|p| (1.0 - p[0].hypot(p[1]) / 2.0).max(0.0) * 0.7);
+    let (a, b) = ([-3.0, -2.2], [2.7, 1.9]);
+    let at = |t: f64| bump.at([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+    let mut ts = vec![0.0];
+    ts.extend(bump.breaks(a, b));
+    ts.push(1.0);
+    assert!(ts.len() > 10, "{ts:?}");
+    for w in ts.windows(2) {
+        assert!(w[0] < w[1]);
+        let (m, e) = ((w[0] + w[1]) / 2.0, (at(w[0]) + at(w[1])) / 2.0);
+        assert!((at(m) - e).abs() < 1e-12, "bent inside [{}, {}]", w[0], w[1]);
+    }
+    assert!(close(bump.max_along(a, b), ts.iter().map(|&t| at(t)).fold(f64::MIN, f64::max)));
+    // Far from the block the field is flat: no break.
+    assert!(bump.breaks([30.0, 30.0], [40.0, 31.0]).is_empty());
+}
+
+#[test]
+fn fields_combine_trim_and_check() {
+    let one = sampled(|p| if p[0] > 0.0 { 0.1 } else { 0.0 });
+    let other = sampled(|p| if p[1] > 0.0 { 0.3 } else { 0.0 });
+    let mean = Relief::combine(&one, &other, |a, b| (a + b) / 2.0).unwrap();
+    for p in [[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [0.4, 0.2]] {
+        assert!(close(mean.at(p), (one.at(p) + other.at(p)) / 2.0), "{p:?}");
+    }
+    let zero = Relief::zero(one.grid);
+    assert_eq!(Relief::combine(&zero, &zero, |a, b| a + b).unwrap(), zero);
+    assert_eq!(Relief::combine(&one, &zero, |a, b| a + b).unwrap(), one);
+    assert!(one.size[0] < 9, "trimmed to its non-zero columns: {:?}", one.size);
+    assert!(one.check().is_ok());
+    let bad = Relief { values: vec![f64::NAN; 4], size: [2, 2], ..one.clone() };
+    assert!(bad.check().is_err());
+    let short = Relief { values: vec![0.0; 3], size: [2, 2], ..one };
+    assert!(short.check().is_err());
+    let plane = sampled(|p| 0.25 * p[0]);
+    assert!((plane.steepest() - 0.25).abs() < 1e-9 || plane.steepest() > 0.25, "{}", plane.steepest());
+}

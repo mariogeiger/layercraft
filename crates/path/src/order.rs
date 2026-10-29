@@ -1,12 +1,12 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
-use crate::dense::best_hatch;
+use crate::dense::{best_hatch, fall_line};
 use crate::gap::{gap_fill, strips};
 use crate::hatch::{bridge_angle, hatch};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
 use crate::tour::tour;
-use crate::{Kind, Path, PathError, PathParams, Role, Support, check};
+use crate::{Face, Kind, Path, PathError, PathParams, Role, Support, check};
 use layercraft_geom::{
     Bands, Contour, GRID_MM, Point, Region, bead_spacing, clip_lines, disc_area, edges, encloses,
     intersection, offset, polyline_length, signed_area, union,
@@ -278,7 +278,12 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
                 lines.extend(hatch(&piece, spacing, angle)?);
             }
         } else if role.kind == Kind::Solid && role.support == Support::Solid && p.resolution > 0.0 {
-            lines = best_hatch(&reach, spacing, h, solid_angle, p.resolution)?;
+            let on_top = role.face == Face::Top;
+            let fall = |piece: &Region| if on_top { fall_line(piece, &layer.warp) } else { None };
+            lines = best_hatch(&reach, spacing, h, solid_angle, p.resolution, fall)?;
+        } else if role.face == Face::Top && !layer.warp.is_zero() {
+            let fall = |piece: &Region| fall_line(piece, &layer.warp);
+            lines = best_hatch(&reach, spacing, h, solid_angle, 0.0, fall)?;
         } else {
             lines = hatch(&reach, spacing, solid_angle)?;
         }

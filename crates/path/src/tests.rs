@@ -41,7 +41,8 @@ fn region_params() -> RegionParams {
 }
 
 fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
-    let sections = section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let sections =
+        section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
     (regions, paths)
@@ -215,7 +216,8 @@ fn sweep_of(paths: &[Path], role: Role, angle: f64) -> Vec<(f64, f64)> {
 #[test]
 fn a_monotone_surface_is_laid_in_one_sweep() {
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
-    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let monotone = PathParams { monotone: vec![Face::Top], ..PATHS };
     let top = regions.layers.len() - 1;
@@ -237,7 +239,8 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
             cuboid("b", [20.0, 0.0, 0.0], [30.0, 10.0, 2.0]),
         ],
     };
-    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let tuning: layercraft_tune::Tuning =
         serde_json::from_str(r#"[{"within": {"x": [15, 40]}, "set": {"path": {"sparse_density": 0.4}}}]"#)
@@ -280,7 +283,8 @@ fn an_inner_wall_under_the_layer_above_stays_a_loop_at_the_seam() {
     // layer above covers them whole: each stays a closed loop starting at the seam, so the move
     // to the outer wall is the diagonal between their corners, not a trip around the part.
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] };
-    let sections = section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2 }).unwrap();
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let params = RegionParams { one_wall_on_top: true, ..region_params() };
     let regions = split(&sections, &Field::uniform(params)).unwrap();
     assert!(regions.layers[5].inner_walls_within.is_some());
@@ -398,7 +402,7 @@ fn a_dense_strip_is_hatched_along_its_length() {
     let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
     let at = |u: f64, v: f64| [u * c - v * s, u * s + v * c];
     let piece: Region = vec![vec![vec![at(0.0, -0.2), at(20.0, -0.2), at(20.0, 1.8), at(0.0, 1.8)]]];
-    let lines = dense::best_hatch(&piece, 0.4, 0.2, 45.0, 0.012).unwrap();
+    let lines = dense::best_hatch(&piece, 0.4, 0.2, 45.0, 0.012, |_| None).unwrap();
     assert!(!lines.is_empty());
     for line in &lines {
         let (a, b) = (line[0], line[line.len() - 1]);

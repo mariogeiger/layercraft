@@ -46,7 +46,8 @@ fn moves_name_only_what_changes() {
         mv(Some([15.0, 20.0, 0.2]), None, 0.123456, 50.0, Some(wall)),
         mv(Some([15.0, 25.0, 0.2]), None, 0.1, 50.0, Some(wall)),
     ];
-    let program = Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, moves }] };
+    let program =
+        Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] };
     let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
     assert_eq!(
         body(&text),
@@ -94,8 +95,8 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
     ];
     let program = Program {
         layers: vec![
-            Layer { index: 0, z: 0.2, height: 0.2, moves: first },
-            Layer { index: 1, z: 0.4, height: 0.2, moves: second },
+            Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves: first },
+            Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), moves: second },
         ],
     };
     let text = write(&program, &frame(&["; one", "; two"]), &LIMITS, &header());
@@ -163,8 +164,8 @@ fn what_is_written_reads_back() {
     ];
     let program = Program {
         layers: vec![
-            Layer { index: 0, z: 0.2, height: 0.2, moves: first },
-            Layer { index: 1, z: 0.4, height: 0.2, moves: second },
+            Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves: first },
+            Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), moves: second },
         ],
     };
     let text = write(&program, &frame(&["M991 S0 P0", "M991 S0 P1"]), &LIMITS, &header());
@@ -218,7 +219,8 @@ fn filament_too_fine_to_write_is_carried_not_lost() {
         (1..=1000)
             .map(|i| mv(Some([10.0 + 0.0003 * i as f64, 20.0, 0.2]), None, 0.0000123, 50.0, Some(wall))),
     );
-    let program = Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, moves }] };
+    let program =
+        Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] };
     let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
     let written: f64 = text
         .lines()

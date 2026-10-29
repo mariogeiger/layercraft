@@ -61,8 +61,15 @@ fn a_triangle_on_a_missing_vertex_is_refused() {
 fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
     let region = union_contours(&[square(0.0, 0.0, 10.0), square(2.0, 2.0, 6.0)]).unwrap();
     let s = Sections {
-        layers: vec![Layer { index: 3, top: 0.8, height: 0.2, region: region.clone() }],
+        layers: vec![Layer {
+            index: 3,
+            top: 0.8,
+            height: 0.2,
+            warp: Default::default(),
+            region: region.clone(),
+        }],
         open_chains: 0,
+        unsplit_cells: 0,
     };
     let c = sections(&s).unwrap();
     assert!(close(area(&c), 64.0));
@@ -74,6 +81,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         index: 3,
         top: 0.8,
         height: 0.2,
+        warp: Default::default(),
         walls: vec![region.clone(), union_contours(&[square(1.0, 1.0, 8.0)]).unwrap()],
         inner_walls_within: None,
         top_surface: empty.clone(),
@@ -110,7 +118,15 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         travel_inside: false,
         overhang: Vec::new(),
     };
-    let p = Paths { layers: vec![PathLayer { index: 1, top: 0.4, height: 0.2, paths: vec![wall, strand] }] };
+    let p = Paths {
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.4,
+            height: 0.2,
+            warp: Default::default(),
+            paths: vec![wall, strand],
+        }],
+    };
     let c = paths(&p).unwrap();
     assert_eq!(c.segments.rows.len(), 4 + 1);
     let (ends, values) = &c.segments.rows[4];
@@ -144,7 +160,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         mv([20.0, 0.0, 0.6], None, 0.0, 200.0, None),
     ];
     let limits = Limits { max_accel: 10_000.0, jerk: 10.0, max_speed_xy: 500.0, max_speed_z: 20.0 };
-    let layer = MoveLayer { index: 0, z: 0.2, height: 0.2, moves };
+    let layer = MoveLayer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves };
     let c = program(&Program { layers: vec![layer] }, &limits).unwrap();
     let segments = &c.segments.rows;
     // Nothing before the nozzle is known; the bead, the helix's chords, the travel.
