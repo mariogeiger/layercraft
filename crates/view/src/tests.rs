@@ -160,7 +160,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         mv([20.0, 0.0, 0.6], None, 0.0, 200.0, None),
     ];
     let limits = Limits { max_accel: 10_000.0, jerk: 10.0, max_speed_xy: 500.0, max_speed_z: 20.0 };
-    let layer = MoveLayer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves };
+    let layer = MoveLayer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves };
     let c = program(&Program { layers: vec![layer] }, &limits).unwrap();
     let segments = &c.segments.rows;
     // Nothing before the nozzle is known; the bead, the helix's chords, the travel.

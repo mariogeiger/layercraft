@@ -34,7 +34,9 @@ fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
 }
 
 fn program(moves: Vec<Move>) -> Program {
-    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] }
+    Program {
+        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+    }
 }
 
 /// Over at the hop from wherever the layer starts, down as fast as the Z axis goes, then a bead.
@@ -76,7 +78,14 @@ fn each_danger_is_caught() {
         assert!(!verify(&program(moves), &ENVELOPE).is_empty(), "{m:?} passed");
     }
     let mut layers = program(safe()).layers;
-    layers.push(Layer { index: 1, z: -1.0, height: 0.2, warp: Default::default(), moves: safe() });
+    layers.push(Layer {
+        index: 1,
+        z: -1.0,
+        height: 0.2,
+        warp: Default::default(),
+        free: false,
+        moves: safe(),
+    });
     assert!(!verify(&Program { layers }, &ENVELOPE).is_empty());
 }
 
@@ -88,7 +97,7 @@ fn bead_layer(index: usize, z: f64, dy: f64) -> Layer {
         mv([20.0, 10.0 + dy, z], 0.3, 50.0),
         mv([20.0, 10.0 + dy, z + 0.4], 0.0, 20.0),
     ];
-    Layer { index, z, height: 0.2, warp: Default::default(), moves }
+    Layer { index, z, height: 0.2, warp: Default::default(), free: false, moves }
 }
 
 #[test]
@@ -159,7 +168,7 @@ fn ramped(z: impl Fn(f64) -> f64) -> Program {
     moves.push(mv([20.0, 10.4, z(20.0)], 0.0, 20.0));
     moves.extend((10..20).rev().map(|x| mv([x as f64, 10.4, z(x as f64)], 0.03, 50.0)));
     moves.push(mv([10.0, 10.4, 1.2], 0.0, 20.0));
-    let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, moves };
+    let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, free: false, moves };
     Program { layers: vec![bead_layer(0, 0.2, 0.0), bent] }
 }
 
@@ -190,11 +199,26 @@ fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
             z: 0.6,
             height: 0.4,
             warp: Default::default(),
+            free: false,
             moves: [bead, down].concat(),
         });
     } else {
-        layers.push(Layer { index: 1, z: 0.6, height: 0.4, warp: Default::default(), moves: bead });
-        layers.push(Layer { index: 2, z: 0.8, height: 0.2, warp: Default::default(), moves: down });
+        layers.push(Layer {
+            index: 1,
+            z: 0.6,
+            height: 0.4,
+            warp: Default::default(),
+            free: false,
+            moves: bead,
+        });
+        layers.push(Layer {
+            index: 2,
+            z: 0.8,
+            height: 0.2,
+            warp: Default::default(),
+            free: false,
+            moves: down,
+        });
     }
     Program { layers }
 }
@@ -217,4 +241,36 @@ fn the_face_irons_its_own_layer_as_allowed_and_no_layer_before() {
         ironed.iter().any(|v| v.reason.starts_with("the nozzle irons its own layer 0.050")),
         "{ironed:?}"
     );
+}
+
+/// A bead along y = 10 on the plate, then a free strand across it along x = 15, from y = 5 to 15,
+/// at tip height `z` at its end and `z_start` at its start.
+fn strand_across(z_start: f64, z: f64) -> Program {
+    let strand = vec![
+        mv([15.0, 5.0, 1.0], 0.0, 500.0),
+        mv([15.0, 5.0, z_start], 0.0, 20.0),
+        mv([15.0, 15.0, z], 0.3, 50.0),
+    ];
+    let free = Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), free: true, moves: strand };
+    Program { layers: vec![bead_layer(0, 0.2, 0.0), free] }
+}
+
+#[test]
+fn a_free_bead_rests_on_the_plate_or_on_a_bead_before_it() {
+    // Over the bead, one height above its top; on the plate, two: stretched over the gap.
+    assert_eq!(verify(&strand_across(0.4, 0.4), &ENVELOPE), vec![]);
+    // On the plate at one height, short of the bead.
+    let mut short = strand_across(0.2, 0.2);
+    short.layers[1].moves[2].to = Some([15.0, 8.0, 0.2]);
+    assert_eq!(verify(&short, &ENVELOPE), vec![]);
+}
+
+#[test]
+fn a_free_bead_is_caught_inside_plastic_or_hanging_too_high() {
+    // Into the bead it crosses: at its middle the tip is 0.1 mm over its top.
+    let inside = verify(&strand_across(0.4, 0.2), &ENVELOPE);
+    assert!(inside.iter().any(|v| v.reason.starts_with("free extrusion at z = 0.3")), "{inside:?}");
+    // Past two heights over the plate at its end.
+    let hanging = verify(&strand_across(0.4, 0.5), &ENVELOPE);
+    assert!(hanging.iter().any(|v| v.reason.starts_with("free extrusion at z = 0.5")), "{hanging:?}");
 }

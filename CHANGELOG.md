@@ -2,6 +2,20 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.10.0
+
+### Added
+
+- Free layers. A program's layer may be `"free": true`: its beads follow no top, and each rests
+  on the plate or on the beads of the layers before it. This is how a strand climbs over another:
+  a plait, a weave, a bead laid across a bead. `z` is the highest the nozzle goes in it, and
+  everything else of a layer stays. `verify` holds a free bead to what it rests on, at the end of
+  each move and halfway: its tip one bead's height over it, or up to two where the bead is
+  stretched across a gap. A free bead through a bead already laid, or hanging higher, is refused,
+  and the beads that may be rested on are kept longer. The nozzle's clearance is the same as
+  ever. Free layers are written by hand or by an agent as a program stage (`--from program=`);
+  nothing in the chain makes them yet.
+
 ## 0.9.0
 
 ### Added

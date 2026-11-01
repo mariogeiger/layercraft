@@ -137,6 +137,29 @@ impl Beads {
         }
     }
 
+    /// The height of the highest bead of a layer other than `layer` that lies under the place
+    /// `at`, within its half width of the path swept: what a bead laid there rests on. `None`
+    /// where the plate is.
+    pub fn support(&self, at: [f64; 2], layer: usize) -> Option<f64> {
+        let ids = self.cells.get(&[cell_of(at[0]), cell_of(at[1])])?;
+        ids.iter()
+            .filter_map(|&id| self.pieces.get(id))
+            .filter(|p| p.layer != layer)
+            .filter_map(|p| {
+                let d = [p.b[0] - p.a[0], p.b[1] - p.a[1]];
+                let rel = [at[0] - p.a[0], at[1] - p.a[1]];
+                let length = d[0].hypot(d[1]);
+                let s = if length > 0.0 {
+                    ((rel[0] * d[0] + rel[1] * d[1]) / (length * length)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let foot = [p.a[0] + s * d[0], p.a[1] + s * d[1]];
+                ((at[0] - foot[0]).hypot(at[1] - foot[1]) <= p.half).then_some(p.za + s * (p.zb - p.za))
+            })
+            .max_by(f64::total_cmp)
+    }
+
     /// Forgets every bead no higher than `z`: no tip to come is lower.
     pub fn forget_below(&mut self, z: f64) {
         let kept: Vec<Piece> = self.pieces.iter().filter(|p| p.za.max(p.zb) > z).copied().collect();

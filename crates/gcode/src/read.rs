@@ -108,7 +108,14 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
                     moves.append(&mut raws);
                 }
                 layers.push((
-                    Layer { index, z: *z, height: *h, warp: Default::default(), moves: Vec::new() },
+                    Layer {
+                        index,
+                        z: *z,
+                        height: *h,
+                        warp: Default::default(),
+                        free: false,
+                        moves: Vec::new(),
+                    },
                     Vec::new(),
                 ));
                 prelude = index > 0;

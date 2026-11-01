@@ -93,7 +93,9 @@ fn all(program: &Program) -> Vec<&Move> {
 
 /// A program of one layer at 0.2 mm of these moves.
 fn single(moves: Vec<Move>) -> Program {
-    Program { layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), moves }] }
+    Program {
+        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+    }
 }
 
 fn travel(to: [f64; 3], speed: f64) -> Move {
@@ -464,6 +466,7 @@ fn programs_merge_layer_by_layer_nearest_first_with_their_filament_as_they_left_
                 z: 0.2 * (i + 1) as f64,
                 height: 0.2,
                 warp: Default::default(),
+                free: false,
                 moves: piece(x, pull, i == 0),
             })
             .collect(),

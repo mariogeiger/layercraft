@@ -417,6 +417,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             z: layer.top,
             height: layer.height,
             warp: layer.warp.clone(),
+            free: false,
             moves: Vec::new(),
         });
         // After the machine's layer change, the nozzle may be anywhere.

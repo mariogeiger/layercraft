@@ -56,6 +56,7 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
             z: height,
             height: height - below,
             warp: Default::default(),
+            free: false,
             moves: Vec::new(),
         };
         below = height;

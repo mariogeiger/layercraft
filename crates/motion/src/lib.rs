@@ -99,6 +99,10 @@ pub struct Layer {
     /// it is flat.
     #[serde(default, skip_serializing_if = "Relief::is_zero")]
     pub warp: Relief,
+    /// Whether the layer's beads follow no top: free strands, each resting on the plate or on the
+    /// beads laid before it (`verify` holds it to that), `z` the highest the nozzle goes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub free: bool,
     pub moves: Vec<Move>,
 }
 
