@@ -164,7 +164,10 @@ pub fn run(
     };
     if let Some(s) = &sections {
         if s.open_chains > 0 {
-            eprintln!("warning: {} section chains did not close (the mesh has holes)", s.open_chains);
+            eprintln!(
+                "warning: {} section chains stopped at cracks in the mesh, up to {:.3} mm wide; each was joined to the nearest chain",
+                s.open_chains, s.widest_crack
+            );
         }
         emit(Stage::Sections, s, || layercraft_view::sections(s), emits)?;
     }

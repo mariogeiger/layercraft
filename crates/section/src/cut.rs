@@ -3,11 +3,28 @@
 //! Each vertex lies above the surface or not by the sign of its height over it, `z − level`, a
 //! number of the vertex alone. Where that height is linear over a triangle, as for a plane or
 //! for a leaf over a mesh refined along its grid (`refine`), the surface cuts the triangle along
-//! the segment between the points where it crosses two of its edges.
+//! the segment between the points where it crosses two of its edges. A mesh with cracks, where
+//! the two faces along a seam are cut into different edges, leaves chains that stop at the crack;
+//! they are joined end to start across it, the shortest gaps first.
 
 use layercraft_geom::{GRID_MM, Point};
 use layercraft_mesh::{Body, Mesh, Vertex};
 use std::collections::HashMap;
+
+/// The most open chains one section joins across cracks: matching every end to every start costs
+/// their number squared, and a mesh with more is broken beyond what a crack explains.
+const MAX_JOINED: usize = 1024;
+
+/// A section's loops, and the chains that did not close by themselves.
+#[derive(Debug, Clone, Default)]
+pub struct Cut {
+    /// Oriented loops, counterclockwise around material seen from above.
+    pub loops: Vec<Vec<Point>>,
+    /// Chains that stopped at a crack in the mesh.
+    pub open: usize,
+    /// The widest gap a loop was closed across, in mm.
+    pub widest_gap: f64,
+}
 
 /// An edge of a body, its vertex indices in increasing order, tagged with the body.
 type EdgeKey = (usize, u32, u32);
@@ -69,9 +86,8 @@ fn crossing(body: &Body, over: &[f64], a: u32, b: u32) -> Option<Point> {
     Some([pa[0] + t * (pb[0] - pa[0]), pa[1] + t * (pb[1] - pa[1])])
 }
 
-/// The oriented loops where the surface `z = level(vertex)` cuts the mesh, and the number of
-/// chains that do not close. Loops wind counterclockwise around material, seen from above.
-pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> (Vec<Vec<Point>>, usize) {
+/// Where the surface `z = level(vertex)` cuts the mesh.
+pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> Cut {
     // For each crossing edge: the point, and the segments leaving it.
     let mut points: HashMap<EdgeKey, Point> = HashMap::new();
     let mut next: HashMap<EdgeKey, Vec<EdgeKey>> = HashMap::new();
@@ -112,12 +128,10 @@ pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> (Vec<Vec<Poi
     stitch(&points, next)
 }
 
-fn stitch(
-    points: &HashMap<EdgeKey, Point>,
-    mut next: HashMap<EdgeKey, Vec<EdgeKey>>,
-) -> (Vec<Vec<Point>>, usize) {
-    let mut loops = Vec::new();
-    let mut open = 0;
+/// The loops the segments `next` chain into, the chains that stop at a crack joined across it.
+fn stitch(points: &HashMap<EdgeKey, Point>, mut next: HashMap<EdgeKey, Vec<EdgeKey>>) -> Cut {
+    let mut cut = Cut::default();
+    let mut chains = Vec::new();
     let mut starts: Vec<EdgeKey> = next.keys().copied().collect();
     starts.sort_unstable();
     for start in starts {
@@ -134,13 +148,62 @@ fn stitch(
                 }
                 at = to;
             };
-            let contour = if closed { straightened(contour) } else { contour };
-            if closed && contour.len() >= 3 {
-                loops.push(contour);
-            } else if !closed {
-                open += 1;
+            if closed {
+                cut.loops.push(contour);
+            } else if !contour.is_empty() {
+                chains.push(contour);
             }
         }
     }
-    (loops, open)
+    cut.open = chains.len();
+    let (joined, widest_gap) = join(chains);
+    cut.loops.extend(joined);
+    cut.widest_gap = widest_gap;
+    cut.loops = cut.loops.into_iter().map(straightened).filter(|l| l.len() >= 3).collect();
+    cut
+}
+
+/// Open chains joined into loops, each end to the start nearest it, the shortest gaps first,
+/// and the widest gap closed. Every chain has one end and one start, so every end finds a start
+/// and the joins close into cycles.
+fn join(chains: Vec<Vec<Point>>) -> (Vec<Vec<Point>>, f64) {
+    if chains.len() > MAX_JOINED {
+        return (Vec::new(), 0.0);
+    }
+    let gap = |a: Point, b: Point| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let mut pairs = Vec::with_capacity(chains.len() * chains.len());
+    for (i, from) in chains.iter().enumerate() {
+        for (j, to) in chains.iter().enumerate() {
+            if let (Some(&end), Some(&start)) = (from.last(), to.first()) {
+                pairs.push((gap(end, start), i, j));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut after: Vec<Option<usize>> = vec![None; chains.len()];
+    let mut taken = vec![false; chains.len()];
+    let mut widest = 0.0_f64;
+    for (d, i, j) in pairs {
+        if let (Some(a @ None), Some(t @ false)) = (after.get_mut(i), taken.get_mut(j)) {
+            *a = Some(j);
+            *t = true;
+            widest = widest.max(d);
+        }
+    }
+    let mut loops = Vec::new();
+    let mut seen = vec![false; chains.len()];
+    for first in 0..chains.len() {
+        let mut contour = Vec::new();
+        let mut at = Some(first);
+        while let Some(i) = at {
+            let Some(s @ false) = seen.get_mut(i) else { break };
+            *s = true;
+            contour.extend(chains.get(i).into_iter().flatten().copied());
+            at = after.get(i).copied().flatten();
+        }
+        if !contour.is_empty() {
+            loops.push(contour);
+        }
+    }
+    (loops, widest)
 }

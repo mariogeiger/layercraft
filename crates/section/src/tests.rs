@@ -38,7 +38,7 @@ fn a_cube_cuts_into_squares() {
     for layer in &sections.layers {
         assert!((area(&layer.region) - 100.0).abs() < 1e-9, "{}", area(&layer.region));
     }
-    let (loops, _) = section_loops(&mesh, |_| 1.0);
+    let loops = section_loops(&mesh, |_| 1.0).loops;
     assert!(loops.iter().all(|l| signed_area(l) > 0.0), "loops must be counterclockwise");
 }
 
@@ -52,9 +52,9 @@ fn a_plane_through_vertices_still_closes() {
             cuboid("upper", [1.0, 1.0, 1.0], [3.0, 3.0, 2.0]),
         ],
     };
-    let (loops, open) = section_loops(&mesh, |_| 1.0);
-    assert_eq!(open, 0);
-    assert!((area(&winding_region(&loops).unwrap()) - 16.0).abs() < 1e-9);
+    let cut = section_loops(&mesh, |_| 1.0);
+    assert_eq!(cut.open, 0);
+    assert!((area(&winding_region(&cut.loops).unwrap()) - 16.0).abs() < 1e-9);
 }
 
 #[test]
@@ -95,12 +95,60 @@ fn bad_layering_is_refused() {
 }
 
 #[test]
-fn a_hole_in_the_mesh_is_counted_not_fatal() {
+fn a_hole_in_the_mesh_is_counted_and_closed_across() {
     let mut body = cuboid("c", [0.0; 3], [1.0; 3]);
     body.triangles
         .retain(|t| !(body.vertices[t[0] as usize][0] == 1.0 && body.vertices[t[1] as usize][0] == 1.0));
-    let (_, open) = section_loops(&Mesh { bodies: vec![body] }, |_| 0.5);
-    assert!(open > 0);
+    let cut = section_loops(&Mesh { bodies: vec![body] }, |_| 0.5);
+    assert!(cut.open > 0);
+    assert!(cut.widest_gap <= 1.0 + 1e-12);
+    assert!((area(&winding_region(&cut.loops).unwrap()) - 1.0).abs() < 1e-9);
+}
+
+/// The regular `n`-gon of circumradius `r`, a vertex on each axis when `n` is a multiple of four.
+fn regular(n: usize, r: f64) -> Vec<[f64; 2]> {
+    (0..n)
+        .map(|k| {
+            let a = std::f64::consts::TAU * k as f64 / n as f64;
+            [r * a.cos(), r * a.sin()]
+        })
+        .collect()
+}
+
+#[test]
+fn a_crack_between_two_tessellations_keeps_the_hole() {
+    // A tube of outer radius 8 around a hole of radius 2, its walls tessellated with 24 and 12
+    // chords below z = 1 and with 16 and 20 above, so that the faces meet along z = 1 without a
+    // shared edge: the crack SolidCraft's exports leave where two faces meet along a circle. A
+    // leaf tilted across the crack cuts the lower part where x < 0 and the upper one where x > 0;
+    // both outlines have vertices on the y axis, so its section is half of each polygon.
+    let wall = |name: &str, n: usize, r: f64, z0: f64, z1: f64, hole: bool| {
+        let mut body = prism(name, &regular(n, r), z0, z1);
+        let at = |i: u32| body.vertices[i as usize][2];
+        body.triangles.retain(|t| !t.iter().all(|&i| at(i) == 1.0));
+        if hole {
+            body.triangles.iter_mut().for_each(|t| t.swap(1, 2));
+        }
+        body
+    };
+    let mesh = Mesh {
+        bodies: vec![
+            wall("outer below", 24, 8.0, 0.0, 1.0, false),
+            wall("outer above", 16, 8.0, 1.0, 2.0, false),
+            wall("hole below", 12, 2.0, 0.0, 1.0, true),
+            wall("hole above", 20, 2.0, 1.0, 2.0, true),
+        ],
+    };
+    let cut = section_loops(&mesh, |v| 1.0 + 0.05 * v[0]);
+    let region = winding_region(&cut.loops).unwrap();
+    let half = |n: usize, r: f64| n as f64 * r * r * (std::f64::consts::TAU / n as f64).sin() / 4.0;
+    let exact = half(24, 8.0) + half(16, 8.0) - half(12, 2.0) - half(20, 2.0);
+    assert!(cut.open > 0);
+    assert_eq!(region.len(), 1, "one piece");
+    assert_eq!(region[0].len(), 2, "its outline and the hole");
+    // Within the lattice the region is snapped to, along its outline.
+    let perimeter = std::f64::consts::TAU * (8.0 + 2.0);
+    assert!((area(&region) - exact).abs() < perimeter * GRID_MM, "{} vs {exact}", area(&region));
 }
 
 /// Bent layers that follow top surfaces of up to 20°, within the X2D's head.

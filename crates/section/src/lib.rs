@@ -17,7 +17,7 @@ mod foliate;
 mod patches;
 mod refine;
 
-pub use cut::section_loops;
+pub use cut::{Cut, section_loops};
 pub use foliate::Foliation;
 pub use refine::refine;
 
@@ -59,8 +59,12 @@ pub struct Layer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sections {
     pub layers: Vec<Layer>,
-    /// Section chains that did not close (the mesh has holes); they are left out.
+    /// Section chains that stopped at a crack in the mesh; each was joined to the chain whose start
+    /// lay nearest its end.
     pub open_chains: usize,
+    /// The widest crack a section was closed across, in mm.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub widest_crack: f64,
     /// Cells of the mesh its grid could not split (`refine`).
     #[serde(default)]
     pub unsplit_cells: usize,
@@ -133,19 +137,24 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
         _ => (None, 0),
     };
     let mut layers = Vec::new();
-    let mut open_chains = 0;
+    let (mut open_chains, mut widest_crack) = (0, 0.0_f64);
     for (index, (top, height)) in slabs.into_iter().enumerate() {
         let h = top - height / 2.0;
-        let (loops, open) = match (middles.get(index), &refined) {
+        let cut = match (middles.get(index), &refined) {
             (Some(m), Some(refined)) if !m.is_zero() => section_loops(refined, |v| h + m.at([v[0], v[1]])),
             _ => section_loops(mesh, |_| h),
         };
-        open_chains += open;
+        open_chains += cut.open;
+        widest_crack = widest_crack.max(cut.widest_gap);
         let warp = warps.get(index).cloned().unwrap_or_default();
-        layers.push(Layer { index, top, height, warp, region: winding_region(&loops)? });
+        layers.push(Layer { index, top, height, warp, region: winding_region(&cut.loops)? });
     }
-    Ok(Sections { layers, open_chains, unsplit_cells })
+    Ok(Sections { layers, open_chains, widest_crack, unsplit_cells })
 }
 
 #[cfg(test)]
 mod tests;
+
+fn is_zero(x: &f64) -> bool {
+    *x == 0.0
+}

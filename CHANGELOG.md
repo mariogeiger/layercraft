@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.11.1
+
+### Fixed
+
+- A mesh with cracks, where two faces meet along a seam cut into different edges (SolidCraft's
+  exports along circles), no longer loses loops: the section chains that stop at a crack are
+  joined end to start, the shortest gaps first, instead of being dropped. A layer crossing such a
+  seam kept its outline and filled its holes; the clip's screw hole was closed on one layer and
+  got supports. The warning names how wide the widest crack closed was.
+
 ## 0.11.0
 
 ### Added

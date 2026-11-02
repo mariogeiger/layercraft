@@ -69,6 +69,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
             region: region.clone(),
         }],
         open_chains: 0,
+        widest_crack: 0.0,
         unsplit_cells: 0,
     };
     let c = sections(&s).unwrap();
