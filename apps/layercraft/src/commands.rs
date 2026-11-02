@@ -58,6 +58,9 @@ enum Command {
         /// convection rolls from wall to wall, stacked, tilted the other way every five layers.
         #[arg(long, value_enum, default_value = "lines")]
         infill: Infill,
+        /// Hold up what nothing below holds with supports, or not (default: as the process says).
+        #[arg(long, value_enum)]
+        supports: Option<Switch>,
     },
     /// Print several programs together on one plate, layer by layer under one frame: program
     /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
@@ -105,7 +108,17 @@ enum Command {
         /// What sparse areas are filled with, as for `compile`.
         #[arg(long, value_enum, default_value = "lines")]
         infill: Infill,
+        /// Supports or not, as for `compile`.
+        #[arg(long, value_enum)]
+        supports: Option<Switch>,
     },
+}
+
+/// A setting turned on or off.
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
+enum Switch {
+    On,
+    Off,
 }
 
 /// What sparse areas are filled with.
@@ -158,15 +171,18 @@ fn load_machine(name: &str) -> Result<Machine, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The machine, its settings and the tuning; with `flat`, layers that never bend; the sparse
-/// areas filled with `infill`.
-fn setup(
-    machine: &str,
-    bed: Option<&str>,
-    tune: Option<&Path>,
+/// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill`,
+/// supports on or off, or as the process says.
+#[derive(Clone, Copy)]
+struct Choices {
     flat: bool,
     infill: Infill,
-) -> Result<Setup, String> {
+    supports: Option<Switch>,
+}
+
+/// The machine, its settings and the tuning, as `choices` make them.
+fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>, choices: Choices) -> Result<Setup, String> {
+    let Choices { flat, infill, supports } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
     let machine = load_machine(machine)?;
     let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
@@ -175,6 +191,11 @@ fn setup(
     }
     if infill == Infill::Rolls {
         settings.path.sparse_pattern = settings::rolls(&settings);
+    }
+    match supports {
+        Some(Switch::On) => settings.region.supports = Some(settings.supports.clone()),
+        Some(Switch::Off) => settings.region.supports = None,
+        None => {}
     }
     Ok(Setup { machine, settings, tuning })
 }
@@ -216,8 +237,22 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}\nvariant: {}", machine.source, machine.variant);
             Ok(())
         }
-        Command::Compile { input, out, machine, emit, from, at, colour, bed, gcode, tune, flat, infill } => {
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), flat, infill)?;
+        Command::Compile {
+            input,
+            out,
+            machine,
+            emit,
+            from,
+            at,
+            colour,
+            bed,
+            gcode,
+            tune,
+            flat,
+            infill,
+            supports,
+        } => {
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), Choices { flat, infill, supports })?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -236,7 +271,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), false, Infill::Lines)?;
+            let choices = Choices { flat: false, infill: Infill::Lines, supports: None };
+            let s = setup(&machine, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
             let limits = &s.settings.motion.limits;
@@ -254,11 +290,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, machine, layers, tune, flat, infill } => {
+        Command::View { input, out, machine, layers, tune, flat, infill, supports } => {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s = setup(&machine, None, tune.as_deref(), flat, infill)?;
+                let s = setup(&machine, None, tune.as_deref(), Choices { flat, infill, supports })?;
                 let output =
                     pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?

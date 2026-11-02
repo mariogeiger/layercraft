@@ -15,9 +15,9 @@
 //! last and the nozzle's flat tip would scrape it.
 
 use crate::PathError;
-use crate::hatch::hatch;
 use layercraft_geom::{
-    Contour, GeomError, Point, Polyline, Region, Relief, area, bounds, edges, encloses, intersection, union,
+    Contour, GeomError, Point, Polyline, Region, Relief, area, bounds, edges, encloses, hatch, intersection,
+    union,
 };
 use std::f64::consts::PI;
 

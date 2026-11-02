@@ -1,6 +1,7 @@
-//! What a bead is for, as three independent facts: its kind (a wall's loop, a dense line or a
-//! sparse one), the face of the part it makes (the side, the top, the bottom, or none: inside),
-//! and what it rests on (solid plastic, sparse infill, or air).
+//! What a bead is for, as three independent facts: its kind (a wall's loop, a dense line, a
+//! sparse one, or a line of the supports, which hold the part up and come off it), the face it
+//! makes (the side, the top, the bottom, or none: inside; a support's top is the face the part
+//! rests on), and what it rests on (solid plastic, sparse infill, or air).
 //!
 //! Each consumer reads only the fact it needs. A dense line resting on anything but solid is a
 //! strand, round in section; what shows goes slower; what lies on air bridges. The features
@@ -9,13 +10,15 @@
 
 use serde::{Deserialize, Serialize};
 
-/// What a bead is: a loop of the walls, or a line of infill, dense or sparse.
+/// What a bead is: a loop of the walls, a line of infill, dense or sparse, or a line of the
+/// supports under the part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Wall,
     Solid,
     Sparse,
+    Support,
 }
 
 /// The face of the part a bead makes: the side, the top, the bottom, or none.
@@ -60,9 +63,13 @@ impl Role {
     pub const BRIDGE: Role = role(Kind::Solid, Face::Bottom, Support::Air);
     pub const INTERNAL_BRIDGE: Role = role(Kind::Solid, Face::Inside, Support::Sparse);
     pub const SPARSE: Role = role(Kind::Sparse, Face::Inside, Support::Sparse);
+    /// A support's line, standing on the one below it.
+    pub const SUPPORT: Role = role(Kind::Support, Face::Inside, Support::Solid);
+    /// A support's top, dense, laid across the lines below it: what the part rests on.
+    pub const SUPPORT_INTERFACE: Role = role(Kind::Support, Face::Top, Support::Sparse);
 
     /// The roles slicers name, in a fixed order: the codes of a legend.
-    pub const NAMED: [Role; 10] = [
+    pub const NAMED: [Role; 12] = [
         Role::OUTER_WALL,
         Role::OVERHANG_WALL,
         Role::INNER_WALL,
@@ -73,6 +80,8 @@ impl Role {
         Role::BRIDGE,
         Role::INTERNAL_BRIDGE,
         Role::SPARSE,
+        Role::SUPPORT,
+        Role::SUPPORT_INTERFACE,
     ];
 
     /// Whether the bead is a strand, round in section: a dense line on anything but solid.
@@ -96,6 +105,8 @@ impl Role {
                 Face::Outside | Face::Inside => "Internal solid infill",
             },
             (Kind::Sparse, _) => "Sparse infill",
+            (Kind::Support, _) if self.face == Face::Top => "Support interface",
+            (Kind::Support, _) => "Support",
         }
     }
 

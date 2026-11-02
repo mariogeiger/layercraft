@@ -2,14 +2,13 @@
 
 use crate::dense::{best_hatch, fall_line};
 use crate::gap::{gap_fill, strips};
-use crate::hatch::{bridge_angle, hatch};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
 use crate::tour::tour;
 use crate::{Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
-    Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, clip_lines, disc_area, edges, encloses,
-    intersection, offset, polyline_length, signed_area, union,
+    Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area,
+    edges, encloses, hatch, intersection, offset, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -27,8 +26,29 @@ pub struct Island {
     fills: Rc<Vec<Fill>>,
 }
 
+impl Island {
+    /// An island without walls, bounded by `outline`, its beads to come.
+    pub(crate) fn bare(outline: Contour) -> Island {
+        Island { outline, walls: Vec::new(), gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() }
+    }
+
+    pub(crate) fn outline(&self) -> &Contour {
+        &self.outline
+    }
+
+    /// Adds an infill bead.
+    pub(crate) fn push(&mut self, path: Path) {
+        self.infill.push(path);
+    }
+
+    /// Joins the island's lines by the areas `fills`.
+    pub(crate) fn share(&mut self, fills: Rc<Vec<Fill>>) {
+        self.fills = fills;
+    }
+}
+
 /// The innermost of `outlines` holding `p`: an island may sit in another's hole.
-fn holder<'a>(outlines: impl IntoIterator<Item = &'a Contour>, p: Point) -> Option<usize> {
+pub(crate) fn holder<'a>(outlines: impl IntoIterator<Item = &'a Contour>, p: Point) -> Option<usize> {
     outlines
         .into_iter()
         .enumerate()
@@ -164,7 +184,7 @@ pub fn sparse_bead(layer: &RegionLayer, p: &PathParams) -> (f64, f64) {
 }
 
 /// A point on a line, for asking which island holds it: the middle of its middle segment.
-fn on_line(line: &[Point]) -> Option<Point> {
+pub(crate) fn on_line(line: &[Point]) -> Option<Point> {
     let k = line.len().checked_sub(2)? / 2;
     let (a, b) = (line.get(k)?, line.get(k + 1)?);
     Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
@@ -234,7 +254,7 @@ pub fn islands(
         }
     }
     // How far each wall hangs over the layer below, which motion slows for.
-    if let Some(below) = &layer.support {
+    if let Some(below) = &layer.below {
         let support = Below::new(below, w(p.outer_wall_width).max(w(p.inner_wall_width)));
         for (_, path) in islands.iter_mut().flat_map(|island| island.walls.iter_mut()) {
             (path.points, path.overhang) = overhang(&path.points, path.closed, &support, path.width);
@@ -290,7 +310,7 @@ pub fn islands(
         // direction already crosses at right angles.
         if role.support == Support::Air {
             // An end hangs when its strand's last bead rests nowhere on the layer below.
-            let below = layer.support.as_ref().map(|below| Below::new(below, width));
+            let below = layer.below.as_ref().map(|below| Below::new(below, width));
             let hangs = |end: Point| below.as_ref().is_none_or(|b| b.fraction(end, width) >= 1.0);
             for shape in &reach {
                 let piece = vec![shape.clone()];

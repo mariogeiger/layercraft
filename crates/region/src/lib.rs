@@ -2,13 +2,12 @@
 //!
 //! With `R_i` the section of layer `i`, the walls are the centre lines of successive insets of
 //! `R_i`, one bead spacing apart — an inner one only where its bead passes, the band it leaves
-//! filled as inside — and `A_i` is what lies inside the innermost wall. A point of
-//! `A_i` is sparse infill when the inside continues, in `A_j`, for `top_layers` layers above it,
+//! filled as inside — and `A_i` is what lies inside the innermost wall. A point of `A_i` is
+//! sparse infill when the inside continues, in `A_j`, for `top_layers` layers above it,
 //! and the solid, in `R_j`, for `bottom_layers` below it; otherwise it is solid. What is laid
 //! above stands on solid unless it is infill itself: under a thin rib or the strokes of raised
-//! letters, all walls and no inside, the top shells run on underneath. Below, only the air
-//! needs a skin over it: what rests on walls is held up.
-//! The part of `A_i` not covered by layer `i + 1` is the top surface, the one exposed to the air.
+//! letters, all walls and no inside, the top shells run on underneath. Below, only the air needs
+//! a skin over it. The part of `A_i` not covered by layer `i + 1` is the top surface.
 //! Solid or top that the layer below does not hold up is a bridge, laid as hanging strands: over
 //! air, wherever it is wider than a bead and deeper than a strand hangs below the layer, reaching
 //! a bead's width onto the support at its ends; over sparse infill, only where it is wide enough
@@ -17,7 +16,8 @@
 //! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
 //! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
 //! layer above covers them, and the top surface reaches the outer wall. A layer keeps the sections
-//! below and above it, and each shape is split by the parameters at its centre (`layercraft_tune`).
+//! below and above it, and the columns of `supports` that hold up what nothing else holds; each
+//! shape is split by the parameters at its centre (`layercraft_tune`).
 
 use layercraft_geom::{
     GeomError, Region, Relief, Shape, bead_spacing, difference, intersection, offset, opening, signed_area,
@@ -27,6 +27,8 @@ use layercraft_section::{Layer, Sections};
 use layercraft_tune::{Field, TuneError, centre};
 use serde::{Deserialize, Serialize};
 use std::rc::Rc;
+
+mod supports;
 
 /// The rules that split a layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +54,26 @@ pub struct RegionParams {
     /// Pieces of sparse infill smaller than this are solid, in mm².
     #[serde(default)]
     pub min_sparse_area: f64,
+    /// How the parts of layers that nothing holds up are supported; none, not at all.
+    #[serde(default)]
+    pub supports: Option<SupportParams>,
+}
+
+/// Where supports stand, by the rules of `supports`; distances in mm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupportParams {
+    /// The longest strand held at both ends that bridges without support; none, any.
+    pub max_bridge: Option<f64>,
+    /// From a column's top up to the underside of what it holds.
+    pub top_gap: f64,
+    /// From the part up to the foot of a column standing on it.
+    pub bottom_gap: f64,
+    /// From the part across to a column's side.
+    pub xy_gap: f64,
+    /// The dense layers at a column's top.
+    pub interface_layers: usize,
+    /// Columns only from the plate, none standing on the part.
+    pub on_plate_only: bool,
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
@@ -81,11 +103,16 @@ pub struct RegionLayer {
     pub sparse: Region,
     /// The section of the layer below, which holds this layer's walls up; none on the first
     /// layer, which the bed holds.
-    #[serde(default)]
-    pub support: Option<Region>,
+    #[serde(default, alias = "support")]
+    pub below: Option<Region>,
     /// The section of the layer above, which covers this layer; empty on the last layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub above: Region,
+    /// The supports' columns on this layer, outside the part, and their dense tops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supports: Region,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub support_interface: Region,
 }
 
 impl RegionLayer {
@@ -143,6 +170,17 @@ fn check(params: &RegionParams) -> Result<(), RegionError> {
     }
     if params.walls > 50 || params.top_layers > 200 || params.bottom_layers > 200 {
         return Err(RegionError::BadParams("too many walls or shell layers".into()));
+    }
+    if let Some(s) = &params.supports {
+        let gap = |g: f64| g.is_finite() && (0.0..=10.0).contains(&g);
+        if ![s.top_gap, s.bottom_gap, s.xy_gap].into_iter().all(gap)
+            || s.max_bridge.is_some_and(|m| !(m.is_finite() && m >= 0.0))
+            || s.interface_layers > 50
+        {
+            return Err(RegionError::BadParams(
+                "support gaps must be 0 to 10 mm, the bridge finite, interface layers few".into(),
+            ));
+        }
     }
     if !params.first_layer_shrink.is_finite() || !(0.0..=1.0).contains(&params.first_layer_shrink) {
         return Err(RegionError::BadParams("first layer shrink must be 0 to 1 mm".into()));
@@ -284,7 +322,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             top: layer.top,
             height: layer.height,
             warp: layer.warp.clone(),
-            support: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
+            below: i.checked_sub(1).and_then(|j| sections.layers.get(j)).map(|below| below.region.clone()),
             above: next.clone(),
             ..RegionLayer::default()
         };
@@ -319,6 +357,15 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
                 Some(if walls_everywhere.is_empty() { next } else { union(&next, &walls_everywhere)? });
         }
         layers.push(out);
+    }
+    // Over the whole plate, by the base parameters: a column may stand under several parts.
+    let p = field.base();
+    if let Some(s) = &p.supports {
+        let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
+        let found = supports::supports(&regions, &tops, &heights, s, p.outer_wall_width, p.bridge_width)?;
+        for (layer, (body, interface)) in layers.iter_mut().zip(found) {
+            (layer.supports, layer.support_interface) = (body, interface);
+        }
     }
     Ok(Regions { layers })
 }

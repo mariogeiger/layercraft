@@ -9,8 +9,8 @@
 use crate::printers::printer;
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::{Face, PathParams, SparsePattern};
-use layercraft_region::RegionParams;
+use layercraft_path::{Face, PathParams, SparsePattern, SupportLines};
+use layercraft_region::{RegionParams, SupportParams};
 use layercraft_section::{Foliation, Layering};
 use layercraft_verify::{Envelope, Toolhead};
 
@@ -18,6 +18,8 @@ use layercraft_verify::{Envelope, Toolhead};
 pub struct Settings {
     pub layering: Layering,
     pub region: RegionParams,
+    /// Where supports stand, whether or not the process turns them on.
+    pub supports: SupportParams,
     pub path: PathParams,
     pub motion: MotionParams,
     pub envelope: Envelope,
@@ -193,6 +195,21 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     // Bridges are laid a nozzle wide.
     let widest =
         [outer, inner, sparse_width, top_surface_width, solid_width, nozzle].into_iter().fold(0.0, f64::max);
+    // A strand held at both ends bridges up to `max_bridge_length`, 0 holding every strand up,
+    // unless `bridge_no_support` lets bridges of any length be.
+    let supports = SupportParams {
+        max_bridge: if m.number(Process, "bridge_no_support").unwrap_or(0.0) > 0.0 {
+            None
+        } else {
+            Some(m.number(Process, "max_bridge_length").unwrap_or(0.0))
+        },
+        top_gap: m.number(Process, "support_top_z_distance")?,
+        bottom_gap: m.number(Process, "support_bottom_z_distance")?,
+        xy_gap: m.number(Process, "support_object_xy_distance")?,
+        interface_layers: m.number(Process, "support_interface_top_layers")?.max(0.0) as usize,
+        on_plate_only: m.number(Process, "support_on_build_plate_only").unwrap_or(0.0) > 0.0,
+    };
+    let support_enabled = m.number(Process, "enable_support").unwrap_or(0.0) > 0.0;
     let (first_bed_key, _) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
@@ -268,7 +285,9 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             bridge_width: nozzle,
             min_sparse_area: m.number(Process, "minimum_sparse_infill_area").unwrap_or(0.0),
+            supports: support_enabled.then(|| supports.clone()),
         },
+        supports,
         path: PathParams {
             outer_wall_width: outer,
             inner_wall_width: inner,
@@ -288,6 +307,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 .collect(),
             resolution: m.number(Process, "resolution")?,
             sparse_pattern: SparsePattern::Lines,
+            support: Some(SupportLines {
+                width: width(m, "support_line_width", nozzle)?,
+                gap: m.number(Process, "support_base_pattern_spacing")?,
+                interface_gap: m.number(Process, "support_interface_spacing")?,
+            }),
         },
         motion: MotionParams {
             filament_diameter,
@@ -305,6 +329,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 flow: m.number(Process, "bridge_flow").unwrap_or(1.0),
                 ..role(m, "bridge_speed", "bridge_acceleration")?
             },
+            support: role(m, "support_speed", "default_acceleration")?,
+            support_interface: role(m, "support_interface_speed", "default_acceleration")?,
             // Bambu's quarters of a bead's width over air, then a bead wholly over it.
             overhang_speeds: if m.number(Process, "enable_overhang_speed").unwrap_or(0.0) > 0.0 {
                 [

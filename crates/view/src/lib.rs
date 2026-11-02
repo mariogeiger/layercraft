@@ -45,7 +45,7 @@ pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value
 }
 
 /// A role's colour: strands green; walls orange outside, yellow inside; dense lines red on
-/// top, purple elsewhere; sparse lines blue.
+/// top, purple elsewhere; sparse lines blue; supports grey, their tops lighter.
 fn colour(role: Role) -> [f64; 3] {
     use layercraft_path::{Face, Kind};
     match (role.kind, role.face) {
@@ -55,6 +55,8 @@ fn colour(role: Role) -> [f64; 3] {
         (Kind::Solid, Face::Top) => [0.90, 0.25, 0.25],
         (Kind::Solid, _) => [0.65, 0.30, 0.75],
         (Kind::Sparse, _) => [0.30, 0.60, 0.85],
+        (Kind::Support, Face::Top) => [0.80, 0.80, 0.80],
+        (Kind::Support, _) => [0.55, 0.55, 0.55],
     }
 }
 

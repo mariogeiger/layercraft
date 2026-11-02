@@ -1,6 +1,6 @@
 //! Parallel lines on a fixed grid, clipped to a region.
 
-use layercraft_geom::{GeomError, Point, Polyline, Region, bounds, clip_lines, edges, polyline_length};
+use crate::{GeomError, Point, Polyline, Region, bounds, clip_lines, edges, polyline_length};
 
 /// The most hatch lines drawn across one region.
 const MAX_LINES: f64 = 1_000_000.0;

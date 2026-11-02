@@ -17,7 +17,7 @@ curious humans like that too.
 |---|---|---|
 | **mesh** | the solid's triangles, standing on the plate | read from the 3MF, every index and number checked |
 | **sections** | one planar region per layer | the *exact* cut of the mesh at the layer's mid-height: a vertex on the plane counts as above it, so every cut edge is cut once and the loops close with no tolerance |
-| **regions** | each layer split into walls, top and bottom skins, solid and sparse infill, bridges | Boolean operations and offsets on a nanometre lattice, exact in integers |
+| **regions** | each layer split into walls, top and bottom skins, solid and sparse infill, bridges, and the supports under what nothing holds up | Boolean operations and offsets on a nanometre lattice, exact in integers |
 | **paths** | every bead, in printing order | wall loops with their seams lined up, hatches on a fixed grid, strands across bridges |
 | **program** | every move of the nozzle, layer by layer, each with all it does: where it goes (a line, or an arc climbing about a vertical axis), the filament, speed, acceleration and fan, and the bead it lays | filament from the volume each bead fills, speeds from the machine, time from a look-ahead planner |
 
@@ -110,9 +110,10 @@ boxes, each with the settings it changes, such as `{"within": {"z": [0, 5]}, "se
 
 ## What it does not do yet
 
-One printer (the Bambu Lab X2D), one filament at a time, no support structures. layercraft
-is young: it prints walls, skins, infill and bridges, and every change is checked against
-solids whose volumes and sections are known exactly.
+One printer (the Bambu Lab X2D), one filament at a time; supports are straight columns of
+lines, with no tree supports and no interface under a column standing on the part. layercraft
+is young: it prints walls, skins, infill, bridges and supports, and every change is checked
+against solids whose volumes and sections are known exactly.
 
 ## The rest
 

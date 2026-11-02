@@ -209,6 +209,13 @@ fn unknown_commands_and_features_are_errors() {
     assert!(err.reason.contains("Ironing"), "{err}");
     // In the machine's own G-code, before the first layer, anything goes.
     assert!(read(&format!("M999\nG28\n{}", body("G1 X2 Y2"))).is_ok());
+    // Supports, as Bambu Studio names them, read as the supports' roles.
+    for (name, role) in [("Support", Role::SUPPORT), ("Support interface", Role::SUPPORT_INTERFACE)] {
+        let program = read(&body(&format!("; FEATURE: {name}\n; LINE_WIDTH: 0.42\nG1 X2 E0.1"))).unwrap();
+        let beads: Vec<Role> =
+            program.layers.iter().flat_map(|l| &l.moves).filter_map(|m| m.bead).map(|b| b.role).collect();
+        assert_eq!(beads, [role], "{name}");
+    }
 }
 
 #[test]

@@ -89,8 +89,10 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         bridge: empty.clone(),
         bridge_on_sparse: empty.clone(),
         sparse: empty,
-        support: None,
+        below: None,
         above: Vec::new(),
+        supports: Vec::new(),
+        support_interface: Vec::new(),
     };
     let c = regions(&Regions { layers: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.
@@ -190,10 +192,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
     }
     assert!(t > 0.0);
     // The legend: every label value named, `-1` the moves that lay no plastic.
-    assert!(
-        c.comments
-            .iter()
-            .any(|l| l.starts_with("role: 0 outer wall, ") && l.ends_with(", 9 sparse infill, -1 none"))
-    );
+    assert!(c.comments.iter().any(|l| l.starts_with("role: 0 outer wall, ")
+        && l.ends_with(", 9 sparse infill, 10 support, 11 support interface, -1 none")));
     assert!(c.comments.contains(&"move: 0 extrude, 1 travel, 2 wipe, 3 lift".to_string()));
 }

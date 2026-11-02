@@ -8,7 +8,7 @@
 //! - mesh: the bodies' triangles, with their `body`;
 //! - sections: each layer's section, triangulated, with its `layer`;
 //! - regions: the walls' centre lines as segments, and the areas they enclose (top surface,
-//!   solid, bridges, sparse) triangulated, with `layer` and `role`;
+//!   solid, bridges, sparse) and the supports' triangulated, with `layer` and `role`;
 //! - paths: each bead's centre line, with `layer`, `role`, `width`, `height` and `bead`, its
 //!   place in the printing order;
 //! - program: the nozzle's moves, each point with its time `t`, each segment with `layer`,
@@ -141,6 +141,11 @@ pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
         let solid = if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID };
         let roles = [Role::TOP_SURFACE, solid, Role::BRIDGE, Role::INTERNAL_BRIDGE, Role::SPARSE];
         for (area, role) in layer.infill().into_iter().zip(roles) {
+            fill(&mut c, area, z, [index, role_code(role)])?;
+        }
+        for (area, role) in
+            [(&layer.supports, Role::SUPPORT), (&layer.support_interface, Role::SUPPORT_INTERFACE)]
+        {
             fill(&mut c, area, z, [index, role_code(role)])?;
         }
     }

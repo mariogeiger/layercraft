@@ -27,6 +27,8 @@ fn params() -> MotionParams {
         solid: role(100.0),
         sparse: role(100.0),
         bridge: role(50.0),
+        support: role(100.0),
+        support_interface: role(80.0),
         overhang_speeds: Vec::new(),
         first_layer_wall_speed: 50.0,
         first_layer_infill_speed: 50.0,

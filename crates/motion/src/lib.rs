@@ -178,6 +178,9 @@ pub struct MotionParams {
     pub solid: RoleMotion,
     pub sparse: RoleMotion,
     pub bridge: RoleMotion,
+    /// The supports' lines, and their top, the interface the part rests on.
+    pub support: RoleMotion,
+    pub support_interface: RoleMotion,
     /// The speeds of a wall bead hanging over air, by the fraction of its width that hangs:
     /// with `n + 1` speeds, speed `k` for the band `(k/n, (k+1)/n]`, the last for a bead wholly
     /// over air. A speed of 0 keeps the wall's own; none, no slowing.

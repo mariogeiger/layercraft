@@ -14,16 +14,16 @@
 //! travels least; the lines of a `monotone` role are laid in sweeps instead, each against the
 //! one before. The first layer's beads are all `first_layer_width` wide. Each wall segment
 //! carries the share of its bead that hangs past the layer below (`overhang`). Each island is
-//! traced by the parameters at its centre.
+//! traced by the parameters at its centre. The supports are islands of their own (`supports`).
 
 mod dense;
 mod gap;
-mod hatch;
 mod link;
 mod order;
 mod overhang;
 mod role;
 mod rolls;
+mod supports;
 mod tour;
 
 pub use role::{Face, Kind, Role, Support};
@@ -118,6 +118,18 @@ pub struct PathParams {
     /// What the sparse lines draw, at the same spacing.
     #[serde(default)]
     pub sparse_pattern: SparsePattern,
+    /// How the supports' areas are filled; none where the regions hold no supports.
+    #[serde(default)]
+    pub support: Option<SupportLines>,
+}
+
+/// The supports' lines: `width` wide, the body's `gap` and the interface's `interface_gap` apart
+/// past their tiling spacing, in mm; a gap of 0 lays them solid.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupportLines {
+    pub width: f64,
+    pub gap: f64,
+    pub interface_gap: f64,
 }
 
 /// What a sparse area's lines draw.
@@ -165,6 +177,13 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     if !p.infill_angle.is_finite() {
         return Err(PathError::BadParams("infill angle must be finite".into()));
     }
+    if let Some(s) = &p.support
+        && !(s.width.is_finite()
+            && (0.05..=3.0).contains(&s.width)
+            && [s.gap, s.interface_gap].iter().all(|g| g.is_finite() && (0.0..=50.0).contains(g)))
+    {
+        return Err(PathError::BadParams("support lines 0.05 to 3 mm wide, 0 to 50 mm apart".into()));
+    }
     if let SparsePattern::Rolls { tilt, ply } = p.sparse_pattern
         && !(tilt.is_finite() && tilt.abs() < 90.0 && ply.is_finite() && ply >= 0.0)
     {
@@ -204,6 +223,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         for (params, part) in parts {
             islands.extend(order::islands(&part, &params, lines.as_deref())?);
         }
+        islands.extend(supports::islands(layer, field.base())?);
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
         layers.push(PathLayer {

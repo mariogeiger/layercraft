@@ -2,10 +2,10 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Polyline, Region, area, bead_area, polyline_length};
+use layercraft_geom::{Polyline, Region, area, bead_area, bead_spacing, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
-use layercraft_region::{RegionParams, split};
+use layercraft_region::{RegionParams, SupportParams, split};
 use layercraft_section::{Layering, section};
 use layercraft_tune::Field;
 
@@ -23,6 +23,7 @@ const PATHS: PathParams = PathParams {
     monotone: Vec::new(),
     resolution: 0.0,
     sparse_pattern: SparsePattern::Lines,
+    support: None,
 };
 
 fn region_params() -> RegionParams {
@@ -38,6 +39,7 @@ fn region_params() -> RegionParams {
         sparse_gap: 4.0,
         bridge_width: 0.4,
         min_sparse_area: 0.0,
+        supports: None,
     }
 }
 
@@ -635,5 +637,66 @@ fn rolls_turn_and_move_with_their_part() {
     );
     for p in there[1].iter().flat_map(|b| b.points.iter()) {
         assert!(distance_to(back(*p), &lines) < 1e-3, "{p:?} off the lines turned back");
+    }
+}
+
+#[test]
+fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
+    // A T: a 4 mm stem under a 20 mm bar, which overhangs 8 mm on either side from z = 10.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("stem", [-2.0, -2.0, 0.0], [2.0, 2.0, 10.0]),
+            cuboid("bar", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0]),
+        ],
+    };
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
+    let supports = SupportParams {
+        max_bridge: None,
+        top_gap: 0.2,
+        bottom_gap: 0.2,
+        xy_gap: 0.35,
+        interface_layers: 2,
+        on_plate_only: false,
+    };
+    let regions =
+        split(&sections, &Field::uniform(RegionParams { supports: Some(supports), ..region_params() }))
+            .unwrap();
+    // Without support lines set, the supports cannot be laid.
+    assert!(trace(&regions, &Field::uniform(PATHS)).is_err());
+    let lines = SupportLines { width: 0.4, gap: 2.0, interface_gap: 0.4 };
+    let paths = trace(&regions, &Field::uniform(PathParams { support: Some(lines), ..PATHS })).unwrap();
+    let roles = |k: usize, role: Role| paths.layers[k].paths.iter().filter(|p| p.role == role).count();
+    // The body stands in lines at the layer's angle, the same on every layer; the two layers
+    // under the bar are its interface, across them; the layer under the bar is the gap.
+    let pitch = bead_spacing(0.4, 0.2) + 2.0;
+    for k in [1, 20, 46] {
+        assert!(roles(k, Role::SUPPORT) > 0 && roles(k, Role::SUPPORT_INTERFACE) == 0, "layer {k}");
+        let laid = hatch_segments(&paths.layers[k].paths, Role::SUPPORT, 45.0);
+        let length: f64 = laid.iter().map(|(a, b)| polyline_length(&[*a, *b])).sum();
+        // The lines fill the two 7.65 × 4 mm columns, their beads' sides inside, at their pitch,
+        // to within a line's ends.
+        let area = 2.0 * (7.65 - 0.4) * (4.0 - 0.4);
+        assert!((length * pitch - area).abs() < 0.15 * area, "layer {k}: {length} mm of lines");
+        // Laid either way, in any order: the same lines.
+        let unordered = |mut segments: Vec<([f64; 2], [f64; 2])>| {
+            let mut ends: Vec<[[f64; 2]; 2]> =
+                segments.drain(..).map(|(a, b)| if a < b { [a, b] } else { [b, a] }).collect();
+            ends.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            ends
+        };
+        let stacked = hatch_segments(&paths.layers[20].paths, Role::SUPPORT, 45.0);
+        assert_eq!(unordered(laid), unordered(stacked), "layer {k}");
+    }
+    for k in [47, 48] {
+        assert!(roles(k, Role::SUPPORT) == 0 && roles(k, Role::SUPPORT_INTERFACE) > 0, "layer {k}");
+        assert!(!hatch_segments(&paths.layers[k].paths, Role::SUPPORT_INTERFACE, 135.0).is_empty());
+    }
+    assert_eq!(roles(49, Role::SUPPORT) + roles(49, Role::SUPPORT_INTERFACE), 0);
+    // Every support line stays 0.35 mm off the stem, less its half width.
+    for layer in &paths.layers {
+        for path in layer.paths.iter().filter(|p| p.role.kind == Kind::Support) {
+            assert!(path.points.iter().all(|p| p[0].abs() >= 2.35 + 0.2 - 1e-3 || p[1].abs() > 2.0));
+        }
     }
 }

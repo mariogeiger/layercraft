@@ -20,6 +20,7 @@ const PARAMS: RegionParams = RegionParams {
     sparse_gap: 2.0,
     bridge_width: 0.4,
     min_sparse_area: 15.0,
+    supports: None,
 };
 
 /// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
@@ -265,4 +266,106 @@ fn each_shape_splits_by_the_parameters_at_its_centre() {
         layer.sparse.iter().filter(|s| (lo..hi).contains(&s[0][0][0])).map(|s| area(&vec![s.clone()])).sum()
     };
     assert!(sparse_x(15.0, 40.0) > sparse_x(-1.0, 15.0) + 1.0);
+}
+
+/// Supports as the X2D's process sets them: 0.2 mm under and over the part, 0.35 mm beside it,
+/// two interface layers, any bridge held at both ends left to bridge.
+const SUPPORTS: SupportParams = SupportParams {
+    max_bridge: None,
+    top_gap: 0.2,
+    bottom_gap: 0.2,
+    xy_gap: 0.35,
+    interface_layers: 2,
+    on_plate_only: false,
+};
+
+fn supported(bodies: Vec<layercraft_mesh::Body>, supports: SupportParams) -> Regions {
+    let sections =
+        section(&Mesh { bodies }, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
+            .unwrap();
+    split(&sections, &Field::uniform(RegionParams { supports: Some(supports), ..PARAMS })).unwrap()
+}
+
+/// A T: a 4 × 4 mm stem 10 mm high under a 20 × 4 mm bar, 7.8 mm past the stem's side and the
+/// half bead its edge may reach on either side.
+fn tee() -> Vec<layercraft_mesh::Body> {
+    vec![
+        cuboid("stem", [-2.0, -2.0, 0.0], [2.0, 2.0, 10.0]),
+        cuboid("bar", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0]),
+    ]
+}
+
+#[test]
+fn a_cantilever_stands_on_supports_down_to_the_plate() {
+    let regions = supported(tee(), SUPPORTS);
+    // The bar's first layer is 50 (z 10 to 10.2); the columns' top is layer 48, 0.2 mm under it.
+    // Each column runs from the stem's side, 0.35 mm off, to the bar's end: 7.65 × 4 mm, twice.
+    let column = 2.0 * 7.65 * 4.0;
+    for layer in &regions.layers {
+        let (body, interface) = (area(&layer.supports), area(&layer.support_interface));
+        let (want_body, want_interface) = match layer.index {
+            0..=46 => (column, 0.0),
+            47 | 48 => (0.0, column),
+            _ => (0.0, 0.0),
+        };
+        assert!(close(body, want_body), "layer {}: body {body}", layer.index);
+        assert!(close(interface, want_interface), "layer {}: interface {interface}", layer.index);
+        // Never inside the part, nor nearer it than the gap.
+        let part = offset(&regions.layers[layer.index].walls[0], 0.2 + 0.35 - 1e-3).unwrap();
+        let both = union(&layer.supports, &layer.support_interface).unwrap();
+        assert!(area(&intersection(&both, &part).unwrap()) < 1e-6, "layer {}", layer.index);
+    }
+}
+
+#[test]
+fn a_bridge_held_at_both_ends_needs_no_support_unless_it_is_too_long() {
+    // A 20 mm deck on two 4 mm pillars: its strands span the 12 mm between them, 12.4 mm long
+    // with a bead's reach onto each pillar.
+    let deck = || {
+        vec![
+            cuboid("left", [-10.0, -2.0, 0.0], [-6.0, 2.0, 10.0]),
+            cuboid("right", [6.0, -2.0, 0.0], [10.0, 2.0, 10.0]),
+            cuboid("deck", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0]),
+        ]
+    };
+    let total =
+        |r: &Regions| r.layers.iter().map(|l| area(&l.supports) + area(&l.support_interface)).sum::<f64>();
+    assert_eq!(total(&supported(deck(), SUPPORTS)), 0.0);
+    assert_eq!(total(&supported(deck(), SupportParams { max_bridge: Some(20.0), ..SUPPORTS })), 0.0);
+    // Shorter than the span, or 0, which holds every strand up: the 11.3 × 4 mm between the
+    // pillars, 0.35 mm off each, stands on columns, layers 0 to 48.
+    for max_bridge in [Some(10.0), Some(0.0)] {
+        let regions = supported(deck(), SupportParams { max_bridge, ..SUPPORTS });
+        let layer = &regions.layers[20];
+        assert!(close(area(&layer.supports), 11.3 * 4.0), "{max_bridge:?}: {}", area(&layer.supports));
+    }
+}
+
+#[test]
+fn a_column_stands_on_the_part_or_only_on_the_plate() {
+    // The T over a 20 × 4 mm base 2 mm high: the columns stand on the base, 0.2 mm above it.
+    let mut bodies = tee();
+    bodies[0] = cuboid("stem", [-2.0, -2.0, 2.0], [2.0, 2.0, 10.0]);
+    bodies.push(cuboid("base", [-10.0, -2.0, 0.0], [10.0, 2.0, 2.0]));
+    let regions = supported(bodies.clone(), SUPPORTS);
+    // Layers 0 to 9 are the base, 10 the gap over it; the columns start on layer 11.
+    assert!(regions.layers[..11].iter().all(|l| l.supports.is_empty()));
+    assert!(close(area(&regions.layers[11].supports), 2.0 * 7.65 * 4.0));
+    let plate_only = supported(bodies, SupportParams { on_plate_only: true, ..SUPPORTS });
+    assert!(plate_only.layers.iter().all(|l| l.supports.is_empty() && l.support_interface.is_empty()));
+}
+
+#[test]
+fn bad_support_params_are_refused() {
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])] };
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
+    for bad in [
+        SupportParams { top_gap: f64::NAN, ..SUPPORTS },
+        SupportParams { xy_gap: -1.0, ..SUPPORTS },
+        SupportParams { max_bridge: Some(f64::INFINITY), ..SUPPORTS },
+        SupportParams { interface_layers: 1_000, ..SUPPORTS },
+    ] {
+        assert!(split(&sections, &Field::uniform(RegionParams { supports: Some(bad), ..PARAMS })).is_err());
+    }
 }

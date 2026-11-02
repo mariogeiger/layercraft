@@ -56,6 +56,8 @@ pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
         p.top_surface.speed,
         p.solid.speed,
         p.sparse.speed,
+        p.support.speed,
+        p.support_interface.speed,
         p.first_layer_wall_speed,
         p.first_layer_infill_speed,
         p.travel.speed,
@@ -65,6 +67,8 @@ pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
         p.solid.flow,
         p.sparse.flow,
         p.bridge.flow,
+        p.support.flow,
+        p.support_interface.flow,
         p.retract_speed,
         p.deretract_speed,
         p.slow_down_min_speed,
@@ -95,7 +99,7 @@ pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
 }
 
 /// The speed, acceleration and flow a role takes: a strand bridges; otherwise a wall shows
-/// outside or not, a dense line on top or not.
+/// outside or not, a dense line on top or not, a support's line is its top or not.
 fn role_motion(p: &MotionParams, role: Role) -> &RoleMotion {
     use layercraft_path::Face;
     match role.kind {
@@ -105,6 +109,8 @@ fn role_motion(p: &MotionParams, role: Role) -> &RoleMotion {
         Kind::Solid if role.face == Face::Top => &p.top_surface,
         Kind::Solid => &p.solid,
         Kind::Sparse => &p.sparse,
+        Kind::Support if role.face == Face::Top => &p.support_interface,
+        Kind::Support => &p.support,
     }
 }
 

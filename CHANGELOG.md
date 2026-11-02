@@ -2,6 +2,35 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.11.0
+
+### Added
+
+- Supports. `--supports on` (on `compile` and `view`; by default the process's `enable_support`)
+  stands columns under what nothing else holds up. A bead stands while its centre line lies over
+  the layer below, so a layer may reach half a bead past it; beyond, it hangs. Strands are laid
+  across each hanging piece the way a bridge's are: one held at both ends and no longer than
+  the process's `max_bridge_length` bridges (any length with `bridge_no_support`; with the X2D's
+  0, every strand is held up), and the band of any other is a roof. Under each roof a column
+  stands down to the plate, or onto the part (only the plate with
+  `support_on_build_plate_only`), its top `support_top_z_distance` under the roof, which is
+  where a strand round from the nozzle, hanging below its layer, lands; `support_bottom_z_distance`
+  over the part it stands on, and `support_object_xy_distance` beside it. The columns' top
+  `support_interface_top_layers` are their interface. The body is laid in lines
+  `support_base_pattern_spacing` apart past their tiling spacing, the same way on every layer,
+  so each stands on the one below; the interface across them, `support_interface_spacing` apart;
+  both `support_line_width` wide, at `support_speed` and `support_interface_speed`. The regions
+  stage holds them as `supports` and `support_interface`, the paths and program stages as the
+  roles `support` and `support interface` (codes 10 and 11 in the pictures), and the G-code
+  names them as Bambu Studio does. Over the supports the part's first layer is laid as a bridge.
+- `compare` and `merge` read Bambu Studio's G-code with supports: its `Support` and
+  `Support interface` lines were unknown features.
+
+### Changed
+
+- The regions stage's `support`, the section of the layer below, is now `below`; files with
+  `support` still read.
+
 ## 0.10.0
 
 ### Added
