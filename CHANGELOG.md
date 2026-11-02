@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.11.2
+
+### Fixed
+
+- Supports came off only by force: their top stood where the roof's first strands, laid as a
+  bridge and hanging a strand's width below the nozzle, land, so the roof was laid hot straight
+  onto the interface. The gap `support_top_z_distance` is now air under the lowest strand: with
+  0.4 mm strands on 0.2 mm layers, the columns end one layer lower.
+
 ## 0.11.1
 
 ### Fixed

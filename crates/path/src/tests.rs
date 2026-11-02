@@ -668,9 +668,10 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
     let paths = trace(&regions, &Field::uniform(PathParams { support: Some(lines), ..PATHS })).unwrap();
     let roles = |k: usize, role: Role| paths.layers[k].paths.iter().filter(|p| p.role == role).count();
     // The body stands in lines at the layer's angle, the same on every layer; the two layers
-    // under the bar are its interface, across them; the layer under the bar is the gap.
+    // above are its interface, across them; the two layers under the bar are the gap, air under
+    // the bar's first strands, which hang 0.4 mm.
     let pitch = bead_spacing(0.4, 0.2) + 2.0;
-    for k in [1, 20, 46] {
+    for k in [1, 20, 45] {
         assert!(roles(k, Role::SUPPORT) > 0 && roles(k, Role::SUPPORT_INTERFACE) == 0, "layer {k}");
         let laid = hatch_segments(&paths.layers[k].paths, Role::SUPPORT, 45.0);
         let length: f64 = laid.iter().map(|(a, b)| polyline_length(&[*a, *b])).sum();
@@ -688,11 +689,13 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
         let stacked = hatch_segments(&paths.layers[20].paths, Role::SUPPORT, 45.0);
         assert_eq!(unordered(laid), unordered(stacked), "layer {k}");
     }
-    for k in [47, 48] {
+    for k in [46, 47] {
         assert!(roles(k, Role::SUPPORT) == 0 && roles(k, Role::SUPPORT_INTERFACE) > 0, "layer {k}");
         assert!(!hatch_segments(&paths.layers[k].paths, Role::SUPPORT_INTERFACE, 135.0).is_empty());
     }
-    assert_eq!(roles(49, Role::SUPPORT) + roles(49, Role::SUPPORT_INTERFACE), 0);
+    for k in [48, 49] {
+        assert_eq!(roles(k, Role::SUPPORT) + roles(k, Role::SUPPORT_INTERFACE), 0, "layer {k}");
+    }
     // Every support line stays 0.35 mm off the stem, less its half width.
     for layer in &paths.layers {
         for path in layer.paths.iter().filter(|p| p.role.kind == Kind::Support) {

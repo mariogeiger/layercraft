@@ -1,4 +1,5 @@
 //! Supports: what holds up the parts of a layer the layer below does not, and comes off after.
+//! The gap over a column is air under the roof's lowest strand, so the roof does not weld to it.
 //!
 //! A bead stands while its centre line lies over the layer below; its outer side may then reach
 //! half its width `w` past it, the slope a bead's own shape allows. Beyond `w/2` past the
@@ -97,7 +98,9 @@ pub fn supports(
         if r.is_empty() {
             continue;
         }
-        let underside = top - h - p.top_gap;
+        // The roof's first layer is laid as a bridge: round strands a strand wide, hanging from
+        // the nozzle at the layer's top, reach below the layer when they are thicker than it.
+        let underside = top - h.max(strand) - p.top_gap;
         let start = (0..i).rev().find(|&j| tops.get(j).is_some_and(|&t| t <= underside + EPS));
         if let Some(slot) = start.and_then(|j| starting.get_mut(j)) {
             *slot = union(slot, &r)?;
