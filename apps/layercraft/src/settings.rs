@@ -30,6 +30,93 @@ pub struct Settings {
     pub filament_density: f64,
     pub printer_model: String,
     pub nozzle_diameter: f64,
+    /// The scope's per-filament settings: one item each, the filament's.
+    pub filament_keys: Vec<String>,
+}
+
+/// The least a filament change flushes, in mm³: our own rule, not the maker's, that clears the
+/// melt the old filament leaves in the hot end.
+const FLUSH_BASE: f64 = 250.0;
+
+/// What a change flushes more for each unit of relative luminance the new colour gains over the
+/// old, in mm³: a dark trace shows most in a light colour, so blue to yellow flushes the most.
+const FLUSH_PER_LUMINANCE: f64 = 600.0;
+
+/// The relative luminance of `#RRGGBB` (sRGB, ITU-R BT.709), 0 for black to 1 for white; a
+/// colour that does not read as one counts as mid grey.
+fn luminance(colour: &str) -> f64 {
+    let hex = colour.trim().trim_start_matches('#');
+    let channel = |i: usize| {
+        let c = hex
+            .get(i..i + 2)
+            .and_then(|h| u8::from_str_radix(h, 16).ok())
+            .map_or(0.5, |v| f64::from(v) / 255.0);
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+}
+
+impl Settings {
+    /// The template scope for `colours.len()` filaments of this one kind, by material: each
+    /// per-filament setting repeated, the colours listed, every filament fed to the first
+    /// extruder.
+    pub fn scope_for(&self, colours: &[String]) -> Scope {
+        let n = colours.len().max(1);
+        let mut scope = self.scope.clone();
+        for key in self
+            .filament_keys
+            .iter()
+            .map(String::as_str)
+            .chain(["flush_volumetric_speeds", "flush_temperatures"])
+        {
+            if let Some(Value::List(items)) = scope.get(key)
+                && items.len() == 1
+            {
+                let repeated = Value::List(vec![items.first().cloned().unwrap_or(Value::Num(0.0)); n]);
+                scope.insert(key.to_string(), repeated);
+            }
+        }
+        // A printer setting a filament may override is, for the templates, one per filament:
+        // the filament's own, or the first extruder's where it says `nil`.
+        for own in &self.filament_keys {
+            let Some(key) = own.strip_prefix("filament_") else { continue };
+            let (Some(Value::List(printer)), Some(Value::List(filament))) = (scope.get(key), scope.get(own))
+            else {
+                continue;
+            };
+            let value = match filament.first() {
+                Some(Value::Str(nil)) if nil == "nil" => printer.first().cloned(),
+                Some(v) => Some(v.clone()),
+                None => printer.first().cloned(),
+            };
+            if let Some(value) = value {
+                scope.insert(key.to_string(), Value::List(vec![value; n]));
+            }
+        }
+        scope.insert(
+            "filament_colour".into(),
+            Value::List(colours.iter().map(|c| Value::Str(c.clone())).collect()),
+        );
+        scope.insert("filament_map".into(), Value::List(vec![Value::Num(1.0); n]));
+        scope
+    }
+
+    /// The filament each change flushes, in mm, from one material (row) to another (column).
+    pub fn flush(&self, colours: &[String]) -> Vec<Vec<f64>> {
+        let area = layercraft_motion::disc_area(self.motion.filament_diameter);
+        colours
+            .iter()
+            .map(|from| {
+                colours
+                    .iter()
+                    .map(|to| {
+                        let gain = (luminance(to) - luminance(from)).max(0.0);
+                        if from == to { 0.0 } else { (FLUSH_BASE + FLUSH_PER_LUMINANCE * gain) / area }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 fn fraction(m: &Machine, kind: Kind, key: &str) -> Result<f64, MachineError> {
@@ -393,6 +480,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 filament_start: template(Filament, "filament_start_gcode"),
                 prologue: printer.prologue.clone(),
                 filament_end: template(Filament, "filament_end_gcode"),
+                change_filament: template(M, "change_filament_gcode"),
             },
         },
         envelope: Envelope {
@@ -418,6 +506,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         filament_density: m.number(Filament, "filament_density")?,
         printer_model: m.text(M, "model_id").unwrap_or_default(),
         nozzle_diameter: nozzle,
+        filament_keys: m.keys(Filament),
         bed_type,
     })
 }

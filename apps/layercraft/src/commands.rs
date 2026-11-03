@@ -8,6 +8,24 @@ use layercraft_machine::Machine;
 use layercraft_machine::import::{BAMBU_STUDIO_PROFILES, Selection, import};
 use std::path::{Path, PathBuf};
 
+/// The colour of a filament the design gives none.
+const GREY: &str = "#808080";
+
+/// Colours given on the command line, comma separated, each `#RRGGBB`.
+fn colours(text: &str) -> Result<Vec<String>, String> {
+    text.split(',')
+        .map(|c| {
+            let c = c.trim();
+            let hex = c.strip_prefix('#').unwrap_or_default();
+            if hex.len() == 6 && hex.chars().all(|h| h.is_ascii_hexdigit()) {
+                Ok(format!("#{}", hex.to_ascii_uppercase()))
+            } else {
+                Err(format!("`{c}` is not a colour #RRGGBB"))
+            }
+        })
+        .collect()
+}
+
 #[derive(Parser)]
 #[command(name = "layercraft", version, about = "Compile a solid down to a print on a Bambu Lab X2D")]
 pub struct Cli {
@@ -37,9 +55,10 @@ enum Command {
         /// Where the part's centre goes on the plate, as X,Y in mm (default: the plate's centre).
         #[arg(long)]
         at: Option<String>,
-        /// The filament's colour for the printer's screen.
-        #[arg(long, default_value = "#808080")]
-        colour: String,
+        /// The filaments' colours for the printer's screen, one per material, comma separated
+        /// (default: the 3MF's colours, grey without).
+        #[arg(long)]
+        colour: Option<String>,
         /// The plate type, such as "Textured PEI Plate" (default: the printer's).
         #[arg(long)]
         bed: Option<String>,
@@ -263,7 +282,14 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 .and_then(|p| p.file_stem())
                 .map(|s| s.to_string_lossy().trim_end_matches(".gcode").to_string())
                 .unwrap_or_else(|| "part".into());
-            let delivery = Delivery { setup: &s, colour, object_name, gcode: gcode.as_deref(), out: &out };
+            let colours = match colour {
+                Some(text) => colours(&text)?,
+                None if !output.materials.is_empty() => {
+                    output.materials.iter().map(|m| m.colour.clone().unwrap_or_else(|| GREY.into())).collect()
+                }
+                None => vec![GREY.into()],
+            };
+            let delivery = Delivery { setup: &s, colours, object_name, gcode: gcode.as_deref(), out: &out };
             println!("{}", deliver(output.program, &delivery)?);
             Ok(())
         }
@@ -274,11 +300,20 @@ pub fn run(cli: Cli) -> Result<(), String> {
             let choices = Choices { flat: false, infill: Infill::Lines, supports: None };
             let s = setup(&machine, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
+            if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {
+                return Err("not supported yet: merging programs printed in several materials".into());
+            }
             let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
             let limits = &s.settings.motion.limits;
             pipeline::emit(Stage::Program, &merged, || layercraft_view::program(&merged, limits), &emit)?;
             let object_name = "plate".into();
-            let delivery = Delivery { setup: &s, colour, object_name, gcode: gcode.as_deref(), out: &out };
+            let delivery = Delivery {
+                setup: &s,
+                colours: colours(&colour)?,
+                object_name,
+                gcode: gcode.as_deref(),
+                out: &out,
+            };
             println!("{}", deliver(merged, &delivery)?);
             Ok(())
         }

@@ -45,6 +45,7 @@ fn a_cantilever_compiles_onto_supports_and_passes_verify() {
             cuboid("stem", [126.0, 126.0, 0.0], [130.0, 130.0, 10.0]),
             cuboid("bar", [118.0, 126.0, 10.0], [138.0, 130.0, 12.0]),
         ],
+        ..Mesh::default()
     };
     let dir = std::env::temp_dir().join(format!("layercraft-supports-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

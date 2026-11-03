@@ -13,11 +13,11 @@
 //! a bead's width onto the support at its ends; over sparse infill, only where it is wide enough
 //! to span a gap between the sparse lines (`sparse_gap`) — a narrower band rests on them. Over
 //! shallower air, as an engraving a layer deep, a strand would lie on the floor and fill it.
-//! A piece of sparse infill smaller than `min_sparse_area` is solid instead. The first layer's
-//! beads are wider, to grip the bed. With `one_wall_on_top`, inner walls stay only where the
-//! layer above covers them, and the top surface reaches the outer wall. A layer keeps the sections
-//! below and above it, and the columns of `supports` that hold up what nothing else holds; each
-//! shape is split by the parameters at its centre (`layercraft_tune`).
+//! Sparse infill under `min_sparse_area` is solid; first-layer beads are wider, to grip the bed.
+//! With `one_wall_on_top`, inner walls stay only under the layer above, the top reaching the
+//! outer wall. A layer keeps the sections below and above it and its `supports`; each shape is
+//! split by the parameters at its centre (`layercraft_tune`), each material in a pass of its own,
+//! walled alone, judged against the whole layer, the first the material the last layer ended in.
 
 use layercraft_geom::{
     GeomError, Region, Relief, Shape, bead_spacing, difference, intersection, offset, opening, signed_area,
@@ -82,6 +82,9 @@ pub struct RegionLayer {
     pub index: usize,
     pub top: f64,
     pub height: f64,
+    /// The material this pass of the layer prints.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub material: usize,
     /// How far the layer's top lies above `top` over the plate, as its section gives it.
     #[serde(default, skip_serializing_if = "Relief::is_zero")]
     pub warp: Relief,
@@ -140,10 +143,14 @@ impl RegionLayer {
     }
 }
 
-/// The output of the region stage.
+/// The output of the region stage: the layers' passes, in printing order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Regions {
     pub layers: Vec<RegionLayer>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Why the region stage failed.
@@ -261,19 +268,34 @@ fn covered(sections: &[Region], from: isize, count: usize) -> Result<Region, Geo
     Ok(acc.unwrap_or_default())
 }
 
-/// The shapes of a layer grouped by the parameters at their centres, in order of first use.
-type Parts = Vec<(Rc<RegionParams>, Region)>;
+/// The shapes of a layer grouped by their material and the parameters at their centres, in
+/// order of first use.
+type Parts = Vec<(Rc<RegionParams>, usize, Region)>;
 
-fn parts(region: &Region, z: f64, field: &Field<RegionParams>) -> Result<Parts, RegionError> {
+fn parts(layer: &Layer, field: &Field<RegionParams>) -> Result<Parts, RegionError> {
     let mut parts: Parts = Vec::new();
-    for shape in region {
-        let p = field.at(centre(shape.first().into_iter().flatten(), z), check)?;
-        match parts.iter_mut().find(|(q, _)| Rc::ptr_eq(q, &p)) {
-            Some((_, shapes)) => shapes.push(shape.clone()),
-            None => parts.push((p, vec![shape.clone()])),
+    for (material, region) in layer.by_material().into_iter().enumerate() {
+        for shape in region {
+            let p = field.at(centre(shape.first().into_iter().flatten(), layer.top), check)?;
+            match parts.iter_mut().find(|(q, m, _)| Rc::ptr_eq(q, &p) && *m == material) {
+                Some((_, _, shapes)) => shapes.push(shape.clone()),
+                None => parts.push((p, material, vec![shape.clone()])),
+            }
         }
     }
     Ok(parts)
+}
+
+/// The materials of a layer's parts, starting with `first` when it has it, then in order.
+fn pass_order(parts: &Parts, first: Option<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = parts.iter().map(|(_, m, _)| *m).collect();
+    order.sort_unstable();
+    order.dedup();
+    if let Some(at) = first.and_then(|f| order.iter().position(|&m| m == f)) {
+        let head = order.remove(at);
+        order.insert(0, head);
+    }
+    order
 }
 
 fn widths(p: &RegionParams, layer: usize) -> Widths {
@@ -292,19 +314,19 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
     let mut layer_parts: Vec<Parts> = Vec::with_capacity(sections.layers.len());
     for layer in &sections.layers {
         let mut shrunk = Vec::new();
-        for (p, shapes) in parts(&layer.region, layer.top, field)? {
+        for (p, material, shapes) in parts(layer, field)? {
             let shrink = if layer.index == 0 { p.first_layer_shrink } else { 0.0 };
-            shrunk.push((p, offset(&shapes, -shrink)?));
+            shrunk.push((p, material, offset(&shapes, -shrink)?));
         }
         layer_parts.push(shrunk);
     }
     let regions: Vec<Region> =
-        layer_parts.iter().map(|parts| parts.iter().flat_map(|(_, r)| r.clone()).collect()).collect();
+        layer_parts.iter().map(|parts| parts.iter().flat_map(|(_, _, r)| r.clone()).collect()).collect();
     // What lies inside each part's walls.
     let mut inside_parts: Vec<Vec<Region>> = Vec::with_capacity(regions.len());
     for (i, (layer, parts)) in sections.layers.iter().zip(&layer_parts).enumerate() {
         let mut insides = Vec::with_capacity(parts.len());
-        for (p, region) in parts {
+        for (p, _, region) in parts {
             insides.push(offset(region, -walls_depth(widths(p, i), p.walls, layer.height))?);
         }
         inside_parts.push(insides);
@@ -312,12 +334,15 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
     let insides: Vec<Region> =
         inside_parts.iter().map(|parts| parts.iter().flatten().cloned().collect()).collect();
     let heights: Vec<f64> = sections.layers.iter().map(|l| l.height).collect();
-    let mut layers: Vec<RegionLayer> = Vec::with_capacity(regions.len());
+    // Each layer whole, all its materials together, as the next layer sees it; and its passes.
+    let mut whole: Vec<RegionLayer> = Vec::with_capacity(regions.len());
+    let mut passes: Vec<Vec<RegionLayer>> = Vec::with_capacity(regions.len());
+    let mut last_material = None;
     for (i, ((layer, parts), part_insides)) in
         sections.layers.iter().zip(&layer_parts).zip(&inside_parts).enumerate()
     {
         let next = covered(&regions, i as isize + 1, 1)?;
-        let mut out = RegionLayer {
+        let blank = RegionLayer {
             index: layer.index,
             top: layer.top,
             height: layer.height,
@@ -326,48 +351,73 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             above: next.clone(),
             ..RegionLayer::default()
         };
-        // Parts whose inner walls run everywhere, when others' stop under the air.
-        let mut walls_everywhere: Region = Vec::new();
-        let mut walls_clipped = false;
-        for ((p, region), inside) in parts.iter().zip(part_insides) {
+        let order = pass_order(parts, last_material);
+        last_material = order.last().copied().or(last_material);
+        let mut out = blank.clone();
+        // Each pass, with its parts whose inner walls run everywhere and whether others' stop
+        // under the air.
+        let mut own: Vec<(RegionLayer, Region, bool)> = order
+            .iter()
+            .map(|&material| (RegionLayer { material, ..blank.clone() }, Vec::new(), false))
+            .collect();
+        for ((p, material, region), inside) in parts.iter().zip(part_insides) {
             let around = Around {
                 next: &next,
                 regions: &regions,
                 heights: &heights,
                 insides: &insides,
-                below: layers.last(),
+                below: whole.last(),
             };
-            let mut piece = split_part(i, layer, p, region, inside, &around)?;
-            for (k, wall) in std::mem::take(&mut piece.walls).into_iter().enumerate() {
-                match out.walls.get_mut(k) {
-                    Some(walls) => walls.extend(wall),
-                    None => out.walls.push(wall),
+            let piece = split_part(i, layer, p, region, inside, &around)?;
+            let Some((pass, everywhere, clipped)) = own.iter_mut().find(|(l, _, _)| l.material == *material)
+            else {
+                continue;
+            };
+            for target in [&mut out, pass] {
+                for (w, wall) in piece.walls.iter().enumerate() {
+                    match target.walls.get_mut(w) {
+                        Some(walls) => walls.extend(wall.iter().cloned()),
+                        None => target.walls.push(wall.clone()),
+                    }
+                }
+                for (all, part) in target.infill_mut().into_iter().zip(piece.infill()) {
+                    all.extend(part.iter().cloned());
                 }
             }
             match piece.inner_walls_within {
-                Some(_) => walls_clipped = true,
-                None => walls_everywhere.extend(region.iter().cloned()),
-            }
-            for (all, part) in out.infill_mut().into_iter().zip(piece.infill_mut()) {
-                all.append(part);
+                Some(_) => *clipped = true,
+                None => everywhere.extend(region.iter().cloned()),
             }
         }
-        if walls_clipped {
-            out.inner_walls_within =
-                Some(if walls_everywhere.is_empty() { next } else { union(&next, &walls_everywhere)? });
+        let mut own: Vec<RegionLayer> = own
+            .into_iter()
+            .map(|(mut pass, everywhere, clipped)| {
+                if clipped {
+                    pass.inner_walls_within =
+                        Some(if everywhere.is_empty() { next.clone() } else { union(&next, &everywhere)? });
+                }
+                Ok(pass)
+            })
+            .collect::<Result<_, RegionError>>()?;
+        if own.is_empty() {
+            own.push(blank);
         }
-        layers.push(out);
+        whole.push(out);
+        passes.push(own);
     }
-    // Over the whole plate, by the base parameters: a column may stand under several parts.
+    // Over the whole plate, by the base parameters: a column may stand under several parts. A
+    // layer's columns go with its first pass.
     let p = field.base();
     if let Some(s) = &p.supports {
         let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
         let found = supports::supports(&regions, &tops, &heights, s, p.outer_wall_width, p.bridge_width)?;
-        for (layer, (body, interface)) in layers.iter_mut().zip(found) {
-            (layer.supports, layer.support_interface) = (body, interface);
+        for (own, (body, interface)) in passes.iter_mut().zip(found) {
+            if let Some(first) = own.first_mut() {
+                (first.supports, first.support_interface) = (body, interface);
+            }
         }
     }
-    Ok(Regions { layers })
+    Ok(Regions { layers: passes.into_iter().flatten().collect() })
 }
 
 /// The layers around the one being split, whole.

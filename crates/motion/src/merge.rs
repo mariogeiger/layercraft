@@ -58,6 +58,7 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
             warp: Default::default(),
             free: false,
             moves: Vec::new(),
+            material: 0,
         };
         below = height;
         while !left.is_empty() {

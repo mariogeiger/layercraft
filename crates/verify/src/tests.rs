@@ -35,7 +35,15 @@ fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
 
 fn program(moves: Vec<Move>) -> Program {
     Program {
-        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+        layers: vec![Layer {
+            index: 0,
+            z: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            free: false,
+            moves,
+            material: 0,
+        }],
     }
 }
 
@@ -85,6 +93,7 @@ fn each_danger_is_caught() {
         warp: Default::default(),
         free: false,
         moves: safe(),
+        material: 0,
     });
     assert!(!verify(&Program { layers }, &ENVELOPE).is_empty());
 }
@@ -97,7 +106,7 @@ fn bead_layer(index: usize, z: f64, dy: f64) -> Layer {
         mv([20.0, 10.0 + dy, z], 0.3, 50.0),
         mv([20.0, 10.0 + dy, z + 0.4], 0.0, 20.0),
     ];
-    Layer { index, z, height: 0.2, warp: Default::default(), free: false, moves }
+    Layer { index, z, height: 0.2, warp: Default::default(), free: false, moves, material: 0 }
 }
 
 #[test]
@@ -168,7 +177,7 @@ fn ramped(z: impl Fn(f64) -> f64) -> Program {
     moves.push(mv([20.0, 10.4, z(20.0)], 0.0, 20.0));
     moves.extend((10..20).rev().map(|x| mv([x as f64, 10.4, z(x as f64)], 0.03, 50.0)));
     moves.push(mv([10.0, 10.4, 1.2], 0.0, 20.0));
-    let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, free: false, moves };
+    let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, free: false, moves, material: 0 };
     Program { layers: vec![bead_layer(0, 0.2, 0.0), bent] }
 }
 
@@ -201,6 +210,7 @@ fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
             warp: Default::default(),
             free: false,
             moves: [bead, down].concat(),
+            material: 0,
         });
     } else {
         layers.push(Layer {
@@ -210,6 +220,7 @@ fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
             warp: Default::default(),
             free: false,
             moves: bead,
+            material: 0,
         });
         layers.push(Layer {
             index: 2,
@@ -218,6 +229,7 @@ fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
             warp: Default::default(),
             free: false,
             moves: down,
+            material: 0,
         });
     }
     Program { layers }
@@ -251,7 +263,15 @@ fn strand_across(z_start: f64, z: f64) -> Program {
         mv([15.0, 5.0, z_start], 0.0, 20.0),
         mv([15.0, 15.0, z], 0.3, 50.0),
     ];
-    let free = Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), free: true, moves: strand };
+    let free = Layer {
+        index: 1,
+        z: 0.4,
+        height: 0.2,
+        warp: Default::default(),
+        free: true,
+        moves: strand,
+        material: 0,
+    };
     Program { layers: vec![bead_layer(0, 0.2, 0.0), free] }
 }
 

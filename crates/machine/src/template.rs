@@ -1,6 +1,7 @@
 //! The macro language of the printer's G-code templates.
 //!
-//! Text is copied as is, except `[name]`, replaced by a variable's value, and `{…}` blocks: an
+//! Text is copied as is, except `[name]`, replaced by a variable's value — of a list, the item of
+//! the extruder in use, `current_extruder` (the first when not given) — and `{…}` blocks: an
 //! expression, printed, or `{if c}`, `{elsif c}`, `{else}`, `{endif}`. Expressions have
 //! numbers, strings, variables, indexing `v[i]`, `ceil`/`floor`/`min`/`max`/`abs`/`int`, the
 //! arithmetic, comparison and logical operators, and `c ? a : b`. Evaluation is lazy and
@@ -95,6 +96,13 @@ pub fn expand(template: &str, scope: &Scope) -> Result<String, TemplateError> {
         match piece {
             Piece::Text(t) if printing(&frames) => out.push_str(&t),
             Piece::Var(v) if printing(&frames) => match scope.get(&v) {
+                Some(Value::List(items)) => {
+                    let extruder = scope.get("current_extruder").and_then(Value::number).unwrap_or(0.0);
+                    match items.get(extruder.max(0.0) as usize) {
+                        Some(item) => out.push_str(&item.render()),
+                        None => return err(format!("`{v}` has no item for extruder {extruder}")),
+                    }
+                }
                 Some(value) => out.push_str(&value.render()),
                 None => return err(format!("variable `{v}` is not provided")),
             },

@@ -30,7 +30,7 @@ fn close(a: f64, b: f64) -> bool {
 }
 
 fn cube_regions() -> Regions {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     split(&sections, &Field::uniform(PARAMS.clone())).unwrap()
@@ -87,7 +87,7 @@ fn shells_and_sparse_partition_the_inside() {
 
 #[test]
 fn bad_params_are_refused() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     assert!(
@@ -105,6 +105,7 @@ fn an_overhang_over_air_is_a_bridge() {
             cuboid("right", [8.0, 0.0, 0.0], [10.0, 10.0, 1.0]),
             cuboid("slab", [0.0, 0.0, 1.0], [10.0, 10.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -131,6 +132,7 @@ fn a_strand_hangs_only_over_air_deeper_than_it_reaches() {
                 cuboid("right", [7.0, 4.5, 0.0], [10.0, 5.5, depth]),
                 cuboid("plate", [0.0, 0.0, depth], [10.0, 10.0, 2.0]),
             ],
+            ..Mesh::default()
         };
         let sections =
             section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
@@ -154,6 +156,7 @@ fn an_inner_wall_runs_only_where_its_bead_passes() {
             cuboid("neck", [10.0, 4.2, 0.0], [14.0, 5.8, 2.0]),
             cuboid("right", [14.0, 0.0, 0.0], [24.0, 10.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -170,7 +173,7 @@ fn an_inner_wall_runs_only_where_its_bead_passes() {
 
 #[test]
 fn the_first_layer_is_wider_and_the_top_has_one_wall() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let params = RegionParams { first_layer_width: 0.5, one_wall_on_top: true, ..PARAMS };
@@ -194,6 +197,7 @@ fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
             cuboid("base", [0.0; 3], [20.0, 20.0, 2.0]),
             cuboid("step", [0.0, 0.0, 2.0], [20.0, 1.9, 3.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -209,7 +213,7 @@ fn small_pieces_of_sparse_are_solid() {
     // Inside its walls a 5 × 5 mm post leaves 3.3² = 11 mm² (under 15: solid); a 10 × 10 mm
     // post leaves 69 mm² (sparse).
     for (side, sparse) in [(5.0, false), (10.0, true)] {
-        let mesh = Mesh { bodies: vec![cuboid("post", [0.0; 3], [side, side, 3.0])] };
+        let mesh = Mesh { bodies: vec![cuboid("post", [0.0; 3], [side, side, 3.0])], ..Mesh::default() };
         let sections =
             section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
                 .unwrap();
@@ -229,6 +233,7 @@ fn a_thin_rib_stands_on_solid() {
             cuboid("block", [0.0; 3], [20.0, 20.0, 3.0]),
             cuboid("rib", [2.0, 9.5, 3.0], [18.0, 10.5, 4.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -250,6 +255,7 @@ fn each_shape_splits_by_the_parameters_at_its_centre() {
             cuboid("a", [0.0; 3], [10.0, 10.0, 2.0]),
             cuboid("b", [20.0, 0.0, 0.0], [30.0, 10.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -280,9 +286,11 @@ const SUPPORTS: SupportParams = SupportParams {
 };
 
 fn supported(bodies: Vec<layercraft_mesh::Body>, supports: SupportParams) -> Regions {
-    let sections =
-        section(&Mesh { bodies }, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
-            .unwrap();
+    let sections = section(
+        &Mesh { bodies, ..Mesh::default() },
+        &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None },
+    )
+    .unwrap();
     split(&sections, &Field::uniform(RegionParams { supports: Some(supports), ..PARAMS })).unwrap()
 }
 
@@ -359,7 +367,7 @@ fn a_column_stands_on_the_part_or_only_on_the_plate() {
 
 #[test]
 fn bad_support_params_are_refused() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     for bad in [
@@ -370,4 +378,40 @@ fn bad_support_params_are_refused() {
     ] {
         assert!(split(&sections, &Field::uniform(RegionParams { supports: Some(bad), ..PARAMS })).is_err());
     }
+}
+
+#[test]
+fn materials_split_into_passes_judged_against_the_whole_layer() {
+    // A 10 × 10 × 2 base and a 4 × 4 inlay of another material from z = 1 to 3, set into it.
+    let base = cuboid("base", [0.0; 3], [10.0, 10.0, 2.0]);
+    let inlay = layercraft_mesh::Body { material: 1, ..cuboid("inlay", [2.0, 2.0, 1.0], [6.0, 6.0, 3.0]) };
+    let colour = |c: &str| layercraft_mesh::Material { colour: Some(c.into()) };
+    let mesh = Mesh { bodies: vec![base, inlay], materials: vec![colour("#0A2989"), colour("#FEC600")] };
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
+    let passes =
+        |i: usize| regions.layers.iter().filter(|l| l.index == i).map(|l| l.material).collect::<Vec<_>>();
+    // Below the inlay, one pass; beside it, both, each layer starting with the material the one
+    // before ended with; above the base, the inlay alone.
+    assert_eq!(passes(4), [0]);
+    assert_eq!(passes(5), [0, 1]);
+    assert_eq!(passes(6), [1, 0]);
+    assert_eq!(passes(7), [0, 1]);
+    assert_eq!(passes(10), [1]);
+    // The base's layer under the inlay is covered by it: no top surface there.
+    let under = regions.layers.iter().find(|l| l.index == 4).unwrap();
+    assert!(area(&under.top_surface) < 1e-9);
+    // Each pass has walls of its own: the inlay's outer wall runs 0.2 mm inside its 4 mm square,
+    // the base's around both its outline and the inlay's hole.
+    let side = regions.layers.iter().find(|l| l.index == 6 && l.material == 0).unwrap();
+    let inlay = regions.layers.iter().find(|l| l.index == 6 && l.material == 1).unwrap();
+    assert!(close(area(&inlay.walls[0]), 3.6 * 3.6));
+    assert!(close(area(&side.walls[0]), 9.6 * 9.6 - 4.4 * 4.4));
+    // The top of the base, beside the inlay, is a top surface; the inlay's top layers are too.
+    let last_base = regions.layers.iter().find(|l| l.index == 9 && l.material == 0).unwrap();
+    assert!(area(&last_base.top_surface) > 30.0);
+    let last = regions.layers.last().unwrap();
+    assert_eq!((last.index, last.material), (14, 1));
+    assert!(area(&last.top_surface) > 0.0);
 }

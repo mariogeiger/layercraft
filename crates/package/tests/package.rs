@@ -11,13 +11,13 @@ fn plate() -> Plate {
         gcode: "; HEADER_BLOCK_START\nG1 X1\n".into(),
         printer_model: "N6".into(),
         nozzle_diameter: 0.4,
-        filament: Filament {
+        filaments: vec![Filament {
             kind: "PLA".into(),
             colour: "#0A2989".into(),
             code: "GFA00".into(),
             used_m: 0.33,
             used_g: 0.99,
-        },
+        }],
         seconds: 118.0,
         bed_type: "textured_plate".into(),
         settings_json: "{}".into(),
@@ -62,4 +62,45 @@ fn the_plate_summary_describes_extruders_nozzle_and_client() {
     assert_eq!(md5, expected);
     assert!(entry(&mut zip, "Metadata/filament_sequence.json").contains("plate_1"));
     assert!(entry(&mut zip, "Metadata/plate_1.json").contains(r#""bbox_all":[118.0, 118.0, 138.0, 138.0]"#));
+}
+
+#[test]
+fn several_filaments_are_listed_in_order_on_the_one_extruder() {
+    let filament = |colour: &str, used_m: f64| Filament {
+        kind: "PLA".into(),
+        colour: colour.into(),
+        code: "GFA00".into(),
+        used_m,
+        used_g: used_m * 3.0,
+    };
+    let three = Plate {
+        filaments: vec![filament("#0A2989", 28.0), filament("#9D432C", 0.6), filament("#FEC600", 1.0)],
+        ..plate()
+    };
+    let mut bytes = Cursor::new(Vec::new());
+    write_package(&three, &mut bytes).unwrap();
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes.into_inner())).unwrap();
+    let info = entry(&mut zip, "Metadata/slice_info.config");
+    for needed in [
+        r#"key="filament_maps" value="1 1 1""#,
+        r##"<filament id="1" tray_info_idx="GFA00" type="PLA" color="#0A2989" used_m="28.00""##,
+        r##"<filament id="2" tray_info_idx="GFA00" type="PLA" color="#9D432C" used_m="0.60""##,
+        r##"<filament id="3" tray_info_idx="GFA00" type="PLA" color="#FEC600" used_m="1.00""##,
+        r#"filament_list="0 1 2""#,
+        r#"key="weight" value="88.80""#,
+    ] {
+        assert!(info.contains(needed), "slice_info lacks {needed}:\n{info}");
+    }
+    let json = entry(&mut zip, "Metadata/plate_1.json");
+    assert!(
+        json.contains(r##""filament_colors":["#0A2989","#9D432C","#FEC600"],"filament_ids":[0,1,2]"##),
+        "{json}"
+    );
+    assert!(
+        entry(&mut zip, "Metadata/model_settings.config").contains(r#"key="filament_maps" value="1 1 1""#)
+    );
+    assert!(entry(&mut zip, "Metadata/filament_sequence.json").contains(r#""sequence":[1,2,3]"#));
+    // No filament, no plate.
+    let none = Plate { filaments: Vec::new(), ..plate() };
+    assert!(write_package(&none, &mut Cursor::new(Vec::new())).is_err());
 }

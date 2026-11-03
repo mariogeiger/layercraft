@@ -11,7 +11,7 @@
 use md5::{Digest, Md5};
 use std::io::{Seek, Write};
 
-/// The one filament of the plate.
+/// A filament of the plate, in the order the program numbers them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Filament {
     /// Such as `PLA`.
@@ -39,7 +39,8 @@ pub struct Plate {
     /// The printer's model code (`N6` for the X2D).
     pub printer_model: String,
     pub nozzle_diameter: f64,
-    pub filament: Filament,
+    /// The filaments, by material: at least one.
+    pub filaments: Vec<Filament>,
     pub seconds: f64,
     /// Such as `textured_plate`.
     pub bed_type: String,
@@ -90,9 +91,31 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+/// `1 1 …`: every filament fed to the first extruder, as the one nozzle prints them all.
+fn filament_maps(plate: &Plate) -> String {
+    vec!["1"; plate.filaments.len().max(1)].join(" ")
+}
+
 fn slice_info(plate: &Plate) -> String {
-    let f = &plate.filament;
     let d = plate.nozzle_diameter;
+    let filaments: String = plate
+        .filaments
+        .iter()
+        .enumerate()
+        .map(|(k, f)| {
+            format!(
+                r#"
+    <filament id="{id}" tray_info_idx="{code}" type="{kind}" color="{colour}" used_m="{used_m:.2}" used_g="{used_g:.2}" group_id="0" nozzle_diameter="{d:.2}" volume_type="Standard" used_for_object="true" used_for_support="false" total_load_time="0.00" total_unload_time="0.00"/>"#,
+                id = k + 1,
+                code = escape(&f.code),
+                kind = escape(&f.kind),
+                colour = escape(&f.colour),
+                used_m = f.used_m,
+                used_g = f.used_g,
+            )
+        })
+        .collect();
+    let list: Vec<String> = (0..plate.filaments.len().max(1)).map(|k| k.to_string()).collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <config>
@@ -117,13 +140,12 @@ fn slice_info(plate: &Plate) -> String {
     <metadata key="support_material_on_wipe_tower" value="false"/>
     <metadata key="enable_filament_dynamic_map" value="false"/>
     <metadata key="has_filament_switcher" value="false"/>
-    <metadata key="filament_maps" value="1"/>
+    <metadata key="filament_maps" value="{maps}"/>
     <metadata key="limit_filament_maps" value="0"/>
-    <object identify_id="1" name="{object}" skipped="false" />
-    <filament id="1" tray_info_idx="{code}" type="{kind}" color="{colour}" used_m="{used_m:.2}" used_g="{used_g:.2}" group_id="0" nozzle_diameter="{d:.2}" volume_type="Standard" used_for_object="true" used_for_support="false" total_load_time="0.00" total_unload_time="0.00"/>
+    <object identify_id="1" name="{object}" skipped="false" />{filaments}
     <nozzle id="0" extruder_id="1" nozzle_diameter="{d}" volume_type="Standard"/>
     <layer_filament_lists>
-      <layer_filament_list filament_list="0" layer_ranges="0 {last_layer}" />
+      <layer_filament_list filament_list="{list}" layer_ranges="0 {last_layer}" />
     </layer_filament_lists>
   </plate>
 </config>
@@ -134,12 +156,9 @@ fn slice_info(plate: &Plate) -> String {
         last_layer = plate.layers.saturating_sub(1),
         model = escape(&plate.printer_model),
         seconds = plate.seconds.round() as u64,
-        weight = f.used_g,
-        code = escape(&f.code),
-        kind = escape(&f.kind),
-        colour = escape(&f.colour),
-        used_m = f.used_m,
-        used_g = f.used_g,
+        weight = plate.filaments.iter().map(|f| f.used_g).sum::<f64>(),
+        maps = filament_maps(plate),
+        list = list.join(" "),
     )
 }
 
@@ -150,11 +169,12 @@ fn plate_json(plate: &Plate) -> String {
     let area = (hi[0] - lo[0]).max(0.0) * (hi[1] - lo[1]).max(0.0);
     let json = |s: &str| s.replace(['\\', '"'], "");
     format!(
-        r#"{{"bbox_all":{bbox:?},"bbox_objects":[{{"area":{area},"bbox":{bbox:?},"id":1,"layer_height":{},"name":"{}"}}],"bed_type":"{}","filament_colors":["{}"],"filament_ids":[0],"first_extruder":1,"first_layer_time":{},"is_seq_print":false,"nozzle_diameter":{},"version":2}}"#,
+        r#"{{"bbox_all":{bbox:?},"bbox_objects":[{{"area":{area},"bbox":{bbox:?},"id":1,"layer_height":{},"name":"{}"}}],"bed_type":"{}","filament_colors":[{}],"filament_ids":[{}],"first_extruder":1,"first_layer_time":{},"is_seq_print":false,"nozzle_diameter":{},"version":2}}"#,
         plate.layer_height,
         json(&plate.object_name),
         json(&plate.bed_type),
-        json(&plate.filament.colour),
+        plate.filaments.iter().map(|f| format!("\"{}\"", json(&f.colour))).collect::<Vec<_>>().join(","),
+        (0..plate.filaments.len().max(1)).map(|k| k.to_string()).collect::<Vec<_>>().join(","),
         plate.first_layer_seconds,
         plate.nozzle_diameter
     )
@@ -162,6 +182,11 @@ fn plate_json(plate: &Plate) -> String {
 
 /// Writes the package.
 pub fn write_package<W: Write + Seek>(plate: &Plate, writer: W) -> Result<(), PackageError> {
+    if plate.filaments.is_empty() {
+        return Err(PackageError("a plate needs a filament".into()));
+    }
+    let n = plate.filaments.len();
+    let numbers = |from: usize| (from..from + n).map(|k| k.to_string()).collect::<Vec<_>>().join(",");
     let digest = Md5::digest(plate.gcode.as_bytes());
     let md5: String = digest.iter().map(|b| format!("{b:02X}")).collect();
     let thumbnail = png(&plate.thumbnail)?;
@@ -190,29 +215,29 @@ pub fn write_package<W: Write + Seek>(plate: &Plate, writer: W) -> Result<(), Pa
 </model>"#, escape(&plate.generator)).into_bytes()),
         ("Metadata/plate_1.gcode", plate.gcode.as_bytes().to_vec()),
         ("Metadata/plate_1.gcode.md5", md5.into_bytes()),
-        ("Metadata/model_settings.config", br#"<?xml version="1.0" encoding="UTF-8"?>
+        ("Metadata/model_settings.config", r#"<?xml version="1.0" encoding="UTF-8"?>
 <config>
   <plate>
     <metadata key="plater_id" value="1"/>
     <metadata key="plater_name" value=""/>
     <metadata key="locked" value="false"/>
     <metadata key="filament_map_mode" value="Manual"/>
-    <metadata key="filament_maps" value="1"/>
-    <metadata key="filament_volume_maps" value="0"/>
+    <metadata key="filament_maps" value="{maps}"/>
+    <metadata key="filament_volume_maps" value="{volume_maps}"/>
     <metadata key="gcode_file" value="Metadata/plate_1.gcode"/>
     <metadata key="thumbnail_file" value="Metadata/plate_1.png"/>
     <metadata key="thumbnail_no_light_file" value="Metadata/plate_no_light_1.png"/>
     <metadata key="top_file" value="Metadata/top_1.png"/>
     <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>
   </plate>
-</config>"#.to_vec()),
+</config>"#.replace("{maps}", &filament_maps(plate)).replace("{volume_maps}", &vec!["0"; n].join(" ")).into_bytes()),
         ("Metadata/_rels/model_settings.config.rels", br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/Metadata/plate_1.gcode" Id="rel-1" Type="http://schemas.bambulab.com/package/2021/gcode"/>
 </Relationships>"#.to_vec()),
         ("Metadata/slice_info.config", slice_info(plate).into_bytes()),
         ("Metadata/plate_1.json", plate_json(plate).into_bytes()),
-        ("Metadata/filament_sequence.json", br#"{"plate_1":{"nozzle_sequence":[0],"optimal_assignment":[0],"sequence":[1]}}"#.to_vec()),
+        ("Metadata/filament_sequence.json", format!(r#"{{"plate_1":{{"nozzle_sequence":[0],"optimal_assignment":[{}],"sequence":[{}]}}}}"#, vec!["0"; n].join(","), numbers(1)).into_bytes()),
         ("Metadata/project_settings.config", plate.settings_json.as_bytes().to_vec()),
         ("Metadata/plate_1.png", thumbnail.clone()),
         ("Metadata/plate_no_light_1.png", thumbnail.clone()),

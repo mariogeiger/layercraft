@@ -74,8 +74,16 @@ fn line(len: f64) -> Paths {
                 height: 0.2,
                 warp: Default::default(),
                 paths: vec![path.clone()],
+                material: 0,
             },
-            PathLayer { index: 1, top: 0.4, height: 0.2, warp: Default::default(), paths: vec![path] },
+            PathLayer {
+                index: 1,
+                top: 0.4,
+                height: 0.2,
+                warp: Default::default(),
+                paths: vec![path],
+                material: 0,
+            },
         ],
     }
 }
@@ -96,7 +104,15 @@ fn all(program: &Program) -> Vec<&Move> {
 /// A program of one layer at 0.2 mm of these moves.
 fn single(moves: Vec<Move>) -> Program {
     Program {
-        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+        layers: vec![Layer {
+            index: 0,
+            z: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            free: false,
+            moves,
+            material: 0,
+        }],
     }
 }
 
@@ -125,7 +141,7 @@ fn filament_follows_the_bead_volume() {
     assert!((summary.filament_mm - expected).abs() < 1e-12);
     // The plastic pushed: the flow ratio's share of the bead's volume.
     assert!((summary.volume_per_layer[0] - 0.98 * area * 10.0).abs() < 1e-12);
-    let frame = frame(&program, &p.templates, &scope()).unwrap();
+    let frame = frame(&program, &p.templates, &scope(), &[]).unwrap();
     assert!(frame.start.starts_with("; start me\n"), "{}", frame.start);
     assert_eq!(frame.layers.len(), 2);
 }
@@ -204,7 +220,7 @@ fn missing_template_variables_are_named() {
     let mut p = params();
     p.templates.end = "M140 S[bed]".into();
     let program = compiled(&line(1.0), &p);
-    let err = frame(&program, &p.templates, &scope()).unwrap_err().to_string();
+    let err = frame(&program, &p.templates, &scope(), &[]).unwrap_err().to_string();
     assert!(err.contains("bed"), "{err}");
 }
 
@@ -253,6 +269,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
                 height: 0.2,
                 warp: Default::default(),
                 paths: vec![square.clone()],
+                material: 0,
             },
             PathLayer {
                 index: 1,
@@ -260,6 +277,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
                 height: 0.2,
                 warp: Default::default(),
                 paths: vec![square, bridge],
+                material: 0,
             },
         ],
     };
@@ -299,6 +317,7 @@ fn a_move_inside_the_part_neither_retracts_nor_lifts() {
             height: 0.2,
             warp: Default::default(),
             paths: vec![line(10.0, false), line(15.0, true)],
+            material: 0,
         }],
     };
     let program = compiled(&paths, &params());
@@ -332,6 +351,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
             height: 0.2,
             warp: Default::default(),
             paths: vec![line(10.0), line(30.0)],
+            material: 0,
         }],
     };
     let mut p = params();
@@ -470,6 +490,7 @@ fn programs_merge_layer_by_layer_nearest_first_with_their_filament_as_they_left_
                 warp: Default::default(),
                 free: false,
                 moves: piece(x, pull, i == 0),
+                material: 0,
             })
             .collect(),
     };
@@ -536,6 +557,7 @@ fn a_wall_slows_by_how_far_it_hangs() {
             height: 0.2,
             warp: Default::default(),
             paths: vec![wall],
+            material: 0,
         }],
     };
     let mut p = params();
@@ -573,6 +595,7 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
             height: 0.2,
             warp: Default::default(),
             paths: vec![line(Role::OUTER_WALL, 10.0), line(Role::SPARSE, 10.5)],
+            material: 0,
         }],
     };
     for (goal, expected) in [(0.5, [100.0, 25.0]), (1.5, [20.0, 10.0])] {
@@ -615,6 +638,7 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
             height: 0.2,
             warp: Default::default(),
             paths: vec![wall],
+            material: 0,
         }],
     };
     let traced = compiled(&paths, &params());
@@ -682,8 +706,15 @@ fn bead(points: Vec<[f64; 2]>) -> Path {
 fn bent(paths: Vec<Path>) -> Paths {
     Paths {
         layers: vec![
-            PathLayer { index: 0, top: 0.2, height: 0.2, warp: Default::default(), paths: Vec::new() },
-            PathLayer { index: 1, top: 0.4, height: 0.2, warp: ramp(), paths },
+            PathLayer {
+                index: 0,
+                top: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                paths: Vec::new(),
+                material: 0,
+            },
+            PathLayer { index: 1, top: 0.4, height: 0.2, warp: ramp(), paths, material: 0 },
         ],
     }
 }
@@ -858,4 +889,57 @@ fn what_the_face_takes_off_a_layer_the_next_gets_back() {
     assert!(planed[1] < 0.95 * bare[1] && planed[2] > 1.05 * bare[2], "{planed:?} against {bare:?}");
     let total = |v: &[f64]| v.iter().sum::<f64>();
     assert!((total(&planed) - total(&bare)).abs() < 1e-12 * total(&bare), "{planed:?} against {bare:?}");
+}
+
+#[test]
+fn passes_of_other_materials_change_the_filament_between_them() {
+    let p = params();
+    let templates = Templates {
+        layer_change: "; layer [layer_num]\n".into(),
+        filament_end: "; end [current_filament_id]\n".into(),
+        change_filament: "; change [current_filament_id] to [next_filament_id], [flush_length] mm, count [toolchange_count]\n".into(),
+        filament_start: "; start [current_filament_id]\n".into(),
+        ..Templates::default()
+    };
+    let bead = |x: f64| Move {
+        e: 0.1,
+        bead: Some(Bead { role: Role::OUTER_WALL, width: 0.4 }),
+        ..travel([x, 0.0, 0.2], 50.0)
+    };
+    let pass = |index: usize, material: usize, x: f64| Layer {
+        index,
+        z: 0.2 * (index + 1) as f64,
+        height: 0.2,
+        warp: Default::default(),
+        free: false,
+        moves: vec![travel([x - 1.0, 0.0, 0.2], 100.0), bead(x)],
+        material,
+    };
+    // Layer 1 in two materials, layer 2 in the second only.
+    let program =
+        Program { layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 3.0), pass(2, 1, 4.0)] };
+    let flush = vec![vec![0.0, 120.0], vec![90.0, 0.0]];
+    let f = frame(&program, &templates, &scope(), &flush).unwrap();
+    assert_eq!(
+        f.layers,
+        [
+            "; layer 0\n",
+            "; layer 1\n",
+            "; end 0\n; change 0 to 1, 120 mm, count 2\n; start 1\n",
+            "; layer 2\n"
+        ]
+    );
+    // The machine's end sees the filament last loaded.
+    let end = Templates { filament_end: "; end [current_filament_id]\n".into(), ..templates.clone() };
+    assert!(frame(&program, &end, &scope(), &flush).unwrap().end.contains("; end 1"));
+    // Without a change in the machine's templates, or without a flush for the pair, no frame.
+    let bare = Templates { change_filament: String::new(), ..templates.clone() };
+    assert!(frame(&program, &bare, &scope(), &flush).is_err());
+    assert!(frame(&program, &templates, &scope(), &[]).is_err());
+    // Layers are counted once, filament by material, the first layer over its passes.
+    let s = finish(&program, &p.limits, p.filament_diameter);
+    assert_eq!(s.layers, 3);
+    assert_eq!(s.filament_mm_by_material, [0.2, 0.2]);
+    assert!((s.filament_mm - 0.4).abs() < 1e-12);
+    assert_eq!(s.volume_per_layer.len(), 3);
 }

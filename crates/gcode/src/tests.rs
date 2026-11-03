@@ -47,7 +47,15 @@ fn moves_name_only_what_changes() {
         mv(Some([15.0, 25.0, 0.2]), None, 0.1, 50.0, Some(wall)),
     ];
     let program = Program {
-        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+        layers: vec![Layer {
+            index: 0,
+            z: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            free: false,
+            moves,
+            material: 0,
+        }],
     };
     let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
     assert_eq!(
@@ -96,8 +104,24 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
     ];
     let program = Program {
         layers: vec![
-            Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves: first },
-            Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), free: false, moves: second },
+            Layer {
+                index: 0,
+                z: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                free: false,
+                moves: first,
+                material: 0,
+            },
+            Layer {
+                index: 1,
+                z: 0.4,
+                height: 0.2,
+                warp: Default::default(),
+                free: false,
+                moves: second,
+                material: 0,
+            },
         ],
     };
     let text = write(&program, &frame(&["; one", "; two"]), &LIMITS, &header());
@@ -165,8 +189,24 @@ fn what_is_written_reads_back() {
     ];
     let program = Program {
         layers: vec![
-            Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves: first },
-            Layer { index: 1, z: 0.4, height: 0.2, warp: Default::default(), free: false, moves: second },
+            Layer {
+                index: 0,
+                z: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                free: false,
+                moves: first,
+                material: 0,
+            },
+            Layer {
+                index: 1,
+                z: 0.4,
+                height: 0.2,
+                warp: Default::default(),
+                free: false,
+                moves: second,
+                material: 0,
+            },
         ],
     };
     let text = write(&program, &frame(&["M991 S0 P0", "M991 S0 P1"]), &LIMITS, &header());
@@ -228,7 +268,15 @@ fn filament_too_fine_to_write_is_carried_not_lost() {
             .map(|i| mv(Some([10.0 + 0.0003 * i as f64, 20.0, 0.2]), None, 0.0000123, 50.0, Some(wall))),
     );
     let program = Program {
-        layers: vec![Layer { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves }],
+        layers: vec![Layer {
+            index: 0,
+            z: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            free: false,
+            moves,
+            material: 0,
+        }],
     };
     let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
     let written: f64 = text
@@ -298,4 +346,31 @@ G1 Z50
     assert_eq!(second.moves[0].to, Some([10.0, 20.0, 0.6]));
     assert!(program.layers.iter().flat_map(|l| &l.moves).all(|m| m.to.is_none_or(|p| p[2] < 9.0)));
     assert_eq!(second.moves.last().and_then(|m| m.bead).map(|b| b.role), Some(Role::OUTER_WALL));
+}
+
+#[test]
+fn a_layer_in_several_passes_is_announced_once_and_its_filaments_listed() {
+    let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
+    let pass = |index: usize, material: usize, e: f64| Layer {
+        index,
+        z: 0.2 * (index + 1) as f64,
+        height: 0.2,
+        warp: Default::default(),
+        free: false,
+        moves: vec![
+            mv(Some([10.0, 10.0, 0.2]), None, 0.0, 300.0, None),
+            mv(Some([20.0, 10.0, 0.2]), None, e, 50.0, Some(wall)),
+        ],
+        material,
+    };
+    let program = Program { layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 0.5)] };
+    let text = write(&program, &frame(&["; layer 0", "; layer 1", "; change to 1"]), &LIMITS, &header());
+    assert_eq!(text.matches("; CHANGE_LAYER").count(), 2);
+    let body = body(&text);
+    let at = |line: &str| body.iter().position(|l| *l == line).unwrap();
+    assert!(at("; layer 1") < at("; change to 1"));
+    assert!(text.contains("; total filament length [mm] : 3,0.5\n"), "{text}");
+    assert!(text.contains("; filament: 1,2\n"));
+    assert!(text.contains("; filament_density: 1.26,1.26\n"));
+    assert!(text.contains("; total layer number: 2\n"));
 }

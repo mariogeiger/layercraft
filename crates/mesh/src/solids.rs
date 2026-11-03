@@ -27,7 +27,7 @@ pub fn prism(name: &str, outline: &[[f64; 2]], z0: f64, z1: f64) -> Body {
         triangles.push([bottom, b, a]);
         triangles.push([top, c, d]);
     }
-    Body { name: name.to_string(), vertices, triangles }
+    Body { name: name.to_string(), vertices, triangles, material: 0 }
 }
 
 fn centroid(outline: &[[f64; 2]]) -> (f64, f64) {
@@ -80,5 +80,5 @@ pub fn height_field(name: &str, lo: [f64; 2], hi: [f64; 2], n: usize, top: impl 
         triangles.push([down(i, j), down(ni, nj), up(ni, nj)]);
         triangles.push([down(i, j), up(ni, nj), up(i, j)]);
     }
-    Body { name: name.to_string(), vertices, triangles }
+    Body { name: name.to_string(), vertices, triangles, material: 0 }
 }

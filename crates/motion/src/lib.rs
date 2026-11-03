@@ -95,6 +95,10 @@ pub struct Layer {
     pub index: usize,
     pub z: f64,
     pub height: f64,
+    /// The material this pass of the layer prints: a layer printed in several materials is
+    /// several passes, one after the other, with the filament changed between them.
+    #[serde(default, skip_serializing_if = "is_first")]
+    pub material: usize,
     /// How far the layer's top, where its beads lie, rises above `z` over the plate: zero where
     /// it is flat.
     #[serde(default, skip_serializing_if = "Relief::is_zero")]
@@ -113,6 +117,10 @@ impl Layer {
     }
 }
 
+fn is_first(n: &usize) -> bool {
+    *n == 0
+}
+
 /// The output of the motion stage: what it does is read from it (`finish`), never stored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
@@ -126,7 +134,10 @@ pub struct Summary {
     pub max_z: f64,
     /// Filament pushed, in mm.
     pub filament_mm: f64,
-    /// Plastic pushed per layer, in mm³.
+    /// Filament pushed of each material, in mm, by material.
+    #[serde(default)]
+    pub filament_mm_by_material: Vec<f64>,
+    /// Plastic pushed per layer, all its passes, in mm³.
     pub volume_per_layer: Vec<f64>,
     /// Time of the moves, in seconds (the machine's own start and end sequences not counted).
     pub motion_seconds: f64,
@@ -163,6 +174,9 @@ pub struct Templates {
     /// Printed after the filament's start, before the first layer.
     pub prologue: String,
     pub filament_end: String,
+    /// The change from one filament to another, between two passes of different materials.
+    #[serde(default)]
+    pub change_filament: String,
 }
 
 /// How beads become moves.

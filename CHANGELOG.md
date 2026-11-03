@@ -2,6 +2,24 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.12.0
+
+### Added
+
+- Several colours on one plate. Each colour the 3MF gives its objects (base materials or colour
+  groups, parts of one object included) is a material, printed with its own AMS filament: a
+  layer is printed in one pass per material, each walled alone but judged against the whole
+  layer (what another material covers is no top surface), and the X2D's own filament change runs
+  between passes of different materials, a layer starting with the material the one before
+  ended with. The flush grows with how much lighter the new colour is than the old. The plate's
+  summary lists every filament, all fed to the first extruder; `--colour` takes one colour per
+  material, the 3MF's by default. Merging programs in several materials is not supported yet.
+
+### Changed
+
+- A bare `[name]` of a per-extruder list in the machine's templates prints the item of the
+  extruder in use, as the maker's templates expect, not the whole list.
+
 ## 0.11.2
 
 ### Fixed

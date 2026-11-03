@@ -9,7 +9,8 @@
 //! meet at the same point: segments stitch into closed loops with no tolerance. Oriented by the
 //! outward normals, the loops wind once around the solid's inside; the layer region is the set
 //! of positive winding number, which also merges overlapping bodies and absorbs non-manifold
-//! edges.
+//! edges. With several materials, each one's bodies are cut alone as well; where they overlap,
+//! the material listed later is printed, so the materials' sections partition the layer's.
 
 mod cut;
 mod face;
@@ -21,7 +22,7 @@ pub use cut::{Cut, section_loops};
 pub use foliate::Foliation;
 pub use refine::refine;
 
-use layercraft_geom::{GeomError, Region, Relief, winding_region};
+use layercraft_geom::{GeomError, Region, Relief, difference, union, winding_region};
 use layercraft_mesh::Mesh;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +54,16 @@ pub struct Layer {
     pub warp: Relief,
     /// The section of the solid at the layer's middle.
     pub region: Region,
+    /// Each material's part of `region`, by material; empty when there is one material.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<Region>,
+}
+
+impl Layer {
+    /// Each material's part of the layer, by material: the whole layer when there is one.
+    pub fn by_material(&self) -> Vec<&Region> {
+        if self.materials.is_empty() { vec![&self.region] } else { self.materials.iter().collect() }
+    }
 }
 
 /// The output of the section stage.
@@ -136,18 +147,47 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
         }
         _ => (None, 0),
     };
+    // Each material's bodies, alone, when there are several.
+    let materials = mesh.materials.len();
+    let alone = |mesh: &Mesh, k: usize| Mesh {
+        bodies: mesh.bodies.iter().filter(|b| b.material == k).cloned().collect(),
+        materials: Vec::new(),
+    };
+    let apart: Vec<(Mesh, Option<Mesh>)> = if materials > 1 {
+        (0..materials).map(|k| (alone(mesh, k), refined.as_ref().map(|r| alone(r, k)))).collect()
+    } else {
+        Vec::new()
+    };
     let mut layers = Vec::new();
     let (mut open_chains, mut widest_crack) = (0, 0.0_f64);
     for (index, (top, height)) in slabs.into_iter().enumerate() {
         let h = top - height / 2.0;
-        let cut = match (middles.get(index), &refined) {
-            (Some(m), Some(refined)) if !m.is_zero() => section_loops(refined, |v| h + m.at([v[0], v[1]])),
+        let middle = middles.get(index).filter(|m| !m.is_zero());
+        let cut = |mesh: &Mesh, refined: Option<&Mesh>| match (middle, refined) {
+            (Some(m), Some(refined)) => section_loops(refined, |v| h + m.at([v[0], v[1]])),
             _ => section_loops(mesh, |_| h),
         };
-        open_chains += cut.open;
-        widest_crack = widest_crack.max(cut.widest_gap);
+        let whole = cut(mesh, refined.as_ref());
+        open_chains += whole.open;
+        widest_crack = widest_crack.max(whole.widest_gap);
+        // Later materials win where bodies overlap: each keeps what no later one covers.
+        let mut parts: Vec<Region> = Vec::with_capacity(apart.len());
+        let mut later: Region = Vec::new();
+        for (mesh, refined) in apart.iter().rev() {
+            let own = winding_region(&cut(mesh, refined.as_ref()).loops)?;
+            parts.push(difference(&own, &later)?);
+            later = union(&later, &own)?;
+        }
+        parts.reverse();
         let warp = warps.get(index).cloned().unwrap_or_default();
-        layers.push(Layer { index, top, height, warp, region: winding_region(&cut.loops)? });
+        layers.push(Layer {
+            index,
+            top,
+            height,
+            warp,
+            region: winding_region(&whole.loops)?,
+            materials: parts,
+        });
     }
     Ok(Sections { layers, open_chains, widest_crack, unsplit_cells })
 }

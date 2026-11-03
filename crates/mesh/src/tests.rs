@@ -57,7 +57,7 @@ fn analytic_volumes() {
 
 #[test]
 fn round_trip_keeps_geometry() {
-    let mesh = Mesh { bodies: vec![cuboid("a <&> b", [0.0; 3], [1.0, 2.0, 3.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("a <&> b", [0.0; 3], [1.0, 2.0, 3.0])], ..Mesh::default() };
     let back = read_3mf(Cursor::new(package(&model_of(&mesh)))).unwrap();
     assert_eq!(back, mesh);
 }
@@ -71,6 +71,52 @@ fn units_and_transforms_and_components() {
       </resources><build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 2"/></build></model>"#;
     let mesh = read_3mf(Cursor::new(package(model))).unwrap();
     assert_eq!(mesh.bodies[0].vertices, vec![[50.0, 0.0, 20.0], [60.0, 0.0, 20.0], [50.0, 10.0, 20.0]]);
+}
+
+#[test]
+fn colours_become_materials() {
+    // A base and an inlay in one item, as parts; a second item of the base's colour; a part that
+    // names no colour takes its parent's.
+    let tri = r#"<mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+      <triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh>"#;
+    let model = format!(
+        r##"<model><resources>
+      <basematerials id="9"><base name="blue" displaycolor="#0a2989ff"/><base name="brick" displaycolor="#9D432C"/></basematerials>
+      <m:colorgroup id="8"><m:color color="#FEC600"/></m:colorgroup>
+      <object id="1" pid="9" pindex="0">{tri}</object>
+      <object id="2" pid="9" pindex="1">{tri}</object>
+      <object id="3">{tri}</object>
+      <object id="4" pid="8"><components><component objectid="3"/></components></object>
+      <object id="5"><components><component objectid="1"/><component objectid="2"/></components></object>
+      </resources><build><item objectid="5"/><item objectid="1"/><item objectid="4"/></build></model>"##
+    );
+    let mesh = read_3mf(Cursor::new(package(&model))).unwrap();
+    let colours: Vec<_> = mesh.materials.iter().map(|m| m.colour.as_deref().unwrap()).collect();
+    assert_eq!(colours, ["#0A2989", "#9D432C", "#FEC600"]);
+    let materials: Vec<_> = mesh.bodies.iter().map(|b| b.material).collect();
+    assert_eq!(materials, [0, 1, 0, 2]);
+    assert_eq!(mesh.material_count(), 3);
+    // One colour throughout is one material, listed as none.
+    let plain = format!(
+        r##"<model><resources><basematerials id="9"><base displaycolor="#0A2989"/></basematerials>
+      <object id="1" pid="9">{tri}</object></resources><build><item objectid="1"/></build></model>"##
+    );
+    let mesh = read_3mf(Cursor::new(package(&plain))).unwrap();
+    assert!(mesh.materials.is_empty());
+    assert_eq!(mesh.material_count(), 1);
+    // A property index past its group is refused, as is a malformed colour.
+    for bad in [r#"pindex="5""#, r#"pindex="x""#] {
+        let model = format!(
+            r##"<model><resources><basematerials id="9"><base displaycolor="#0A2989"/></basematerials>
+          <object id="1" pid="9" {bad}>{tri}</object></resources><build><item objectid="1"/></build></model>"##
+        );
+        assert!(read_3mf(Cursor::new(package(&model))).is_err());
+    }
+    let model = format!(
+        r##"<model><resources><basematerials id="9"><base displaycolor="blue"/></basematerials>
+      <object id="1" pid="9">{tri}</object></resources><build><item objectid="1"/></build></model>"##
+    );
+    assert!(read_3mf(Cursor::new(package(&model))).is_err());
 }
 
 #[test]

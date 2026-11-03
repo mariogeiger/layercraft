@@ -149,6 +149,11 @@ impl Machine {
     /// Every setting as a template variable, the way the slicer's own configuration holds it:
     /// a per-variant list becomes one value per extruder (machine and process) or per filament
     /// (filament, here one). Filament settings override process ones, which override machine ones.
+    /// The keys a kind of setting holds.
+    pub fn keys(&self, kind: Kind) -> Vec<String> {
+        self.table(kind).keys().cloned().collect()
+    }
+
     pub fn scope(&self) -> Scope {
         let per_extruder = self.extruder_variants();
         let mut scope = Scope::new();

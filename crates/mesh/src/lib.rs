@@ -1,8 +1,9 @@
 //! Triangle meshes in millimetres, read from 3MF (the input of the compiler).
 //!
 //! A `Mesh` is a list of bodies placed in the printer's frame; each body is an indexed triangle
-//! set whose triangles face outward (counterclockwise seen from outside). 3MF files are hostile
-//! input: indices are checked, sizes capped and every coordinate must be finite.
+//! set whose triangles face outward (counterclockwise seen from outside), printed in one of the
+//! mesh's materials. 3MF files are hostile input: indices are checked, sizes capped and every
+//! coordinate must be finite.
 
 pub mod solids;
 mod threemf;
@@ -15,17 +16,35 @@ use serde::{Deserialize, Serialize};
 pub type Vertex = [f64; 3];
 
 /// One solid: an indexed set of outward-facing triangles.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Body {
     pub name: String,
     pub vertices: Vec<Vertex>,
     pub triangles: Vec<[u32; 3]>,
+    /// The material it is printed in: an index into the mesh's materials.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub material: usize,
+}
+
+/// What a body is printed in: a filament, known by the colour the design gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Material {
+    /// `#RRGGBB`, or `None` for a body the design gives no colour.
+    pub colour: Option<String>,
 }
 
 /// The bodies to print, in the printer's frame.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Mesh {
     pub bodies: Vec<Body>,
+    /// The materials, in the order the bodies first use them; empty when every body is printed in
+    /// the one filament given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<Material>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Why a mesh could not be read.
@@ -85,6 +104,11 @@ impl Mesh {
     /// The total enclosed volume.
     pub fn volume(&self) -> f64 {
         self.bodies.iter().map(Body::volume).sum()
+    }
+
+    /// How many materials the bodies are printed in: at least one.
+    pub fn material_count(&self) -> usize {
+        self.materials.len().max(1)
     }
 }
 

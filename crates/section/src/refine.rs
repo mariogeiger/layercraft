@@ -238,7 +238,7 @@ impl Split<'_> {
 pub fn refine(mesh: &Mesh, grid: &Grid, lines: &Lines, heights: [f64; 2]) -> (Mesh, usize) {
     let mut failed = 0;
     let bodies = mesh.bodies.iter().map(|b| refine_body(b, grid, lines, heights, &mut failed)).collect();
-    (Mesh { bodies }, failed)
+    (Mesh { bodies, materials: mesh.materials.clone() }, failed)
 }
 
 fn refine_body(body: &Body, grid: &Grid, lines: &Lines, heights: [f64; 2], failed: &mut usize) -> Body {
@@ -392,5 +392,5 @@ fn refine_body(body: &Body, grid: &Grid, lines: &Lines, heights: [f64; 2], faile
             }
         }
     }
-    Body { name: body.name.clone(), vertices: out.vertices, triangles }
+    Body { name: body.name.clone(), vertices: out.vertices, triangles, material: body.material }
 }

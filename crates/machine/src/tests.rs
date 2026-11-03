@@ -29,6 +29,12 @@ fn variables_expressions_and_branches() {
         expand("G29.1 Z{-0.003} ; keep a[0] and [1 2]", &s).unwrap(),
         "G29.1 Z-0.003 ; keep a[0] and [1 2]"
     );
+    // A list placed bare is the item of the extruder in use: the first, unless named.
+    assert_eq!(expand("M204 S[t]", &s).unwrap(), "M204 S220");
+    let second = scope(&[("t", list(&[220.0, 230.0])), ("current_extruder", Value::Num(1.0))]);
+    assert_eq!(expand("M204 S[t]", &second).unwrap(), "M204 S230");
+    let past = scope(&[("t", list(&[220.0])), ("current_extruder", Value::Num(3.0))]);
+    assert!(expand("M204 S[t]", &past).is_err());
 }
 
 #[test]

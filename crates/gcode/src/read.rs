@@ -115,6 +115,7 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
                         warp: Default::default(),
                         free: false,
                         moves: Vec::new(),
+                        material: 0,
                     },
                     Vec::new(),
                 ));

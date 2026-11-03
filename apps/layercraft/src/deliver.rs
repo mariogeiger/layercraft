@@ -19,8 +19,8 @@ pub struct Setup {
 /// What goes with a program into its file.
 pub struct Delivery<'a> {
     pub setup: &'a Setup,
-    /// The filament's colour for the printer's screen.
-    pub colour: String,
+    /// Each material's filament colour, `#RRGGBB`, by material.
+    pub colours: Vec<String>,
     pub object_name: String,
     /// Also write the G-code as plain text here.
     pub gcode: Option<&'a Path>,
@@ -32,6 +32,12 @@ pub struct Delivery<'a> {
 pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let settings = &d.setup.settings;
     let motion = &settings.motion;
+    let materials = program.layers.iter().map(|l| l.material).max().map_or(1, |m| m + 1);
+    if d.colours.len() < materials {
+        return Err(format!("the program prints {materials} materials; give a colour for each"));
+    }
+    let colours = d.colours.get(..materials).unwrap_or_default();
+    let scope = settings.scope_for(colours);
     let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
     layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
@@ -42,8 +48,8 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         max_speed_z: motion.limits.max_speed_z,
     };
     let slowed = layercraft_motion::limit(&mut program, &limits);
-    let frame =
-        layercraft_motion::frame(&program, &motion.templates, &settings.scope).map_err(|e| e.to_string())?;
+    let frame = layercraft_motion::frame(&program, &motion.templates, &scope, &settings.flush(colours))
+        .map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);
     if let Some(first) = violations.first() {
         for v in &violations {
@@ -55,8 +61,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
             first.reason
         ));
     }
-    let mut keys: Vec<(String, String)> =
-        settings.scope.iter().map(|(k, v)| (k.clone(), v.render())).collect();
+    let mut keys: Vec<(String, String)> = scope.iter().map(|(k, v)| (k.clone(), v.render())).collect();
     keys.sort();
     let header = layercraft_gcode::Header {
         generator: format!("layercraft {}", env!("CARGO_PKG_VERSION")),
@@ -71,8 +76,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let summary = layercraft_motion::finish(&program, &motion.limits, motion.filament_diameter);
     let filament_area = layercraft_motion::disc_area(motion.filament_diameter);
     let grams = summary.filament_mm * filament_area * settings.filament_density / 1000.0;
-    let settings_json: serde_json::Map<String, serde_json::Value> = settings
-        .scope
+    let settings_json: serde_json::Map<String, serde_json::Value> = scope
         .iter()
         .map(|(k, v)| {
             let json = match v {
@@ -93,13 +97,20 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         gcode: text,
         printer_model: settings.printer_model.clone(),
         nozzle_diameter: settings.nozzle_diameter,
-        filament: layercraft_package::Filament {
-            kind: settings.filament_kind.clone(),
-            colour: d.colour.clone(),
-            code: settings.filament_code.clone(),
-            used_m: summary.filament_mm / 1000.0,
-            used_g: grams,
-        },
+        filaments: colours
+            .iter()
+            .enumerate()
+            .map(|(k, colour)| {
+                let mm = summary.filament_mm_by_material.get(k).copied().unwrap_or(0.0);
+                layercraft_package::Filament {
+                    kind: settings.filament_kind.clone(),
+                    colour: colour.clone(),
+                    code: settings.filament_code.clone(),
+                    used_m: mm / 1000.0,
+                    used_g: mm * filament_area * settings.filament_density / 1000.0,
+                }
+            })
+            .collect(),
         seconds: summary.motion_seconds,
         bed_type: plate_code(&settings.bed_type).to_string(),
         settings_json: serde_json::Value::Object(settings_json).to_string(),

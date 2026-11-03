@@ -2,9 +2,12 @@
 //!
 //! The root model is found through `_rels/.rels`; components may point into other model parts
 //! of the package (production extension `p:path`). Transforms are 3×4 affine matrices in the
-//! specification's row order `m00 m01 m02 m10 m11 m12 m20 m21 m22 m30 m31 m32`.
+//! specification's row order `m00 m01 m02 m10 m11 m12 m20 m21 m22 m30 m31 m32`. An object's
+//! colour is the property its `pid` and `pindex` name: a base material's `displaycolor` or a
+//! colour group's `color` (materials extension); a component without one takes its parent's.
+//! Each build item becomes one body per colour, and each colour one material.
 
-use crate::{Body, Mesh, MeshError, Vertex};
+use crate::{Body, Material, Mesh, MeshError, Vertex};
 use quick_xml::events::{BytesStart, Event};
 use std::collections::HashMap;
 use std::io::{Read, Seek};
@@ -26,6 +29,8 @@ struct Object {
     vertices: Vec<Vertex>,
     triangles: Vec<[u32; 3]>,
     components: Vec<(Option<String>, String, Transform)>,
+    /// The property group and index its `pid` and `pindex` name.
+    property: Option<(String, usize)>,
 }
 
 #[derive(Default)]
@@ -33,6 +38,8 @@ struct Part {
     scale: f64,
     objects: HashMap<String, Object>,
     build: Vec<(String, Transform)>,
+    /// Each property group's colours, `#RRGGBB`, by group id.
+    colours: HashMap<String, Vec<String>>,
 }
 
 fn invalid(msg: impl Into<String>) -> MeshError {
@@ -96,6 +103,15 @@ fn transform(e: &BytesStart) -> Result<Transform, MeshError> {
     }
 }
 
+/// A 3MF colour, `#RRGGBB` or `#RRGGBBAA`, as `#RRGGBB` in capitals; the alpha is dropped.
+fn colour(text: &str) -> Result<String, MeshError> {
+    let hex = text.trim().strip_prefix('#').unwrap_or_default();
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(invalid(format!("not a colour: {text}")));
+    }
+    Ok(format!("#{}", hex.get(..6).unwrap_or_default().to_ascii_uppercase()))
+}
+
 fn unit_scale(unit: &str) -> Result<f64, MeshError> {
     Ok(match unit {
         "micron" => 0.001,
@@ -112,6 +128,8 @@ fn parse_part(text: &str, count: &mut usize) -> Result<Part, MeshError> {
     let mut part = Part { scale: 1.0, ..Part::default() };
     let mut reader = quick_xml::Reader::from_str(text);
     let mut current: Option<(String, Object)> = None;
+    // The property group being read: base materials or a colour group.
+    let mut group: Option<String> = None;
     loop {
         let event = reader.read_event().map_err(|e| MeshError::Xml(e.to_string()))?;
         let (e, closes) = match &event {
@@ -123,14 +141,40 @@ fn parse_part(text: &str, count: &mut usize) -> Result<Part, MeshError> {
                 }
                 continue;
             }
+            Event::End(e) if matches!(e.local_name().as_ref(), "basematerials" | "colorgroup") => {
+                group = None;
+                continue;
+            }
             Event::Eof => break,
             _ => continue,
         };
         match AsRef::<str>::as_ref(&e.local_name()) {
             "model" => part.scale = unit_scale(attr(e, "unit")?.as_deref().unwrap_or("millimeter"))?,
+            "basematerials" | "colorgroup" if !closes => {
+                group = Some(attr(e, "id")?.ok_or_else(|| invalid("property group without id"))?);
+            }
+            tag @ ("base" | "color") => {
+                let key = if tag == "base" { "displaycolor" } else { "color" };
+                let (Some(id), Some(text)) = (&group, attr(e, key)?) else { continue };
+                *count += 1;
+                if *count > MAX_ELEMENTS {
+                    return Err(invalid(format!("more than {MAX_ELEMENTS} elements")));
+                }
+                part.colours.entry(id.clone()).or_default().push(colour(&text)?);
+            }
             "object" => {
                 let id = attr(e, "id")?.ok_or_else(|| invalid("object without id"))?;
-                let object = Object { name: attr(e, "name")?.unwrap_or_default(), ..Object::default() };
+                let property = match (attr(e, "pid")?, attr(e, "pindex")?) {
+                    (Some(pid), pindex) => {
+                        let text = pindex.unwrap_or_else(|| "0".into());
+                        let index =
+                            text.trim().parse().map_err(|_| invalid(format!("not an index: {text}")))?;
+                        Some((pid, index))
+                    }
+                    (None, _) => None,
+                };
+                let object =
+                    Object { name: attr(e, "name")?.unwrap_or_default(), property, ..Object::default() };
                 if closes {
                     part.objects.insert(id, object);
                 } else {
@@ -206,13 +250,16 @@ impl<R: Read + Seek> Package<R> {
         self.parts.get(path).ok_or_else(|| invalid(format!("missing part {path}")))
     }
 
+    /// Adds object `id` of the part at `path`, placed by `t`, and its components to the body of
+    /// its colour in `into`; `inherited` is its parent's colour.
     fn collect(
         &mut self,
         path: &str,
         id: &str,
         t: Transform,
         depth: usize,
-        into: &mut Body,
+        inherited: Option<&str>,
+        bodies: &mut Vec<(Option<String>, Body)>,
     ) -> Result<(), MeshError> {
         if depth > MAX_DEPTH {
             return Err(invalid("components nest too deep (a cycle?)"));
@@ -220,46 +267,86 @@ impl<R: Read + Seek> Package<R> {
         let part = self.part(path)?;
         let scale = part.scale;
         let object = part.objects.get(id).ok_or_else(|| invalid(format!("no object {id} in {path}")))?;
-        if into.name.is_empty() {
-            into.name = object.name.clone();
-        }
-        let base = into.vertices.len();
-        let n = object.vertices.len();
-        let offset = u32::try_from(base).map_err(|_| invalid("too many vertices"))?;
-        for tri in &object.triangles {
-            if tri.iter().any(|&i| i as usize >= n) {
-                return Err(invalid(format!("object {id} has a triangle index out of range")));
-            }
-            let shifted = tri.map(|i| i.checked_add(offset));
-            match shifted {
-                [Some(a), Some(b), Some(c)] => into.triangles.push([a, b, c]),
-                _ => return Err(invalid("too many vertices")),
-            }
-        }
-        into.vertices.extend(object.vertices.iter().map(|v| apply(&t, v, scale)));
+        let own = match &object.property {
+            Some((pid, index)) => match part.colours.get(pid) {
+                Some(colours) => Some(
+                    colours
+                        .get(*index)
+                        .ok_or_else(|| invalid(format!("object {id}: no property {index} in group {pid}")))?
+                        .clone(),
+                ),
+                // A property group that holds no colour (a texture, a composite) leaves the parent's.
+                None => None,
+            },
+            None => None,
+        };
+        let colour = own.or_else(|| inherited.map(str::to_string));
         let components = object.components.clone();
+        if !object.triangles.is_empty() {
+            let at = match bodies.iter().position(|(c, _)| *c == colour) {
+                Some(at) => at,
+                None => {
+                    bodies.push((colour.clone(), Body::default()));
+                    bodies.len() - 1
+                }
+            };
+            let Some((_, into)) = bodies.get_mut(at) else { return Err(invalid("lost a body")) };
+            if into.name.is_empty() {
+                into.name = object.name.clone();
+            }
+            let base = into.vertices.len();
+            let n = object.vertices.len();
+            let offset = u32::try_from(base).map_err(|_| invalid("too many vertices"))?;
+            for tri in &object.triangles {
+                if tri.iter().any(|&i| i as usize >= n) {
+                    return Err(invalid(format!("object {id} has a triangle index out of range")));
+                }
+                match tri.map(|i| i.checked_add(offset)) {
+                    [Some(a), Some(b), Some(c)] => into.triangles.push([a, b, c]),
+                    _ => return Err(invalid("too many vertices")),
+                }
+            }
+            into.vertices.extend(object.vertices.iter().map(|v| apply(&t, v, scale)));
+        }
         for (sub_path, sub_id, sub_t) in components {
             let sub_path = sub_path.unwrap_or_else(|| path.to_string());
-            self.collect(&sub_path, &sub_id, compose(&t, &sub_t), depth + 1, into)?;
+            self.collect(&sub_path, &sub_id, compose(&t, &sub_t), depth + 1, colour.as_deref(), bodies)?;
         }
         Ok(())
     }
 }
 
-/// Reads every build item of a 3MF package as one body, in millimetres.
+/// Reads every build item of a 3MF package as one body per colour, in millimetres. With more
+/// than one colour, each is a material, in the order the bodies first use them.
 pub fn read_3mf<R: Read + Seek>(reader: R) -> Result<Mesh, MeshError> {
     let mut zip = zip::ZipArchive::new(reader).map_err(|e| MeshError::Zip(e.to_string()))?;
     let root = root_model_path(&mut zip)?;
     let mut package = Package { zip, parts: HashMap::new(), count: 0 };
     let build = package.part(&root)?.build.clone();
     let mut mesh = Mesh::default();
+    let mut materials: Vec<Material> = Vec::new();
     for (id, t) in build {
-        let mut body = Body { name: String::new(), vertices: Vec::new(), triangles: Vec::new() };
-        package.collect(&root, &id, t, 0, &mut body)?;
-        if body.name.is_empty() {
-            body.name = format!("object {id}");
+        let mut bodies = Vec::new();
+        package.collect(&root, &id, t, 0, None, &mut bodies)?;
+        for (colour, mut body) in bodies {
+            if body.name.is_empty() {
+                body.name = format!("object {id}");
+            }
+            let material = Material { colour };
+            body.material = match materials.iter().position(|m| *m == material) {
+                Some(k) => k,
+                None => {
+                    materials.push(material);
+                    materials.len() - 1
+                }
+            };
+            mesh.bodies.push(body);
         }
-        mesh.bodies.push(body);
+    }
+    if materials.len() > 1 {
+        mesh.materials = materials;
+    } else {
+        mesh.bodies.iter_mut().for_each(|b| b.material = 0);
     }
     Ok(mesh)
 }

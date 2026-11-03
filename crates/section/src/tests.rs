@@ -30,8 +30,39 @@ fn rounded_rectangle(x0: f64, y0: f64, x1: f64, y1: f64, radius: f64, segments: 
 const LAYERING: Layering = Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None };
 
 #[test]
+fn materials_partition_each_layer_the_later_winning() {
+    // A 10 × 10 × 2 base and a 4 × 4 inlay of another material from z = 1 to 3, overlapping it.
+    let base = cuboid("base", [0.0; 3], [10.0, 10.0, 2.0]);
+    let inlay = layercraft_mesh::Body { material: 1, ..cuboid("inlay", [2.0, 2.0, 1.0], [6.0, 6.0, 3.0]) };
+    let colour = |c: &str| layercraft_mesh::Material { colour: Some(c.into()) };
+    let mesh = Mesh { bodies: vec![base, inlay], materials: vec![colour("#0A2989"), colour("#FEC600")] };
+    let sections = section(&mesh, &LAYERING).unwrap();
+    assert_eq!(sections.layers.len(), 15);
+    for layer in &sections.layers {
+        let mid = layer.top - layer.height / 2.0;
+        let want = if mid < 1.0 {
+            [100.0, 0.0]
+        } else if mid < 2.0 {
+            [84.0, 16.0]
+        } else {
+            [0.0, 16.0]
+        };
+        let got: Vec<f64> = layer.by_material().into_iter().map(area).collect();
+        assert_eq!(got.len(), 2);
+        for (g, w) in got.iter().zip(want) {
+            assert!((g - w).abs() < 1e-9, "z = {mid}: {got:?}, want {want:?}");
+        }
+        assert!((got.iter().sum::<f64>() - area(&layer.region)).abs() < 1e-9);
+    }
+    // One material: no parts listed, the layer is its own.
+    let one = section(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])], ..Mesh::default() }, &LAYERING)
+        .unwrap();
+    assert!(one.layers.iter().all(|l| l.materials.is_empty() && l.by_material().len() == 1));
+}
+
+#[test]
 fn a_cube_cuts_into_squares() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])], ..Mesh::default() };
     let sections = section(&mesh, &LAYERING).unwrap();
     assert_eq!(sections.layers.len(), 10);
     assert_eq!(sections.open_chains, 0);
@@ -51,6 +82,7 @@ fn a_plane_through_vertices_still_closes() {
             cuboid("lower", [0.0; 3], [4.0, 4.0, 1.0]),
             cuboid("upper", [1.0, 1.0, 1.0], [3.0, 3.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let cut = section_loops(&mesh, |_| 1.0);
     assert_eq!(cut.open, 0);
@@ -61,6 +93,7 @@ fn a_plane_through_vertices_still_closes() {
 fn overlapping_bodies_merge() {
     let mesh = Mesh {
         bodies: vec![cuboid("a", [0.0; 3], [4.0, 4.0, 1.0]), cuboid("b", [2.0, 2.0, 0.0], [6.0, 6.0, 1.0])],
+        ..Mesh::default()
     };
     let sections = section(&mesh, &LAYERING).unwrap();
     assert!((area(&sections.layers[0].region) - 28.0).abs() < 1e-9);
@@ -69,7 +102,7 @@ fn overlapping_bodies_merge() {
 #[test]
 fn the_stamp_block_has_its_rounded_area() {
     let outline = rounded_rectangle(0.0, 0.0, 24.0, 12.0, 3.0, 64);
-    let mesh = Mesh { bodies: vec![prism("block", &outline, 0.0, 25.0)] };
+    let mesh = Mesh { bodies: vec![prism("block", &outline, 0.0, 25.0)], ..Mesh::default() };
     let sections = section(&mesh, &LAYERING).unwrap();
     assert_eq!(sections.layers.len(), 125);
     let exact = signed_area(&outline);
@@ -86,7 +119,7 @@ fn the_stamp_block_has_its_rounded_area() {
 
 #[test]
 fn bad_layering_is_refused() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [1.0; 3])], ..Mesh::default() };
     let bad = Layering { first_layer_height: f64::NAN, layer_height: 0.2, foliation: None };
     assert!(section(&mesh, &bad).is_err());
     let tiny = Layering { first_layer_height: 0.2, layer_height: 0.0, foliation: None };
@@ -99,7 +132,7 @@ fn a_hole_in_the_mesh_is_counted_and_closed_across() {
     let mut body = cuboid("c", [0.0; 3], [1.0; 3]);
     body.triangles
         .retain(|t| !(body.vertices[t[0] as usize][0] == 1.0 && body.vertices[t[1] as usize][0] == 1.0));
-    let cut = section_loops(&Mesh { bodies: vec![body] }, |_| 0.5);
+    let cut = section_loops(&Mesh { bodies: vec![body], ..Mesh::default() }, |_| 0.5);
     assert!(cut.open > 0);
     assert!(cut.widest_gap <= 1.0 + 1e-12);
     assert!((area(&winding_region(&cut.loops).unwrap()) - 1.0).abs() < 1e-9);
@@ -138,6 +171,7 @@ fn a_crack_between_two_tessellations_keeps_the_hole() {
             wall("hole below", 12, 2.0, 0.0, 1.0, true),
             wall("hole above", 20, 2.0, 1.0, 2.0, true),
         ],
+        ..Mesh::default()
     };
     let cut = section_loops(&mesh, |v| 1.0 + 0.05 * v[0]);
     let region = winding_region(&cut.loops).unwrap();
@@ -243,7 +277,8 @@ fn bent_layers_follow_a_sloped_top_exactly() {
         ("gable", |x, _| 4.0 - 0.15 * (x - 5.0).abs(), 8.0 * (40.0 - 0.15 * 25.0)),
     ];
     for (name, top, volume) in surfaces {
-        let mesh = Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)] };
+        let mesh =
+            Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)], ..Mesh::default() };
         assert!((mesh.volume() - volume).abs() < 1e-9, "{name}: {}", mesh.volume());
         let sections = section(&mesh, &bent()).unwrap();
         assert_eq!((sections.open_chains, sections.unsplit_cells), (0, 0), "{name}");
@@ -315,7 +350,8 @@ fn the_leaf_below_never_stands_above_the_nozzle_face() {
     let layering = bent();
     let face = layering.foliation.as_ref().unwrap().face_reach;
     for (name, top) in surfaces {
-        let mesh = Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)] };
+        let mesh =
+            Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)], ..Mesh::default() };
         let sections = section(&mesh, &layering).unwrap();
         assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
         let contact = face_contact(&sections, [0.0, 0.0], [10.0, 8.0], face);
@@ -327,8 +363,10 @@ fn the_leaf_below_never_stands_above_the_nozzle_face() {
 fn a_leaf_leans_no_more_than_the_ironing_allows() {
     // The wedge of 11.3°: followed when the face may iron 0.3 mm, not when only 0.1 mm, which
     // over the face's reach of 0.71 mm allows some 7°.
-    let mesh =
-        Mesh { bodies: vec![height_field("wedge", [0.0, 0.0], [10.0, 8.0], 10, |x, _| 3.0 + 0.2 * x)] };
+    let mesh = Mesh {
+        bodies: vec![height_field("wedge", [0.0, 0.0], [10.0, 8.0], 10, |x, _| 3.0 + 0.2 * x)],
+        ..Mesh::default()
+    };
     let bends = |ironing: f64| {
         let mut layering = bent();
         layering.foliation.as_mut().unwrap().ironing = ironing;
@@ -350,7 +388,8 @@ fn under_a_steep_top_the_slab_thickens_only_as_the_face_needs() {
     let need = 0.3 * laps.reach;
     assert!(need > 0.2 && need < 0.3, "{need}");
     let top = |x: f64, _: f64| 4.0 - 0.3 * (x - 5.0).abs();
-    let mesh = Mesh { bodies: vec![height_field("gable", [0.0, 0.0], [10.0, 8.0], 10, top)] };
+    let mesh =
+        Mesh { bodies: vec![height_field("gable", [0.0, 0.0], [10.0, 8.0], 10, top)], ..Mesh::default() };
     let sections = section(&mesh, &layering).unwrap();
     for p in [[2.3, 4.1], [3.1, 2.6], [6.9, 5.2], [7.7, 3.3]] {
         let (z, layer) = top_at(&sections, p).unwrap();
@@ -365,6 +404,7 @@ fn under_a_steep_top_the_slab_thickens_only_as_the_face_needs() {
 fn refining_keeps_the_mesh_closed_and_its_volume() {
     let mesh = Mesh {
         bodies: vec![height_field("wedge", [0.0, 0.0], [10.0, 8.0], 7, |x, y| 3.0 + 0.2 * x - 0.05 * y)],
+        ..Mesh::default()
     };
     let grid = layercraft_geom::Grid { origin: [-0.37, 0.21], cell: 0.5 };
     let lines = layercraft_geom::Lines { levels: [[-2, 30], [-5, 25], [-40, 40]] };

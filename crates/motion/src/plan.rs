@@ -409,6 +409,9 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
     let mut layers: Vec<Layer> = Vec::with_capacity(paths.layers.len());
     let bed = Relief::default();
     let mut below = &bed;
+    // The layer the passes so far belong to, and its top: a pass stands on the layer before its
+    // own, not on the pass before it.
+    let mut current: Option<(usize, &Relief)> = None;
     let mut previous_leaf: Option<Leaf> = None;
     // How deep the nozzle's face, one for the whole print, cut into the layer below's top.
     let mut cuts = Cuts::default();
@@ -417,11 +420,17 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             previous.moves = s.close(&last, left);
             cuts = room::keep(&mut previous.moves, left, &cuts, base.face_radius);
         }
+        if let Some((index, warp)) = current
+            && index != layer.index
+        {
+            below = warp;
+        }
         let leaf = Leaf { top: layer.top, height: layer.height, warp: &layer.warp, below };
         layers.push(Layer {
             index: layer.index,
             z: layer.top,
             height: layer.height,
+            material: layer.material,
             warp: layer.warp.clone(),
             free: false,
             moves: Vec::new(),
@@ -468,7 +477,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             }
             last = p;
         }
-        below = &layer.warp;
+        current = Some((layer.index, &layer.warp));
         previous_leaf = Some(leaf);
     }
     // Off the part at once, before the machine's own slow end sequence.

@@ -76,7 +76,8 @@ fn filled_area(paths: &[Path], role: Role, angle: f64) -> f64 {
 
 #[test]
 fn solid_hatch_covers_its_area() {
-    let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
+    let (regions, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])], ..Mesh::default() });
     let layer = &paths.layers[0];
     let solid = area(&regions.layers[0].solid);
     // On the bed, the solid is the part's bottom surface.
@@ -86,7 +87,8 @@ fn solid_hatch_covers_its_area() {
 
 #[test]
 fn sparse_grid_has_its_density() {
-    let (regions, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
+    let (regions, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])], ..Mesh::default() });
     let i = 7;
     let sparse = area(&regions.layers[i].sparse);
     let covered = filled_area(&paths.layers[i].paths, Role::SPARSE, 135.0);
@@ -95,7 +97,8 @@ fn sparse_grid_has_its_density() {
 
 #[test]
 fn walls_come_inner_first_and_seams_align() {
-    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] });
+    let (_, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])], ..Mesh::default() });
     let roles: Vec<Role> = paths.layers[5].paths.iter().map(|p| p.role).take(2).collect();
     assert_eq!(roles, vec![Role::INNER_WALL, Role::OUTER_WALL]);
     let seams: Vec<Point> = paths
@@ -110,6 +113,7 @@ fn walls_come_inner_first_and_seams_align() {
 fn separate_islands_are_printed_whole() {
     let mesh = Mesh {
         bodies: vec![cuboid("a", [0.0; 3], [5.0, 5.0, 1.0]), cuboid("b", [20.0, 0.0, 0.0], [25.0, 5.0, 1.0])],
+        ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
     let side: Vec<bool> = paths.layers[2].paths.iter().map(|p| p.points[0][0] > 10.0).collect();
@@ -119,7 +123,8 @@ fn separate_islands_are_printed_whole() {
 
 #[test]
 fn beads_have_no_zero_length_segments() {
-    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] });
+    let (_, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])], ..Mesh::default() });
     for path in paths.layers.iter().flat_map(|l| l.paths.iter()) {
         let mut pts = path.points.clone();
         if path.closed {
@@ -131,7 +136,8 @@ fn beads_have_no_zero_length_segments() {
 
 #[test]
 fn sparse_beads_never_cross_on_a_layer() {
-    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])] });
+    let (_, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])], ..Mesh::default() });
     for layer in &paths.layers {
         let angle = 45.0 + if layer.index % 2 == 1 { 90.0 } else { 0.0 };
         let sparse: Vec<&Path> = layer.paths.iter().filter(|p| p.role == Role::SPARSE).collect();
@@ -153,7 +159,8 @@ fn sparse_beads_never_cross_on_a_layer() {
 
 #[test]
 fn moves_between_neighbouring_lines_stay_inside() {
-    let (_, paths) = paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])] });
+    let (_, paths) =
+        paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])], ..Mesh::default() });
     let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::SOLID).collect();
     let outside = solid.iter().skip(1).filter(|p| !p.travel_inside).count();
     assert!(outside <= 1, "{outside} of {} moves leave the part", solid.len());
@@ -169,6 +176,7 @@ fn a_bridge_crosses_its_gap_the_short_way() {
             cuboid("right", [12.0, 0.0, 0.0], [16.0, 12.0, 1.0]),
             cuboid("slab", [0.0, 0.0, 1.0], [16.0, 12.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
     let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
@@ -192,6 +200,7 @@ fn a_bridge_runs_from_support_to_support() {
             cuboid("right", [24.0, 0.0, 0.0], [28.0, 6.0, 1.0]),
             cuboid("slab", [0.0, 0.0, 1.0], [28.0, 6.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
     let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
@@ -218,7 +227,7 @@ fn sweep_of(paths: &[Path], role: Role, angle: f64) -> Vec<(f64, f64)> {
 
 #[test]
 fn a_monotone_surface_is_laid_in_one_sweep() {
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 2.0])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
@@ -241,6 +250,7 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
             cuboid("a", [0.0; 3], [10.0, 10.0, 2.0]),
             cuboid("b", [20.0, 0.0, 0.0], [30.0, 10.0, 2.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
@@ -265,7 +275,7 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
 #[test]
 fn strands_resting_on_sparse_infill_fill_their_layer_exactly() {
     // Under the top shells of a wide slab, the first solid layer rests on sparse infill.
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [30.0, 30.0, 2.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [30.0, 30.0, 2.0])], ..Mesh::default() };
     let (regions, paths) = paths_of(&mesh);
     let i = regions.layers.iter().position(|l| !l.bridge_on_sparse.is_empty()).unwrap();
     assert!(regions.layers[i].bridge.is_empty());
@@ -285,7 +295,7 @@ fn an_inner_wall_under_the_layer_above_stays_a_loop_at_the_seam() {
     // With one wall on top, inner walls are drawn only under the layer above. Inside a cube the
     // layer above covers them whole: each stays a closed loop starting at the seam, so the move
     // to the outer wall is the diagonal between their corners, not a trip around the part.
-    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])] };
+    let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])], ..Mesh::default() };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let params = RegionParams { one_wall_on_top: true, ..region_params() };
@@ -316,7 +326,7 @@ fn a_wall_hangs_the_share_of_its_bead_past_the_layer_below() {
                 cuboid("step", [0.0, 0.0, z], [10.0 + step * k as f64, 10.0, z + 0.2])
             })
             .collect();
-        let (_, paths) = paths_of(&Mesh { bodies });
+        let (_, paths) = paths_of(&Mesh { bodies, ..Mesh::default() });
         let outer = paths.layers[5].paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap();
         assert_eq!(outer.overhang.len(), outer.points.len(), "one share per segment of the loop");
         let edge = 10.0 + 5.0 * step - 0.2;
@@ -347,6 +357,7 @@ fn a_move_over_what_the_layer_above_covers_stays_down() {
             cuboid("left", [0.0, 6.0, 0.0], [6.0, 14.0, 3.0]),
             cuboid("right", [14.0, 6.0, 0.0], [20.0, 14.0, 3.0]),
         ],
+        ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
     let over_hole = |a: Point, b: Point| {
@@ -426,6 +437,7 @@ fn a_strip_too_thin_for_two_lines_takes_one_bead_along_it() {
             cuboid("left", [0.0, 2.0, 0.0], [2.0, 8.0, 3.0]),
             cuboid("right", [8.0, 2.0, 0.0], [10.0, 8.0, 3.0]),
         ],
+        ..Mesh::default()
     };
     let (regions, paths) = paths_of(&mesh);
     let i = 7;
@@ -648,6 +660,7 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
             cuboid("stem", [-2.0, -2.0, 0.0], [2.0, 2.0, 10.0]),
             cuboid("bar", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0]),
         ],
+        ..Mesh::default()
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();

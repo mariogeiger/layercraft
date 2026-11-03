@@ -76,16 +76,23 @@ pub struct PathLayer {
     pub index: usize,
     pub top: f64,
     pub height: f64,
+    /// The material this pass of the layer prints.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub material: usize,
     /// How far the layer's top lies above `top` over the plate: the beads lie on it.
     #[serde(default, skip_serializing_if = "Relief::is_zero")]
     pub warp: Relief,
     pub paths: Vec<Path>,
 }
 
-/// The output of the path stage.
+/// The output of the path stage: the layers' passes, in printing order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paths {
     pub layers: Vec<PathLayer>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// How areas are filled.
@@ -230,6 +237,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             index: layer.index,
             top: layer.top,
             height: layer.height,
+            material: layer.material,
             warp: layer.warp.clone(),
             paths,
         });

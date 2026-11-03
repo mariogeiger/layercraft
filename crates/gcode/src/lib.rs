@@ -192,20 +192,29 @@ impl Writer {
 pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header) -> String {
     let s = finish(program, limits, header.filament_diameter);
     let area = disc_area(header.filament_diameter);
-    let grams = s.filament_mm * area * header.filament_density / 1000.0;
     let mut w = Writer::default();
     w.line("; HEADER_BLOCK_START");
     w.line(&format!("; {}", header.generator));
     let time = duration(s.motion_seconds);
     w.line(&format!("; model printing time: {time}; total estimated time: {time}"));
     w.line(&format!("; total layer number: {}", s.layers));
-    w.line(&format!("; total filament length [mm] : {}", number(s.filament_mm, 2)));
-    w.line(&format!("; total filament volume [cm^3] : {}", number(s.filament_mm * area / 1000.0, 2)));
-    w.line(&format!("; total filament weight [g] : {}", number(grams, 2)));
-    w.line(&format!("; filament_density: {}", number(header.filament_density, 3)));
-    w.line(&format!("; filament_diameter: {}", number(header.filament_diameter, 3)));
+    // One entry per material, as the printer lists its filaments.
+    let each = |f: &dyn Fn(f64) -> String| {
+        let all: Vec<String> = s.filament_mm_by_material.iter().map(|&mm| f(mm)).collect();
+        if all.is_empty() { f(0.0) } else { all.join(",") }
+    };
+    let n = s.filament_mm_by_material.len().max(1);
+    let repeated = |v: f64| vec![number(v, 3); n].join(",");
+    w.line(&format!("; total filament length [mm] : {}", each(&|mm| number(mm, 2))));
+    w.line(&format!("; total filament volume [cm^3] : {}", each(&|mm| number(mm * area / 1000.0, 2))));
+    w.line(&format!(
+        "; total filament weight [g] : {}",
+        each(&|mm| number(mm * area * header.filament_density / 1000.0, 2))
+    ));
+    w.line(&format!("; filament_density: {}", repeated(header.filament_density)));
+    w.line(&format!("; filament_diameter: {}", repeated(header.filament_diameter)));
     w.line(&format!("; max_z_height: {}", number(s.max_z, 2)));
-    w.line("; filament: 1");
+    w.line(&format!("; filament: {}", (1..=n).map(|k| k.to_string()).collect::<Vec<_>>().join(",")));
     w.line("; HEADER_BLOCK_END");
     w.line("");
     w.line("; CONFIG_BLOCK_START");
@@ -219,10 +228,15 @@ pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header)
     let times = estimate(program, limits);
     let total = times.last().copied().unwrap_or(0.0);
     let mut done = 0usize;
+    let mut index = None;
     for (k, layer) in program.layers.iter().enumerate() {
-        w.line("; CHANGE_LAYER");
-        w.line(&format!("; Z_HEIGHT: {}", number(layer.z, 3)));
-        w.line(&format!("; LAYER_HEIGHT: {}", number(layer.height, 3)));
+        // A layer printed in several passes is announced once, before its first.
+        if index != Some(layer.index) {
+            index = Some(layer.index);
+            w.line("; CHANGE_LAYER");
+            w.line(&format!("; Z_HEIGHT: {}", number(layer.z, 3)));
+            w.line(&format!("; LAYER_HEIGHT: {}", number(layer.height, 3)));
+        }
         if let Some(text) = frame.layers.get(k) {
             w.machine(text);
         }

@@ -72,6 +72,8 @@ pub fn read_tuning(path: &Path) -> Result<Tuning, String> {
 pub struct Output {
     pub paths: Option<Paths>,
     pub program: Program,
+    /// The materials of the mesh, when the chain began with one.
+    pub materials: Vec<layercraft_mesh::Material>,
 }
 
 /// The largest stage file read back, in bytes.
@@ -193,5 +195,6 @@ pub fn run(
         _ => return Err("nothing to compile".into()),
     };
     emit(Stage::Program, &program, || layercraft_view::program(&program, &settings.motion.limits), emits)?;
-    Ok(Output { paths, program })
+    let materials = mesh.map(|m| m.materials).unwrap_or_default();
+    Ok(Output { paths, program, materials })
 }
