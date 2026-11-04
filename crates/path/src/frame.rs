@@ -51,6 +51,11 @@ impl Frame {
         self.axis
     }
 
+    /// Its second axis, a unit vector a quarter turn from the first.
+    pub fn second(&self) -> [f64; 2] {
+        self.second
+    }
+
     /// Whether its second axis lies a quarter turn anticlockwise from its first, as the plate's.
     pub fn right_handed(&self) -> bool {
         self.axis[0] * self.second[1] - self.axis[1] * self.second[0] > 0.0

@@ -6,6 +6,12 @@ All notable user-visible changes to this project are documented here.
 
 ### Changed
 
+- Seams follow the part, not the plate: a wall loop starts at the concave corner nearest the
+  seam of its solid on the layer below, else at the vertex nearest it; on a solid's first layer,
+  at the point of its outline farthest along its frame's axis. Holes, inner walls and closed
+  beads follow the island's outer seam, and the loops of a mirrored part run the other way. The
+  next island is the one whose first bead starts nearest the nozzle, and equally long sweeps are
+  ordered by their ends' distance to it, not by plate angle.
 - What a part's frame settles is settled by its solid's: what holds together, its islands
   touching on one layer and from each layer to the next, all its layers weighing at once, so it
   stays the same from layer to layer and changes with nothing else on the plate. A frame's

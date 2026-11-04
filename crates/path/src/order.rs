@@ -4,6 +4,7 @@ use crate::families::{Beneath, Spacing, fall_line, fill};
 use crate::gap::{gap_fill, strips};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
+use crate::seam::{Seams, farthest_along, seamed};
 use crate::solids::Solids;
 use crate::tour::tour;
 use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
@@ -31,6 +32,14 @@ impl Island {
     /// An island without walls, bounded by `outline`, its beads to come.
     pub(crate) fn bare(outline: Contour) -> Island {
         Island { outline, walls: Vec::new(), gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() }
+    }
+
+    /// Where the island's first bead starts: its outer wall's seam; without walls, the start of
+    /// its first bead.
+    fn first_start(&self) -> Point {
+        let outer = self.walls.iter().find(|(k, _)| *k == 0).map(|(_, p)| p);
+        let first = outer.or(self.gaps.first()).or(self.infill.first());
+        first.and_then(|p| p.points.first()).or(self.outline.first()).copied().unwrap_or([0.0, 0.0])
     }
 
     pub(crate) fn outline(&self) -> &Contour {
@@ -156,22 +165,6 @@ fn distance2(a: Point, b: Point) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
 
-/// Rotates a loop to start at its vertex nearest `target`.
-fn start_near(mut contour: Contour, target: Point) -> Contour {
-    let best = contour
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| distance2(**a, target).total_cmp(&distance2(**b, target)))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    contour.rotate_left(best);
-    contour
-}
-
-fn back_right(contour: &[Point]) -> Point {
-    contour.iter().fold([f64::MIN, f64::MIN], |m, p| [m[0].max(p[0]), m[1].max(p[1])])
-}
-
 /// The width of a layer's sparse beads, and how far apart they lie for the requested density
 /// by volume: beads `s` apart in effect, every `S`, fill `s/S` of the area.
 pub fn sparse_bead(layer: &RegionLayer, p: &PathParams) -> (f64, f64) {
@@ -191,6 +184,14 @@ pub(crate) fn on_line(line: &[Point]) -> Option<Point> {
     Some([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0])
 }
 
+/// Where an island's loops start, and which way they run.
+struct Mark {
+    /// The island's outer seam: the reference of every loop of the island but its outer contour.
+    seam: Point,
+    /// Whether the island's solid has a right-handed frame; its loops run the other way if not.
+    right_handed: bool,
+}
+
 /// Splits a layer, or a part of one, into islands, each holding its walls, the infill inside
 /// them and the part's infill areas for joining their lines; the sparse lines are `rolls`, cut
 /// to the part, where its parameters ask for rolls and the layer has them; the dense areas cross
@@ -202,27 +203,41 @@ pub fn islands(
     beneath: &Beneath,
     bodies: &Solids,
     pass: usize,
+    seams: &mut Seams,
 ) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
-    let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| {
-        Path::new(role, width, true, start_near(contour.clone(), back_right(outline)))
+    let loop_path = |role: Role, width: f64, contour: &Contour, mark: &Mark| {
+        let points = seamed(contour.clone(), mark.seam, width, p.resolution, mark.right_handed);
+        Path::new(role, width, true, points)
     };
-    // The outer wall's shapes are the islands; without walls, the infill's shapes are.
+    // The outer wall's shapes are the islands; without walls, the infill's shapes are. Each
+    // follows the seam of its solid on the layer below, or starts at the end of its frame's axis;
+    // its holes' and inner walls' seams follow its own.
     let walled = !layer.walls.is_empty();
-    let mut islands: Vec<Island> = layer
-        .outline()
-        .into_iter()
-        .filter_map(|shape| {
-            let outline = shape.first()?.clone();
-            let walls = shape
-                .iter()
-                .filter(|_| walled)
-                .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
-                .collect();
-            Some(Island { outline, walls, gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() })
-        })
-        .collect();
+    let mut islands: Vec<Island> = Vec::new();
+    let mut marks: Vec<Mark> = Vec::new();
+    for shape in layer.outline() {
+        let Some(outline) = shape.first().cloned() else { continue };
+        let solid = bodies.solid_of(pass, &outline);
+        let frame = solid.map(|s| bodies.frame(s)).unwrap_or_default();
+        let reference =
+            solid.and_then(|s| seams.of(s)).unwrap_or_else(|| farthest_along(&outline, &frame, p.resolution));
+        let mut mark = Mark { seam: reference, right_handed: frame.right_handed() };
+        let mut walls = Vec::new();
+        for (n, c) in shape.iter().enumerate().filter(|_| walled) {
+            let path = loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &mark);
+            if n == 0 {
+                mark.seam = path.points.first().copied().unwrap_or(mark.seam);
+            }
+            walls.push((0, path));
+        }
+        if let Some(s) = solid {
+            seams.keep(s, mark.seam);
+        }
+        islands.push(Island { outline, walls, gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() });
+        marks.push(mark);
+    }
     let home = |islands: &[Island], p: Point| -> Option<usize> {
         holder(islands.iter().map(|i| &i.outline), p).or(if islands.is_empty() { None } else { Some(0) })
     };
@@ -231,7 +246,8 @@ pub fn islands(
             let Some(&first) = contour.first() else { continue };
             let Some(i) = home(&islands, first) else { continue };
             if let Some(island) = islands.get_mut(i) {
-                let path = loop_path(Role::INNER_WALL, w(p.inner_wall_width), contour, &island.outline);
+                let Some(mark) = marks.get(i) else { continue };
+                let path = loop_path(Role::INNER_WALL, w(p.inner_wall_width), contour, mark);
                 match &layer.inner_walls_within {
                     None => island.walls.push((k, path)),
                     // Only the stretches of the loop under the layer above; a loop wholly under
@@ -381,8 +397,18 @@ pub fn islands(
         }
     }
     let fills = Rc::new(areas);
-    for island in &mut islands {
+    for (island, mark) in islands.iter_mut().zip(&marks) {
         island.fills = fills.clone();
+        // The closed beads of the dense areas start at the island's seam too.
+        for bead in island.gaps.iter_mut().filter(|g| g.closed) {
+            bead.points = seamed(
+                std::mem::take(&mut bead.points),
+                mark.seam,
+                bead.width,
+                p.resolution,
+                mark.right_handed,
+            );
+        }
     }
     Ok(islands)
 }
@@ -442,9 +468,10 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
     }
 }
 
-/// Lines grouped by their direction, the direction laying the longest first: each is swept on
+/// Lines grouped by their direction, the direction laying the longest first, the one with an end
+/// nearer the nozzle `at` where equally long: each is swept on
 /// its own.
-fn by_direction(lines: Vec<Path>) -> Vec<Vec<Path>> {
+fn by_direction(lines: Vec<Path>, at: Point) -> Vec<Vec<Path>> {
     let direction = |l: &Path| match (l.points.first(), l.points.last()) {
         (Some(a), Some(b)) => (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees().rem_euclid(180.0),
         _ => 0.0,
@@ -464,7 +491,15 @@ fn by_direction(lines: Vec<Path>) -> Vec<Vec<Path>> {
             None => groups.push((angle, length, vec![line])),
         }
     }
-    groups.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.total_cmp(&y.0)));
+    let nearest_end = |lines: &[Path]| {
+        lines
+            .iter()
+            .flat_map(|l| [l.points.first(), l.points.last()])
+            .flatten()
+            .map(|p| distance2(at, *p))
+            .fold(f64::MAX, f64::min)
+    };
+    groups.sort_by(|x, y| y.1.total_cmp(&x.1).then(nearest_end(&x.2).total_cmp(&nearest_end(&y.2))));
     groups.into_iter().map(|(_, _, lines)| lines).collect()
 }
 
@@ -483,7 +518,7 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec
         let near = islands
             .iter()
             .enumerate()
-            .map(|(i, island)| (i, distance2(*at, back_right(&island.outline))))
+            .map(|(i, island)| (i, distance2(*at, island.first_start())))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -507,7 +542,7 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec
             let mut ordered = Vec::new();
             let reach = Bands::new(&fill.reach);
             if fill.monotone {
-                for lines in by_direction(mine) {
+                for lines in by_direction(mine, *at) {
                     sweep(lines, fill.max_link, at, &mut ordered);
                 }
             } else {

@@ -1,7 +1,7 @@
 //! Stage 3: the lines the nozzle draws, in printing order.
 //!
-//! Walls become closed loops, starting at the vertex nearest the island's back right corner
-//! so seams line up from layer to layer. Dense areas are laid at the beads' tiling spacing as
+//! Walls become closed loops, starting at the concave corner nearest the seam of the layer
+//! below (`seam`), so seams line up from layer to layer. Dense areas are laid at the beads' tiling spacing as
 //! families of parallel curves with the fewest bead ends (`families`): a band narrower than
 //! its beads' crossing width along itself, in insets of its edge, a wider area in straight lines
 //! along or across its edges, crossing the dense beads of the layer below. Sparse areas get
@@ -27,6 +27,7 @@ mod order;
 mod overhang;
 mod role;
 mod rolls;
+mod seam;
 mod solids;
 mod supports;
 mod tour;
@@ -235,6 +236,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     // The dense beads of the layer below, and of the passes laid so far at this height.
     let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
     let solids = solids::Solids::of(&regions.layers, RegionLayer::outline)?;
+    let mut seams = seam::Seams::default();
     for (pass, layer) in regions.layers.iter().enumerate() {
         if height != Some(layer.top) {
             beneath = families::Beneath::new(std::mem::take(&mut laid));
@@ -259,7 +261,15 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         };
         let mut islands = Vec::new();
         for (params, part) in parts {
-            islands.extend(order::islands(&part, &params, lines.as_deref(), &beneath, &solids, pass)?);
+            islands.extend(order::islands(
+                &part,
+                &params,
+                lines.as_deref(),
+                &beneath,
+                &solids,
+                pass,
+                &mut seams,
+            )?);
         }
         islands.extend(supports::islands(layer, field.base())?);
         let hidden = Bands::new(&link::hidden(layer)?);

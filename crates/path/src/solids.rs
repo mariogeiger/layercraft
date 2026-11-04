@@ -147,6 +147,16 @@ impl Solids {
         islands.get(i).map(|(_, s)| *s)
     }
 
+    /// The solid whose island on pass `pass` has the outer contour `outline`.
+    pub fn solid_of(&self, pass: usize, outline: &Contour) -> Option<usize> {
+        self.passes.get(pass)?.iter().find(|(c, _)| c == outline).map(|(_, s)| *s)
+    }
+
+    /// The frame of solid `solid`; the plate's where there is none.
+    pub fn frame(&self, solid: usize) -> Frame {
+        self.frames.get(solid).copied().unwrap_or_default()
+    }
+
     /// The frame of the solid holding `p` on pass `pass`; the plate's where none does.
     pub fn frame_at(&self, pass: usize, p: Point) -> Frame {
         self.solid_at(pass, p).and_then(|s| self.frames.get(s)).copied().unwrap_or_default()
