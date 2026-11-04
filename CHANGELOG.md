@@ -6,6 +6,9 @@ All notable user-visible changes to this project are documented here.
 
 ### Changed
 
+- A lift's helix turns the way the nozzle turns from its last move to the travel it sets off
+  into (to the left where it goes straight on or back), so a mirrored part's lifts are
+  mirrored; the nozzle's first heading is set by its first move, not by the plate's x axis.
 - Convection rolls are made for each solid, over its own sparse areas and in its own frame,
   not one set over the whole plate: a part's rolls no longer change with what else stands on
   the plate, and two parts do not share a grid.

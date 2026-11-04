@@ -363,16 +363,19 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
     // Off the first line, then off the second at the end; from the start, the nozzle crossed over.
     assert_eq!(lifts.len(), 2, "{lifts:?}");
     // Off the first line, wiped back from (20, 10) to (19, 10), setting off towards the second
-    // line's start at (10, 30): counter-clockwise, the axis lies a radius left of that heading.
+    // line's start at (10, 30): the nozzle turns clockwise from its wipe (-x) to that heading, and
+    // so does the helix, its axis a radius right of the heading.
     let h = [-9.0 / 481f64.sqrt(), 20.0 / 481f64.sqrt()];
     let arc = lifts[0].arc.unwrap();
-    assert_eq!(arc.turn, std::f64::consts::TAU);
-    assert!((arc.centre[0] - (19.0 - h[1])).abs() < 1e-12 && (arc.centre[1] - (10.0 + h[0])).abs() < 1e-12);
+    assert_eq!(arc.turn, -std::f64::consts::TAU);
+    assert!((arc.centre[0] - (19.0 + h[1])).abs() < 1e-12 && (arc.centre[1] - (10.0 - h[0])).abs() < 1e-12);
     // Flown at the travel speed, the Z axis below its limit: 20 mm/s · √((2π)² + 0.4²) / 0.4 > 300.
     assert_eq!(lifts[0].speed, 300.0);
     // The print ends climbing off the wipe's end at (19, 30), setting off the way it wiped, -x.
     assert_eq!(lifts[1].arc.unwrap().centre, [19.0, 29.0]);
 }
+
+mod lifts;
 
 #[test]
 fn a_helix_runs_at_its_centripetal_limit() {

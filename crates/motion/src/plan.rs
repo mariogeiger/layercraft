@@ -193,6 +193,10 @@ fn pushed(p: &MotionParams, path: &Path, height: f64) -> f64 {
     p.flow_ratio * role_motion(p, path.role).flow * section_area(path, height)
 }
 
+/// The sine of the angle from one heading to the next below which they are the same, or
+/// opposite, line: rounding, not a turn.
+const STRAIGHT_ON: f64 = 1e-9;
+
 /// The nozzle as the program is written: where it is, what it does, and the moves so far.
 struct State {
     moves: Vec<Move>,
@@ -203,8 +207,9 @@ struct State {
     /// The bead being laid or just laid, with its speed: what a retraction wipes over.
     bead: Vec<[f64; 3]>,
     bead_speed: f64,
-    /// The direction of the last move across the plate, a unit vector.
-    heading: [f64; 2],
+    /// The direction of the last move across the plate, a unit vector; none before the nozzle
+    /// has gone anywhere known.
+    heading: Option<[f64; 2]>,
     /// The filament pulled back, in mm, which the next bead pushes again.
     retracted: f64,
     accel: f64,
@@ -213,10 +218,10 @@ struct State {
 
 impl State {
     /// The direction across the plate from the nozzle to `to`; the last one when it is there.
-    fn heading_to(&self, to: Point) -> [f64; 2] {
+    fn heading_to(&self, to: Point) -> Option<[f64; 2]> {
         let d = [to[0] - self.at[0], to[1] - self.at[1]];
         let l = d[0].hypot(d[1]);
-        if l > 1e-9 { [d[0] / l, d[1] / l] } else { self.heading }
+        if l > 1e-9 { Some([d[0] / l, d[1] / l]) } else { self.heading }
     }
 
     /// A move to `to` (or in place), with the nozzle's state, at the speed asked: the machine's
@@ -224,7 +229,8 @@ impl State {
     fn push(&mut self, to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<Bead>) {
         self.moves.push(Move { to, arc, e, speed, accel: self.accel, fan: self.fan, bead, wait: 0.0 });
         if let Some(to) = to {
-            if arc.is_none() {
+            // The first move leaves from nowhere known: it gives no direction.
+            if arc.is_none() && (self.placed || self.heading.is_some()) {
                 self.heading = self.heading_to([to[0], to[1]]);
             }
             self.at = to;
@@ -301,9 +307,11 @@ impl State {
 
     /// Climbs to `z` at the travel speed, which the Z axis holds (`limit`): one turn of a helix of
     /// the lift radius that sets off along `heading`, so it flows into a travel that way, and
-    /// comes back over its start; straight up with no radius, or where the layer `leaf` is not
-    /// level under the helix, which would climb slower than the layer.
-    fn lift(&mut self, p: &MotionParams, z: f64, heading: [f64; 2], leaf: &Leaf) {
+    /// comes back over its start; the helix turns the way the nozzle turns from the last move
+    /// to `heading`, and to the left where it goes straight on or back. Straight up with no
+    /// radius or no heading, or where the layer `leaf` is not level under the helix, which
+    /// would climb slower than the layer.
+    fn lift(&mut self, p: &MotionParams, z: f64, heading: Option<[f64; 2]>, leaf: &Leaf) {
         let dz = z - self.at[2];
         if !self.placed || dz <= 1e-9 {
             return;
@@ -313,9 +321,13 @@ impl State {
         } else {
             0.0
         };
-        let arc = (r > 0.0).then(|| Arc {
-            centre: [self.at[0] - r * heading[1], self.at[1] + r * heading[0]],
-            turn: std::f64::consts::TAU,
+        let arc = heading.filter(|_| r > 0.0).map(|h| {
+            let turn = self.heading.map_or(0.0, |last| last[0] * h[1] - last[1] * h[0]);
+            let side = if turn < -STRAIGHT_ON { -1.0 } else { 1.0 };
+            Arc {
+                centre: [self.at[0] - side * r * h[1], self.at[1] + side * r * h[0]],
+                turn: side * std::f64::consts::TAU,
+            }
         });
         self.push(Some([self.at[0], self.at[1], z]), arc, 0.0, p.travel.speed, None);
     }
@@ -399,7 +411,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         placed: false,
         bead: Vec::new(),
         bead_speed: base.travel.speed,
-        heading: [1.0, 0.0],
+        heading: None,
         retracted: 0.0,
         accel: base.travel.accel,
         fan: 0.0,
