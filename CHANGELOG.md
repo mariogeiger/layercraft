@@ -9,6 +9,9 @@ All notable user-visible changes to this project are documented here.
 - A lift's helix turns the way the nozzle turns from its last move to the travel it sets off
   into (to the left where it goes straight on or back), so a mirrored part's lifts are
   mirrored; the nozzle's first heading is set by its first move, not by the plate's x axis.
+- A layer too short to cool waits at the point nearest the nozzle that lies the clearance from
+  every bead, by the hull of its beads, not 10 mm past their x/y box along x or y: turned,
+  moved or mirrored with the part, ties going the way the nozzle was heading.
 - Convection rolls are made for each solid, over its own sparse areas and in its own frame,
   not one set over the whole plate: a part's rolls no longer change with what else stands on
   the plate, and two parts do not share a grid.

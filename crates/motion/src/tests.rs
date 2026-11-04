@@ -16,7 +16,7 @@ fn role(speed: f64) -> RoleMotion {
     RoleMotion { speed, accel: 1000.0, flow: 1.0 }
 }
 
-fn params() -> MotionParams {
+pub(crate) fn params() -> MotionParams {
     MotionParams {
         filament_diameter: 1.75,
         flow_ratio: 0.98,
@@ -92,7 +92,7 @@ fn scope() -> layercraft_machine::Scope {
     [("who".to_string(), layercraft_machine::Value::Str("me".into()))].into_iter().collect()
 }
 
-fn compiled(paths: &Paths, p: &MotionParams) -> Program {
+pub(crate) fn compiled(paths: &Paths, p: &MotionParams) -> Program {
     compile(paths, &Field::uniform(p.clone())).unwrap()
 }
 
@@ -178,7 +178,7 @@ fn a_layer_starts_crossing_over_at_the_hop_then_lands() {
 }
 
 /// A plate 256 mm square.
-const PLATE: [[f64; 2]; 2] = [[0.0, 0.0], [256.0, 256.0]];
+pub(crate) const PLATE: [[f64; 2]; 2] = [[0.0, 0.0], [256.0, 256.0]];
 
 #[test]
 fn a_layer_too_short_at_its_floor_waits_off_the_part() {

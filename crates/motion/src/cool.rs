@@ -13,14 +13,34 @@
 //! parameters are those at its centre.
 
 use crate::moves::{chained, lengths};
+use crate::park::clear_of;
 use crate::plan::check;
 use crate::{Layer, MotionError, MotionParams, Move, Program};
+use layercraft_geom::Point;
 use layercraft_path::Face;
 use layercraft_tune::{Field, centre};
 
 /// How far past a layer's beads its nozzle waits, in mm: a hot end some 20 mm across warms what
 /// lies under it.
 const CLEARANCE: f64 = 10.0;
+
+/// The most a chord of an arc may fall short of it, in mm, when a bead's arc is sampled: far
+/// under the clearance, so the beads' hull is theirs to that.
+const ARC_SAMPLING_MM: f64 = 1e-3;
+
+/// Points along bead `m`, laid from `from`, whose hull holds it: its ends, and for an arc chords
+/// within `ARC_SAMPLING_MM` of it.
+fn sampled(m: &Move, from: [f64; 3]) -> Vec<Point> {
+    let steps = match (m.arc, m.to) {
+        (Some(arc), Some(_)) => {
+            let r = m.radius(from);
+            let chord = 2.0 * (1.0 - (ARC_SAMPLING_MM / r).min(1.0)).acos();
+            if chord > 0.0 { (arc.turn.abs() / chord).ceil().clamp(1.0, 4096.0) as usize } else { 1 }
+        }
+        _ => 1,
+    };
+    (0..=steps).map(|k| m.point(from, k as f64 / steps as f64)).map(|p| [p[0], p[1]]).collect()
+}
 
 /// Gives each layer of `program` the time to cool before the next, on a plate whose printable
 /// area is `area`, `[min, max]`.
@@ -85,15 +105,20 @@ pub fn cool(
 }
 
 /// Ends `layer`, entered from `start`, with the nozzle `seconds` off its beads: up to its hop,
-/// over to `CLEARANCE` past their extent the nearest way within `area`, and there, still. With
-/// nowhere on the plate that far off, it waits over the layer at its hop.
+/// over to the nearest point `CLEARANCE` from every bead within `area` (`park`), and there,
+/// still. With nowhere on the plate that far off, it waits over the layer at its hop.
 fn wait_off(layer: &mut Layer, start: Option<[f64; 3]>, p: &MotionParams, area: [[f64; 2]; 2], seconds: f64) {
-    let extent = chained(&layer.moves, start)
-        .filter(|(_, m)| m.bead.is_some())
-        .filter_map(|(from, m)| Some(m.bounds(from?)))
-        .reduce(|a, b| {
-            [[a[0][0].min(b[0][0]), a[0][1].min(b[0][1])], [a[1][0].max(b[1][0]), a[1][1].max(b[1][1])]]
-        });
+    let mut beads: Vec<Point> = Vec::new();
+    let mut heading = [0.0, 0.0];
+    for (from, m) in chained(&layer.moves, start).filter(|(_, m)| m.bead.is_some()) {
+        let Some(from) = from else { continue };
+        beads.extend(sampled(m, from));
+        let (_, arrival) = m.directions(from);
+        let along = arrival[0].hypot(arrival[1]);
+        if along > 0.0 {
+            heading = [arrival[0] / along, arrival[1] / along];
+        }
+    }
     let end = layer.moves.iter().rev().find_map(|m| m.to).or(start);
     let fan = layer.moves.last().map_or(p.fan_speed, |m| m.fan);
     let go = |to: [f64; 3]| Move {
@@ -111,15 +136,7 @@ fn wait_off(layer: &mut Layer, start: Option<[f64; 3]>, p: &MotionParams, area: 
         if end[2] < z {
             layer.moves.push(go([end[0], end[1], z]));
         }
-        let inside = |q: [f64; 2]| {
-            (area[0][0]..=area[1][0]).contains(&q[0]) && (area[0][1]..=area[1][1]).contains(&q[1])
-        };
-        let off = extent.into_iter().flat_map(|[lo, hi]| {
-            let c = CLEARANCE;
-            [[lo[0] - c, end[1]], [hi[0] + c, end[1]], [end[0], lo[1] - c], [end[0], hi[1] + c]]
-        });
-        let distance = |q: &[f64; 2]| (q[0] - end[0]).hypot(q[1] - end[1]);
-        if let Some(q) = off.filter(|&q| inside(q)).min_by(|a, b| distance(a).total_cmp(&distance(b))) {
+        if let Some(q) = clear_of(&beads, [end[0], end[1]], heading, CLEARANCE, area) {
             layer.moves.push(go([q[0], q[1], z]));
         }
     }

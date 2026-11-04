@@ -26,6 +26,7 @@ mod leaf;
 mod limit;
 mod merge;
 mod moves;
+mod park;
 mod plan;
 mod room;
 mod time;
@@ -256,5 +257,7 @@ pub enum MotionError {
     Template(String, TemplateError),
 }
 
+#[cfg(test)]
+mod cool_tests;
 #[cfg(test)]
 mod tests;
