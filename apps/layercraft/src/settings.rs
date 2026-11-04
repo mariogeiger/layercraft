@@ -9,7 +9,7 @@
 use crate::printers::printer;
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
 use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::{Face, PathParams, SparsePattern, SupportLines};
+use layercraft_path::{Crossing, Face, PathParams, SparsePattern, SupportLines};
 use layercraft_region::{RegionParams, SupportParams};
 use layercraft_section::{Foliation, Layering};
 use layercraft_verify::{Envelope, Toolhead};
@@ -339,6 +339,18 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         } else {
             (0.0, 0.0)
         };
+    // A bead across a band narrower than `v²/a` never runs at its speed: it speeds up and stops.
+    let run = |speed: f64, accel: f64| if accel > 0.0 { speed * speed / accel } else { 0.0 };
+    let top = role(m, "top_surface_speed", "top_surface_acceleration")?;
+    let solid = role(m, "internal_solid_infill_speed", "internal_solid_infill_acceleration")?;
+    let crossing = Crossing {
+        top: run(top.speed, top.accel),
+        inside: run(solid.speed, solid.accel),
+        first_layer: run(
+            m.number(Process, "initial_layer_infill_speed")?,
+            accel(m, "initial_layer_acceleration")?,
+        ),
+    };
     Ok(Settings {
         layering: Layering {
             first_layer_height: m.number(Process, "initial_layer_print_height")?,
@@ -392,6 +404,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 .filter(|(key, _)| m.text(Process, key).is_ok_and(|p| p.starts_with("monotonic")))
                 .map(|(_, face)| face)
                 .collect(),
+            crossing,
             resolution: m.number(Process, "resolution")?,
             sparse_pattern: SparsePattern::Lines,
             support: Some(SupportLines {
@@ -408,9 +421,9 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             inner_wall: role(m, "inner_wall_speed", "inner_wall_acceleration")?,
             top_surface: RoleMotion {
                 flow: m.number(Process, "top_solid_infill_flow_ratio").unwrap_or(1.0),
-                ..role(m, "top_surface_speed", "top_surface_acceleration")?
+                ..top
             },
-            solid: role(m, "internal_solid_infill_speed", "internal_solid_infill_acceleration")?,
+            solid,
             sparse: role(m, "sparse_infill_speed", "sparse_infill_acceleration")?,
             bridge: RoleMotion {
                 flow: m.number(Process, "bridge_flow").unwrap_or(1.0),

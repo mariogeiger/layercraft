@@ -2,6 +2,50 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.13.0
+
+### Changed
+
+- Dense areas are laid alike whichever way the part lies on the plate: every direction their
+  beads take comes from the part. Each piece of a top surface or of solid infill takes the
+  family of curves that leaves the fewest bead ends, at its edge and against its neighbours,
+  and lays least along the dense beads of the layer below: a band narrower than its beads'
+  crossing width `W* = v²/a`, across which a bead never reaches its speed (20 mm for the X2D's
+  top surface, 6.25 mm inside), in insets of its edge; a wider piece in straight lines along or
+  across its own edges, its neighbours' or the beads below it, crossing the layer below. Lines
+  of one direction run on from piece to piece, placed by their part. On a Scrabble board each
+  ridge was hatched at its own piece's angle, three lines along the ridges one way and dots
+  across them the other; every ridge is now laid alike. This replaces the angle chosen for each
+  piece among the layer's and its four longest edges' (0.4.10).
+- What the insets leave, and any strip no longer than twice as thick as it is, takes one bead
+  through its centroid along its own line: its axis of greatest spread or, where it spreads
+  alike every way as a square's middle does, the side nearest its part's frame. A square's
+  middle was laid in bits whose direction the lattice's rounding chose.
+- A part's frame, which turns the convection rolls and settles the dense lines' ties, takes its
+  edges' own lines where its areas spread alike every way, as a square's do, instead of the
+  plate's axes, and of those the way its areas skew the most.
+- On a board 120 mm square and 2 mm thick under 16 + 16 ridges 1.2 mm wide, the paths stage lays
+  17,581 beads instead of 25,813 for 301.4 m of bead (303.6 m), in 154 s instead of 216 s run
+  side by side: the tour of the plate's top layer, quadratic in its beads, takes nearly all of it.
+- `PathParams` gains `crossing` (`Crossing { top, inside, first_layer }`), read from the
+  process's speeds and accelerations; `resolution` no longer chooses hatch angles.
+  `layercraft_geom::hatch` takes the phase of its lines, and `chordal_axis` the axis of the
+  part's frame at a point (`axis_at`), which settles the line of a symmetric piece.
+
+### Added
+
+- `layercraft_geom::disc_offset` and `disc_opening`: a region grown or shrunk with round
+  corners, its Minkowski sum with a disc, each arc cut into equal chords within
+  `RESOLUTION_MM` of it, the same chords however the region is turned or mirrored.
+- `layercraft_geom::Moments`: a region's area, centroid, own lines (`Axes`) and skew, from its
+  moments; a moment vanishes where moving the boundary by `RESOLUTION_MM` could cancel it.
+
+### Fixed
+
+- `clip_lines` keeps a ring in one piece through its start.
+- The chordal axis turns with its region: triangles whose four corners lie on one circle, as
+  along an arc, make one cell, where the lattice's rounding chose the chord between them.
+
 ## 0.12.0
 
 ### Added

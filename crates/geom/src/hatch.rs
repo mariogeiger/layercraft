@@ -1,15 +1,15 @@
-//! Parallel lines on a fixed grid, clipped to a region.
+//! Parallel lines clipped to a region, on a grid whose phase the caller anchors.
 
 use crate::{GeomError, Point, Polyline, Region, bounds, clip_lines, edges, polyline_length};
 
 /// The most hatch lines drawn across one region.
 const MAX_LINES: f64 = 1_000_000.0;
 
-/// Lines at `angle` degrees, `spacing` apart on the grid `v = k · spacing` of the rotated frame,
-/// clipped to `region`.
-pub fn hatch(region: &Region, spacing: f64, angle: f64) -> Result<Vec<Polyline>, GeomError> {
+/// Lines at `angle` degrees, `spacing` apart on the grid `v = phase + k · spacing` of the rotated
+/// frame, `v` the distance across them from the origin, clipped to `region`.
+pub fn hatch(region: &Region, spacing: f64, angle: f64, phase: f64) -> Result<Vec<Polyline>, GeomError> {
     let Some([lo, hi]) = bounds(region) else { return Ok(Vec::new()) };
-    if !(spacing.is_finite() && spacing > 0.0) {
+    if !(spacing.is_finite() && spacing > 0.0 && phase.is_finite()) {
         return Ok(Vec::new());
     }
     let (s, c) = angle.to_radians().sin_cos();
@@ -18,7 +18,7 @@ pub fn hatch(region: &Region, spacing: f64, angle: f64) -> Result<Vec<Polyline>,
     let across = |p: &[f64; 2]| -p[0] * s + p[1] * c;
     let (u0, u1) = corners.iter().map(along).fold((f64::MAX, f64::MIN), |(a, b), u| (a.min(u), b.max(u)));
     let (v0, v1) = corners.iter().map(across).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(v), b.max(v)));
-    let (k0, k1) = ((v0 / spacing).ceil(), (v1 / spacing).floor());
+    let (k0, k1) = (((v0 - phase) / spacing).ceil(), ((v1 - phase) / spacing).floor());
     if !(k0.is_finite() && k1.is_finite()) || k1 - k0 > MAX_LINES {
         return Ok(Vec::new());
     }
@@ -26,7 +26,7 @@ pub fn hatch(region: &Region, spacing: f64, angle: f64) -> Result<Vec<Polyline>,
     let mut lines = Vec::new();
     let mut k = k0;
     while k <= k1 {
-        let v = k * spacing;
+        let v = phase + k * spacing;
         lines.push(vec![to_xy(u0 - 1.0, v), to_xy(u1 + 1.0, v)]);
         k += 1.0;
     }
@@ -59,7 +59,7 @@ pub fn bridge_angle(
     }
     let mut best = ((usize::MAX, f64::INFINITY), normalize(preferred));
     for angle in seen {
-        let lines = hatch(region, spacing, angle)?;
+        let lines = hatch(region, spacing, angle, 0.0)?;
         let loose = lines
             .iter()
             .flat_map(|line| [line.first(), line.last()])

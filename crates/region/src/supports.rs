@@ -59,7 +59,7 @@ pub fn roof(
         // The strands reach a bead's width onto what holds them.
         let piece = intersection(&offset(&vec![shape.clone()], w)?, section)?;
         let angle = bridge_angle(&piece, strand, 0.0, |p| !rests.covers(p))?;
-        for line in hatch(&piece, strand, angle)? {
+        for line in hatch(&piece, strand, angle, 0.0)? {
             let ends = [line.first(), line.last()];
             let anchored = ends.iter().flatten().all(|&&p| rests.covers(p));
             if anchored && polyline_length(&line) <= max_bridge {

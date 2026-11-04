@@ -152,7 +152,7 @@ fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<Point> {
 
 #[test]
 fn a_strip_has_one_centre_line_as_thick_as_it_is_wide() {
-    let lines = chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 0.5)]], 0.25, 1e-3).unwrap();
+    let lines = chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 0.5)]], 0.25, 1e-3, &|_| [1.0, 0.0]).unwrap();
     assert_eq!(lines.len(), 1);
     let line = &lines[0];
     assert!(!line.closed);
@@ -171,7 +171,7 @@ fn a_wedge_has_its_centre_line_to_its_tip() {
     // A thin isosceles wedge, 0.6 mm at its base, 6 mm long: the line runs to the tip, thinning
     // with it.
     let wedge = vec![vec![vec![[0.0, 0.0], [6.0, 0.3], [0.0, 0.6]]]];
-    let lines = chordal_axis(&wedge, 0.1, 1e-3).unwrap();
+    let lines = chordal_axis(&wedge, 0.1, 1e-3, &|_| [1.0, 0.0]).unwrap();
     assert_eq!(lines.len(), 1, "{lines:?}");
     let line = &lines[0];
     for (p, t) in line.points.iter().zip(&line.thickness) {
@@ -188,7 +188,8 @@ fn a_wedge_has_its_centre_line_to_its_tip() {
 fn a_ring_has_a_closed_centre_line() {
     let mut hole = rect(0.4, 0.4, 9.6, 9.6);
     hole.reverse();
-    let lines = chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 10.0), hole]], 0.2, 1e-3).unwrap();
+    let lines =
+        chordal_axis(&vec![vec![rect(0.0, 0.0, 10.0, 10.0), hole]], 0.2, 1e-3, &|_| [1.0, 0.0]).unwrap();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].closed);
     for (p, t) in lines[0].points.iter().zip(&lines[0].thickness) {
@@ -339,4 +340,188 @@ fn a_line_clipped_runs_on_as_one_piece_until_it_leaves_the_region() {
     let ring = vec![[5.0, 5.0], [15.0, 5.0], [15.0, 8.0], [5.0, 8.0], [5.0, 5.0]];
     let pieces = clip_lines(&[ring], &a).unwrap();
     assert_eq!(pieces, vec![vec![[10.0, 8.0], [5.0, 8.0], [5.0, 5.0], [10.0, 5.0]]]);
+    // Wherever it starts inside, a ring goes on through its start: the same piece.
+    let ring = vec![[5.0, 8.0], [5.0, 5.0], [15.0, 5.0], [15.0, 8.0], [5.0, 8.0]];
+    let pieces = clip_lines(&[ring], &a).unwrap();
+    assert_eq!(pieces, vec![vec![[10.0, 8.0], [5.0, 8.0], [5.0, 5.0], [10.0, 5.0]]]);
+}
+
+/// A mirror across the x axis when `mirror`, then a turn by `angle` degrees and a move by `shift`.
+fn isometry(angle: f64, mirror: bool, shift: Point) -> impl Fn(Point) -> Point {
+    let (s, c) = angle.to_radians().sin_cos();
+    move |p: Point| {
+        let p = if mirror { [p[0], -p[1]] } else { p };
+        [c * p[0] - s * p[1] + shift[0], s * p[0] + c * p[1] + shift[1]]
+    }
+}
+
+/// A region moved by `g`, each contour reversed where `g` mirrors, so that it keeps its turn.
+fn moved(region: &Region, g: &dyn Fn(Point) -> Point, mirror: bool) -> Region {
+    let contour = |c: &Contour| {
+        let mut c: Contour = c.iter().map(|&p| g(p)).collect();
+        if mirror {
+            c.reverse();
+        }
+        c
+    };
+    region.iter().map(|shape| shape.iter().map(contour).collect()).collect()
+}
+
+/// The farthest any vertex of either region lies from the nearest vertex of the other.
+fn vertices_apart(a: &Region, b: &Region) -> f64 {
+    let far = |from: &Region, to: &Region| {
+        let near = |p: &Point| {
+            to.iter().flatten().flatten().map(|q| (p[0] - q[0]).hypot(p[1] - q[1])).fold(f64::MAX, f64::min)
+        };
+        from.iter().flatten().flatten().map(near).fold(0.0, f64::max)
+    };
+    far(a, b).max(far(b, a))
+}
+
+#[test]
+fn a_disc_offset_turns_and_mirrors_with_its_region() {
+    // A region with no symmetry, with sharp, blunt and reflex corners and a hole: grown or shrunk,
+    // then turned or mirrored, it is grown or shrunk once turned or mirrored, each arc cut into
+    // the same chords, to the lattice's rounding.
+    let outline = vec![[0.0, 0.0], [9.0, 0.0], [9.5, 4.0], [5.0, 3.0], [6.0, 7.5], [1.0, 6.0]];
+    let region = union_contours(&[outline, vec![[2.0, 1.5], [2.5, 3.5], [3.6, 2.0]]]).unwrap();
+    for (angle, mirror) in [(37.0, false), (110.0, true)] {
+        let g = isometry(angle, mirror, [12.5, -7.0]);
+        let there = moved(&region, &g, mirror);
+        for d in [-1.1, -0.3, 0.2, 0.9, 2.5] {
+            let (a, b) =
+                (moved(&disc_offset(&region, d).unwrap(), &g, mirror), disc_offset(&there, d).unwrap());
+            let count = |r: &Region| r.iter().flatten().map(Vec::len).sum::<usize>();
+            assert_eq!((a.len(), count(&a)), (b.len(), count(&b)), "offset {d}, {angle}°");
+            let gap = vertices_apart(&a, &b);
+            assert!(gap < 1e-5, "offset {d}, {angle}°: vertices {gap} mm apart");
+        }
+    }
+}
+
+/// The distance from `p` to the boundary of `region`.
+fn to_boundary(p: Point, region: &Region) -> f64 {
+    region
+        .iter()
+        .flatten()
+        .flat_map(|c| edges(c))
+        .map(|(a, b)| segment_distance(p, a, b))
+        .fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn a_disc_offset_of_a_square_is_its_sum_with_a_disc() {
+    // Grown by r, a square of side a covers a² + 4ar + πr², less the slivers the chords cut off
+    // its arcs, under RESOLUTION_MM deep along their 2πr; shrunk by r, the square of side
+    // a − 2r. Grown and shrunk back, it is itself but at its corners: the lines of the first
+    // and last chords of each arc, as far inside it as a chord's middle, under RESOLUTION_MM,
+    // meet back past the corner, √2 times that a quarter turn apart.
+    let a = union_contours(&[square(0.0, 0.0, 10.0)]).unwrap();
+    for r in [0.05, 0.4, 3.0] {
+        let grown = disc_offset(&a, r).unwrap();
+        let (got, exact) = (area(&grown), 100.0 + 40.0 * r + std::f64::consts::PI * r * r);
+        let cut = 2.0 * std::f64::consts::PI * r * RESOLUTION_MM;
+        assert!(got <= exact + 1e-9 && exact - got <= cut, "{r}: {got} of {exact}");
+        let shrunk = area(&disc_offset(&a, -r).unwrap());
+        assert!(close(shrunk, (10.0 - 2.0 * r).powi(2)), "{r}: {shrunk}");
+        let back = disc_offset(&grown, -r).unwrap();
+        let off = back.iter().flatten().flatten().map(|&p| to_boundary(p, &a)).fold(0.0, f64::max);
+        let corners = a.iter().flatten().flatten().map(|&p| to_boundary(p, &back)).fold(0.0, f64::max);
+        assert!(
+            off < RESOLUTION_MM && corners <= std::f64::consts::SQRT_2 * RESOLUTION_MM,
+            "{r}: {off} {corners}"
+        );
+    }
+}
+
+#[test]
+fn a_regions_own_lines_turn_and_mirror_with_it() {
+    let polygon = |n: usize, r: f64, phase: f64| -> Region {
+        let points = (0..n).map(|k| {
+            let t = phase.to_radians() + std::f64::consts::TAU * k as f64 / n as f64;
+            [5.0 + r * t.cos(), 3.0 + r * t.sin()]
+        });
+        union_contours(&[points.collect()]).unwrap()
+    };
+    let lines = |region: &Region| {
+        let moments = Moments::of(region.iter().map(|s| (s.as_slice(), 1.0))).unwrap();
+        moments.axes.map(|axes| {
+            (axes.count, axes.lines().map(|u| u[1].atan2(u[0]).to_degrees()).collect::<Vec<f64>>())
+        })
+    };
+    let apart = |a: f64, b: f64| {
+        let d = (a - b).rem_euclid(180.0);
+        d.min(180.0 - d)
+    };
+    // The long side of a rectangle, turned or mirrored with it.
+    let rectangle = union_contours(&[rect(0.0, 0.0, 3.0, 1.0)]).unwrap();
+    for (angle, mirror) in [(25.0, false), (110.0, true)] {
+        let (count, at) = lines(&moved(&rectangle, &isometry(angle, mirror, [1.0, 2.0]), mirror)).unwrap();
+        assert!(count == 1 && apart(at[0], angle) < 1e-4, "{angle}°: {at:?}");
+    }
+    // A square spreads alike every way: its two sides; an equilateral triangle and a hexagon,
+    // their three edges' lines; a polygon of many sides, as a disc, none.
+    for (n, phase, count) in [(4, 70.0, 2), (3, 10.0, 3), (6, 10.0, 3)] {
+        let (got, at) = lines(&polygon(n, 2.0, phase)).unwrap();
+        // The first edge runs from the vertex at `phase` to the next, square to their bisector.
+        let edge = phase + 90.0 + 180.0 / n as f64;
+        assert_eq!(got, count, "{n}-gon: {at:?}");
+        for k in 0..count {
+            let want = edge + 180.0 * k as f64 / count as f64;
+            assert!(at.iter().any(|&a| apart(a, want) < 1e-4), "{n}-gon: {at:?}, not {want}");
+        }
+    }
+    assert_eq!(lines(&polygon(720, 2.0, 3.0)), None);
+    // Flats a hundredth of a millimetre long on a disc are no square's sides.
+    assert_eq!(lines(&disc_offset(&union_contours(&[square(0.0, 0.0, 0.01)]).unwrap(), 0.3).unwrap()), None);
+    // A right triangle skews towards its sharper corner, along its longer leg.
+    let wedge = union_contours(&[vec![[0.0, 0.0], [3.0, 0.0], [0.0, 1.0]]]).unwrap();
+    let moments = Moments::of(wedge.iter().map(|s| (s.as_slice(), 1.0))).unwrap();
+    assert_eq!(moments.most_skewed([[-1.0, 0.0], [1.0, 0.0]].into_iter()), Some([1.0, 0.0]));
+    assert!(
+        close(moments.centroid[0], 1.0) && close(moments.centroid[1], 1.0 / 3.0) && close(moments.area, 1.5)
+    );
+}
+
+#[test]
+fn a_shape_too_short_for_a_strip_lies_along_its_own_line() {
+    // A rounded square half a millimetre across, as the insets of a square leave at its middle:
+    // one line along a side through its centre, edge to edge, as thick as its area over that
+    // chord; of its two sides the one nearer the part's frame axis, turned or mirrored with it.
+    let blob = disc_offset(&union_contours(&[square(-0.15, -0.15, 0.3)]).unwrap(), 0.1).unwrap();
+    // A disc has no line of its own: it lies along the frame's axis. A short strip lies along
+    // its length, whatever the frame's axis.
+    let circle = (0..720).map(|k| {
+        let t = std::f64::consts::TAU * k as f64 / 720.0;
+        [0.25 * t.cos(), 0.25 * t.sin()]
+    });
+    let disc = union_contours(&[circle.collect()]).unwrap();
+    let strip = disc_offset(&union_contours(&[rect(-0.2, -0.125, 0.2, 0.125)]).unwrap(), 0.1).unwrap();
+    for (shape, frame, ends) in [
+        (&blob, 10.0f64, [0.25, 0.0]),
+        (&disc, 33.0, [0.25 * 33f64.to_radians().cos(), 0.25 * 33f64.to_radians().sin()]),
+        (&strip, 80.0, [0.3, 0.0]),
+    ] {
+        for (angle, mirror) in [(0.0, false), (37.0, false), (110.0, true)] {
+            let g = isometry(angle, mirror, [3.0, -2.0]);
+            let o = g([0.0, 0.0]);
+            let (u, v) = (g([frame.to_radians().cos(), frame.to_radians().sin()]), g(ends));
+            let axis = [u[0] - o[0], u[1] - o[1]];
+            let lines =
+                chordal_axis(&moved(shape, &g, mirror), std::f64::consts::PI * 0.2 / 4.0, 0.012, &|_| axis)
+                    .unwrap();
+            assert_eq!(lines.len(), 1, "{angle}°: {lines:?}");
+            let line = &lines[0];
+            let tips = [v, [2.0 * o[0] - v[0], 2.0 * o[1] - v[1]]];
+            assert_eq!(line.points.len(), 2, "{angle}°: {line:?}");
+            for p in &line.points {
+                let off = tips.iter().map(|t| (p[0] - t[0]).hypot(p[1] - t[1])).fold(f64::MAX, f64::min);
+                assert!(off < 1e-5, "{angle}°, frame {frame}°: {p:?} is {off} mm from the ends {tips:?}");
+            }
+            let chord = 2.0 * (ends[0].hypot(ends[1]));
+            for t in &line.thickness {
+                assert!((t - area(shape) / chord).abs() < 1e-5, "{angle}°: thickness {t}");
+            }
+        }
+    }
 }

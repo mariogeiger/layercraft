@@ -18,7 +18,7 @@ curious humans like that too.
 | **mesh** | the solid's triangles, standing on the plate | read from the 3MF, every index and number checked |
 | **sections** | one planar region per layer | the *exact* cut of the mesh at the layer's mid-height: a vertex on the plane counts as above it, so every cut edge is cut once and the loops close with no tolerance |
 | **regions** | each layer split into walls, top and bottom skins, solid and sparse infill, bridges, and the supports under what nothing holds up | Boolean operations and offsets on a nanometre lattice, exact in integers |
-| **paths** | every bead, in printing order | wall loops with their seams lined up, hatches on a fixed grid, strands across bridges |
+| **paths** | every bead, in printing order | wall loops with their seams lined up, dense insets and lines along the part's own directions, strands across bridges |
 | **program** | every move of the nozzle, layer by layer, each with all it does: where it goes (a line, or an arc climbing about a vertical axis), the filament, speed, acceleration and fan, and the bead it lays | filament from the volume each bead fills, speeds from the machine, time from a look-ahead planner |
 
 Then each layer is slowed if it would print faster than it cools, and waits off the part when even

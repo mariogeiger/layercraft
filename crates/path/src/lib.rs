@@ -1,14 +1,17 @@
 //! Stage 3: the lines the nozzle draws, in printing order.
 //!
 //! Walls become closed loops, starting at the vertex nearest the island's back right corner
-//! so seams line up from layer to layer. Solid areas are hatched at the beads' tiling spacing,
-//! at ±45° alternating by layer; sparse areas get lines spaced for the requested density by
-//! volume, also alternating, so no two beads cross on a layer, or convection rolls as far apart
-//! (`rolls`), running from wall to wall and resting on those below. Bridges are strands one
-//! nozzle wide: side by side over air, where they hang; over sparse infill, where they rest,
-//! spaced to fill their layer exactly. Hatch lines lie on a fixed grid, so layers stack; the
-//! move between neighbouring lines is marked as staying inside the part, so it needs no
-//! retraction, as is any move over what the layer above covers. Each island is printed whole —
+//! so seams line up from layer to layer. Dense areas are laid at the beads' tiling spacing as
+//! families of parallel curves with the fewest bead ends (`families`): a band narrower than
+//! its beads' crossing width along itself, in insets of its edge, a wider area in straight lines
+//! along or across its edges, crossing the dense beads of the layer below. Sparse areas get
+//! lines spaced for the requested density by volume, turning a quarter turn each layer, so no
+//! two beads cross on a layer, or convection rolls as far apart (`rolls`), running from wall to
+//! wall and resting on those below. Bridges are strands one nozzle wide: side by side over air,
+//! where they hang; over sparse infill, where they rest, spaced to fill their layer exactly.
+//! Sparse lines lie on a fixed grid, so layers stack; the move between neighbouring lines is
+//! marked as staying inside the part, so it needs no retraction, as is any move over what the
+//! layer above covers. Each island is printed whole —
 //! inner walls, outer wall, then its infill — and islands follow each other nearest first.
 //! Within an island, the beads of each kind follow the tour that retracts least often, then
 //! travels least; the lines of a `monotone` role are laid in sweeps instead, each against the
@@ -16,7 +19,8 @@
 //! carries the share of its bead that hangs past the layer below (`overhang`). Each island is
 //! traced by the parameters at its centre. The supports are islands of their own (`supports`).
 
-mod dense;
+mod families;
+mod frame;
 mod gap;
 mod link;
 mod order;
@@ -118,8 +122,11 @@ pub struct PathParams {
     /// follow the cheapest tour.
     #[serde(default)]
     pub monotone: Vec<Face>,
-    /// The printer's resolution, in mm: each dense piece is hatched at the angle that fills it
-    /// best to within its quanta; 0 hatches every piece at the layer's angle.
+    /// How wide a dense band must be for its lines to cross the layer below rather than run
+    /// along it, by face (`families`).
+    pub crossing: Crossing,
+    /// The printer's resolution, in mm: a bead along a thin strip keeps one width while the
+    /// strip's thickness changes by less.
     #[serde(default)]
     pub resolution: f64,
     /// What the sparse lines draw, at the same spacing.
@@ -137,6 +144,18 @@ pub struct SupportLines {
     pub width: f64,
     pub gap: f64,
     pub interface_gap: f64,
+}
+
+/// How wide a dense band must be, in mm, for its lines to cross those below it: `v²/a` of the
+/// beads laying it, which across a narrower band would never reach their speed before stopping.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Crossing {
+    /// The top surface's.
+    pub top: f64,
+    /// Inside, the solid infill's.
+    pub inside: f64,
+    /// The first layer's.
+    pub first_layer: f64,
 }
 
 /// What a sparse area's lines draw.
@@ -181,6 +200,10 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     if !p.infill_wall_overlap.is_finite() || !(0.0..=1.0).contains(&p.infill_wall_overlap) {
         return Err(PathError::BadParams("infill overlap must be 0 to 1".into()));
     }
+    let Crossing { top, inside, first_layer } = p.crossing;
+    if ![top, inside, first_layer].iter().all(|w| w.is_finite() && *w >= 0.0) {
+        return Err(PathError::BadParams("crossing widths must be finite and not negative".into()));
+    }
     if !p.infill_angle.is_finite() {
         return Err(PathError::BadParams("infill angle must be finite".into()));
     }
@@ -208,7 +231,13 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     let mut at: Point = [0.0, 0.0];
     // Made on the first layer whose sparse area asks for them, over all the layers.
     let mut rolls: Option<rolls::Rolls> = None;
+    // The dense beads of the layer below, and of the passes laid so far at this height.
+    let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
     for layer in &regions.layers {
+        if height != Some(layer.top) {
+            beneath = families::Beneath::new(std::mem::take(&mut laid));
+            height = Some(layer.top);
+        }
         let parts = order::parts(layer, field)?;
         let asked = parts.iter().find_map(|(p, _)| match p.sparse_pattern {
             SparsePattern::Rolls { tilt, ply } if !layer.sparse.is_empty() => Some((p, tilt, ply)),
@@ -228,11 +257,15 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         };
         let mut islands = Vec::new();
         for (params, part) in parts {
-            islands.extend(order::islands(&part, &params, lines.as_deref())?);
+            islands.extend(order::islands(&part, &params, lines.as_deref(), &beneath)?);
         }
         islands.extend(supports::islands(layer, field.base())?);
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
+        for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {
+            let points = path.points.iter().chain(path.points.first().filter(|_| path.closed));
+            laid.extend(points.clone().zip(points.skip(1)).map(|(a, b)| (*a, *b, path.width)));
+        }
         layers.push(PathLayer {
             index: layer.index,
             top: layer.top,

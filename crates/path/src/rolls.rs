@@ -11,11 +11,10 @@
 
 mod contour;
 mod field;
-mod frame;
 mod walls;
 
+use crate::frame::Frame;
 use field::Flow;
-use frame::Frame;
 use layercraft_geom::{GeomError, Point, Polyline, Region, clip_lines};
 use layercraft_region::RegionLayer;
 use walls::Walls;

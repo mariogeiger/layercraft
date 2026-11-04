@@ -22,6 +22,7 @@ use i_overlay::mesh::int::style::{IntLineJoin, IntOutlineStyle};
 use i_overlay::string::clip::{ClipRule, IntClip};
 use i_triangle::int::triangulatable::IntTriangulatable;
 use std::collections::{BTreeMap, BTreeSet};
+use std::f64::consts::{PI, TAU};
 
 /// The lattice every result lies on, in mm: a nanometre, a thousandth of a printer's finest
 /// step, and the distance under which CAD programs such as SolidCraft weld points.
@@ -123,6 +124,113 @@ pub fn offset(region: &Region, distance: f64) -> Result<Region, GeomError> {
     Ok(region_from_lattice(shapes))
 }
 
+/// The region grown by `distance` (shrunk when negative) with round corners: its Minkowski sum
+/// with a disc, or what lies at least that deep in it. It moves with the region's boundary as a
+/// set, so a step of rounding there moves it by no more; a mitre, which follows each edge's
+/// direction, would turn a step-long edge into a spike. Each arc is cut into equal chords within
+/// `RESOLUTION_MM` of it, the same however the region is turned or mirrored, which turns the
+/// arc round.
+///
+/// Each contour's edges move `distance` along their normal out of the region and are joined
+/// round each corner where they part, through it where they cross; the points that curve winds
+/// round once, the way the contour does, are the contour's offset, and the region's is the
+/// outer contours' less its holes'.
+pub fn disc_offset(region: &Region, distance: f64) -> Result<Region, GeomError> {
+    check_region(region)?;
+    check_value(distance)?;
+    let steps = (distance * STEPS).round() as i64;
+    if region.is_empty() {
+        return Ok(Vec::new());
+    }
+    if steps == 0 {
+        return Ok(region.clone());
+    }
+    let ratio = (1.0 - RESOLUTION_MM / distance.abs()).clamp(-1.0, 1.0);
+    let chord = 2.0 * ratio.acos();
+    let empty: Vec<Vec<Lattice>> = Vec::new();
+    let mut parts: Vec<Vec<Lattice>> = Vec::new();
+    for mut contour in region_to_lattice(region).into_iter().flatten() {
+        contour.dedup();
+        while contour.len() > 1 && contour.first() == contour.last() {
+            contour.pop();
+        }
+        let twice_area = doubled_area(&contour);
+        if contour.len() < 3 || twice_area == 0 {
+            continue;
+        }
+        let outer = twice_area > 0;
+        let rule = if outer { FillRule::Positive } else { FillRule::Negative };
+        let moved = vec![moved_contour(&contour, steps as f64, chord)];
+        for shape in moved.overlay(&empty, OverlayRule::Subject, rule) {
+            parts.extend(shape.into_iter().map(|c| if outer { c } else { c.into_iter().rev().collect() }));
+        }
+    }
+    Ok(region_from_lattice(parts.overlay(&empty, OverlayRule::Subject, FillRule::Positive)))
+}
+
+/// The most chords one arc of a disc offset is cut into.
+const MAX_CHORDS: f64 = 65_536.0;
+
+/// Twice a lattice contour's signed area, positive counterclockwise.
+fn doubled_area(contour: &[Lattice]) -> i128 {
+    let n = contour.len();
+    (0..n)
+        .filter_map(|i| Some((contour.get(i)?, contour.get((i + 1) % n)?)))
+        .map(|(a, b)| a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128)
+        .sum()
+}
+
+/// A lattice contour's edges moved `d` steps along their right-hand normals, out of the region it
+/// bounds, joined round each corner where they part by an arc of radius `|d|` about it, cut into
+/// equal chords spanning at most `chord` radians, and back through the corner where they cross.
+/// Each edge moves by one step of the lattice rounded once, so that it stays parallel to itself
+/// and moving it back puts it back exactly.
+fn moved_contour(contour: &[Lattice], d: f64, chord: f64) -> Vec<Lattice> {
+    let n = contour.len();
+    let at = |i: usize| contour.get(i % n).copied().unwrap_or(IntPoint::new(0, 0));
+    let shift = |a: Lattice, b: Lattice| {
+        let (dx, dy) = ((b.x - a.x) as f64, (b.y - a.y) as f64);
+        let l = dx.hypot(dy);
+        IntPoint::new((d * dy / l).round() as i64, (-d * dx / l).round() as i64)
+    };
+    let plus = |p: Lattice, t: Lattice| IntPoint::new(p.x + t.x, p.y + t.y);
+    let mut out = Vec::with_capacity(2 * n);
+    for i in 0..n {
+        let (a, b, c) = (at(i), at(i + 1), at(i + 2));
+        let (m, k) = (shift(a, b), shift(b, c));
+        out.push(plus(a, m));
+        out.push(plus(b, m));
+        let (u, v) = ([(b.x - a.x) as f64, (b.y - a.y) as f64], [(c.x - b.x) as f64, (c.y - b.y) as f64]);
+        let (turn, along) = (u[0] * v[1] - u[1] * v[0], u[0] * v[0] + u[1] * v[1]);
+        let parting = if turn != 0.0 { (turn > 0.0) == (d > 0.0) } else { along < 0.0 };
+        if !parting {
+            out.push(b);
+            continue;
+        }
+        // Round the corner, the way the normal turns: anticlockwise growing, clockwise shrinking.
+        let (from, to) = ((m.y as f64).atan2(m.x as f64), (k.y as f64).atan2(k.x as f64));
+        let sweep = if d > 0.0 { (to - from).rem_euclid(TAU) } else { -(from - to).rem_euclid(TAU) };
+        let sweep = if turn == 0.0 { PI.copysign(sweep) } else { sweep };
+        let pieces = (sweep.abs() / chord).ceil().clamp(1.0, MAX_CHORDS) as usize;
+        let r = d.abs();
+        out.extend((1..pieces).map(|j| {
+            let angle = from + sweep * j as f64 / pieces as f64;
+            IntPoint::new(b.x + (r * angle.cos()).round() as i64, b.y + (r * angle.sin()).round() as i64)
+        }));
+    }
+    out
+}
+
+/// What of the region a disc of radius `r` within it reaches: shrunk by `r` and grown back,
+/// round, the parts narrower than `2r` gone.
+pub fn disc_opening(region: &Region, r: f64) -> Result<Region, GeomError> {
+    if r <= 0.0 || region.is_empty() {
+        return Ok(region.clone());
+    }
+    let core = disc_offset(region, -r)?;
+    intersection(&disc_offset(&core, r)?, region)
+}
+
 /// Whether a contour is at least `RESOLUTION_MM` thick, its thickness being twice its area over
 /// its perimeter: the width of a strip, half the radius of a disc.
 fn resolved(contour: &[Lattice]) -> bool {
@@ -151,6 +259,7 @@ fn without_slivers(shapes: Vec<Vec<Vec<Lattice>>>) -> Vec<Vec<Vec<Lattice>>> {
 
 /// The pieces of `lines` inside `region`, each running the way its line runs and as far as it
 /// runs inside: a piece ends where its line ends, meets the region's boundary or crosses a line.
+/// A line that ends where it starts is a ring, which goes on through its start.
 pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, GeomError> {
     check_points(lines)?;
     check_region(region)?;
@@ -160,24 +269,23 @@ pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, 
     let rule = ClipRule { invert: false, boundary_included: false };
     let paths = contours_to_lattice(lines);
     let pieces = region_to_lattice(region).clip_paths(&paths, FillRule::NonZero, rule);
-    let pieces = rejoined(pieces, &lowest_turns(&paths));
+    let pieces = rejoined(pieces, &cut_points(&paths));
     Ok(pieces.iter().map(|p| p.iter().map(from_lattice).collect()).collect())
 }
 
-/// The vertices where a line, closed when it ends where it starts, comes in from above and goes
-/// back up, in the order x then y: below both of their neighbours.
-///
-/// `i_overlay` walks each run of a line inside a region from the run's least point on, so where
-/// that point is one of these vertices it hands the run back cut in two there, the half before it
-/// ending at it and the half after starting at it.
-fn lowest_turns(paths: &[Vec<Lattice>]) -> BTreeSet<Lattice> {
-    let mut turns = BTreeSet::new();
+/// Where a run of a line inside a region may come back cut in two, the half before ending there
+/// and the half after starting there: the start of a ring, a line closed back to it, and the
+/// vertices where a line, closed or not, comes in from above and goes back up, in the order x
+/// then y, below both of their neighbours, since `i_overlay` walks each run from its least point.
+fn cut_points(paths: &[Vec<Lattice>]) -> BTreeSet<Lattice> {
+    let mut cuts = BTreeSet::new();
     for path in paths {
         let mut points = path.clone();
         points.dedup();
         let closed = points.len() > 2 && points.first() == points.last();
         if closed {
             points.pop();
+            cuts.extend(points.first().copied());
         }
         let n = points.len();
         let inner = if closed { 0..n } else { 1..n.saturating_sub(1) };
@@ -187,11 +295,11 @@ fn lowest_turns(paths: &[Vec<Lattice>]) -> BTreeSet<Lattice> {
                 && p < before
                 && p < after
             {
-                turns.insert(*p);
+                cuts.insert(*p);
             }
         }
     }
-    turns
+    cuts
 }
 
 /// The pieces joined again where one ends and the next starts at one of `cuts`.

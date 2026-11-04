@@ -1,11 +1,12 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
-use crate::dense::{best_hatch, fall_line};
+use crate::families::{Beneath, Spacing, fall_line, fill};
+use crate::frame::Frame;
 use crate::gap::{gap_fill, strips};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
 use crate::tour::tour;
-use crate::{Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
+use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
     Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area,
     edges, encloses, hatch, intersection, offset, polyline_length, signed_area, union,
@@ -192,19 +193,23 @@ pub(crate) fn on_line(line: &[Point]) -> Option<Point> {
 
 /// Splits a layer, or a part of one, into islands, each holding its walls, the infill inside
 /// them and the part's infill areas for joining their lines; the sparse lines are `rolls`, cut
-/// to the part, where its parameters ask for rolls and the layer has them.
+/// to the part, where its parameters ask for rolls and the layer has them; the dense areas cross
+/// the dense beads `beneath`, the layer below's.
 pub fn islands(
     layer: &RegionLayer,
     p: &PathParams,
     rolls: Option<&[Polyline]>,
+    beneath: &Beneath,
 ) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| {
         Path::new(role, width, true, start_near(contour.clone(), back_right(outline)))
     };
-    // The outer wall's shapes are the islands; without walls, the infill's shapes are.
+    // The outer wall's shapes are the islands, each with its own frame; without walls, the
+    // infill's shapes are.
     let walled = !layer.walls.is_empty();
+    let mut frames: Vec<Frame> = Vec::new();
     let mut islands: Vec<Island> = layer
         .outline()
         .into_iter()
@@ -215,6 +220,7 @@ pub fn islands(
                 .filter(|_| walled)
                 .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
                 .collect();
+            frames.push(Frame::of(std::iter::once((&vec![shape.clone()], 1.0))));
             Some(Island { outline, walls, gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() })
         })
         .collect();
@@ -296,7 +302,18 @@ pub fn islands(
             Role::SOLID
         }
     };
-    let gaps = gap_fill(&thin, role_at, s, h, p.resolution)?;
+    let crossing = |role: Role| {
+        let Crossing { top, inside, first_layer } = p.crossing;
+        if first {
+            first_layer
+        } else if role.face == Face::Top {
+            top
+        } else {
+            inside
+        }
+    };
+    // What the dense areas' insets leave, for the gap fill with the strips.
+    let mut residue: Region = Vec::new();
     let mut areas = Vec::new();
     for (role, region, width, spacing) in fills {
         let region = if role.strand() { region.clone() } else { intersection(region, &wide)? };
@@ -306,6 +323,7 @@ pub fn islands(
         let reach = offset(&region, p.infill_wall_overlap * width)?;
         // Each bridge crosses its own gap the short way; every other fill follows the layer.
         let mut lines = Vec::new();
+        let mut along = Vec::new();
         // Over air, from edge to edge; over sparse infill, across its lines, which the layer's
         // direction already crosses at right angles.
         if role.support == Support::Air {
@@ -315,26 +333,33 @@ pub fn islands(
             for shape in &reach {
                 let piece = vec![shape.clone()];
                 let angle = bridge_angle(&piece, spacing, solid_angle, hangs)?;
-                lines.extend(hatch(&piece, spacing, angle)?);
+                lines.extend(hatch(&piece, spacing, angle, 0.0)?);
             }
-        } else if role.kind == Kind::Solid && role.support == Support::Solid && p.resolution > 0.0 {
+        } else if role.kind == Kind::Solid && role.support == Support::Solid {
             let on_top = role.face == Face::Top;
             let fall = |piece: &Region| if on_top { fall_line(piece, &layer.warp) } else { None };
-            lines = best_hatch(&reach, spacing, h, solid_angle, p.resolution, fall)?;
-        } else if role.face == Face::Top && !layer.warp.is_zero() {
-            let fall = |piece: &Region| fall_line(piece, &layer.warp);
-            lines = best_hatch(&reach, spacing, h, solid_angle, 0.0, fall)?;
+            let laid = fill(&reach, Spacing { spacing, width, crossing: crossing(role) }, beneath, fall)?;
+            lines = laid.lines;
+            along = laid.insets;
+            residue = union(&residue, &laid.residue)?;
         } else if let Some(rolls) = rolls.filter(|_| role == Role::SPARSE) {
             // A stroke shorter than two beads would lay a blob.
             lines = clip_lines(rolls, &reach)?;
             lines.retain(|line| polyline_length(line) >= 2.0 * width);
         } else {
-            lines = hatch(&reach, spacing, solid_angle)?;
+            lines = hatch(&reach, spacing, solid_angle, 0.0)?;
         }
         for line in lines {
             let Some(i) = on_line(&line).and_then(|q| home(&islands, q)) else { continue };
             if let Some(island) = islands.get_mut(i) {
                 island.infill.push(Path::new(role, width, false, line));
+            }
+        }
+        // The insets' beads run along their area, as the strips' do: with them, before the lines.
+        for (points, closed) in along {
+            let Some(i) = on_line(&points).and_then(|q| home(&islands, q)) else { continue };
+            if let Some(island) = islands.get_mut(i) {
+                island.gaps.push(Path::new(role, width, closed, points));
             }
         }
         // A role's areas join their lines as one.
@@ -348,6 +373,8 @@ pub fn islands(
             }),
         }
     }
+    let axis_at = |q: Point| home(&islands, q).and_then(|i| frames.get(i)).map_or([1.0, 0.0], Frame::axis);
+    let gaps = gap_fill(&union(&thin, &residue)?, role_at, &axis_at, s, h, p.resolution)?;
     for gap in gaps {
         let Some(&start) = gap.points.first() else { continue };
         if let Some(island) = home(&islands, start).and_then(|i| islands.get_mut(i)) {
@@ -416,6 +443,36 @@ fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) 
     }
 }
 
+/// Lines grouped by their direction, the direction laying the longest first: each is swept on
+/// its own.
+fn by_direction(lines: Vec<Path>) -> Vec<Vec<Path>> {
+    let direction = |l: &Path| match (l.points.first(), l.points.last()) {
+        (Some(a), Some(b)) => (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees().rem_euclid(180.0),
+        _ => 0.0,
+    };
+    let mut groups: Vec<(f64, f64, Vec<Path>)> = Vec::new();
+    for line in lines {
+        let (angle, length) = (direction(&line), polyline_length(&line.points));
+        let near = |g: &&mut (f64, f64, Vec<Path>)| {
+            let d = (g.0 - angle).rem_euclid(180.0);
+            d.min(180.0 - d) < SAME_SWEEP
+        };
+        match groups.iter_mut().find(near) {
+            Some(group) => {
+                group.1 += length;
+                group.2.push(line);
+            }
+            None => groups.push((angle, length, vec![line])),
+        }
+    }
+    groups.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.total_cmp(&y.0)));
+    groups.into_iter().map(|(_, _, lines)| lines).collect()
+}
+
+/// Lines closer in direction than this, in degrees, are swept together: parallel lines differ by
+/// the lattice's rounding of their ends.
+const SAME_SWEEP: f64 = 1e-3;
+
 /// The layer's beads in printing order: island by island, nearest first; within an island the
 /// walls, then the beads along its strips, against them, then each infill area's lines, in
 /// sweeps for a monotone area and in the cheapest tour otherwise, joined where they can be.
@@ -451,7 +508,9 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec
             let mut ordered = Vec::new();
             let reach = Bands::new(&fill.reach);
             if fill.monotone {
-                sweep(mine, fill.max_link, at, &mut ordered);
+                for lines in by_direction(mine) {
+                    sweep(lines, fill.max_link, at, &mut ordered);
+                }
             } else {
                 tour(mine, at, &mut ordered, &|a, b| hides(a, b) || joins(fill, &reach, a, b));
             }

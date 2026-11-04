@@ -34,7 +34,7 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         if region.is_empty() {
             continue;
         }
-        for line in hatch(&offset(region, -width / 2.0)?, pitch, angle)? {
+        for line in hatch(&offset(region, -width / 2.0)?, pitch, angle, 0.0)? {
             // A line shorter than its bead is wide would lay a blob.
             if polyline_length(&line) < width {
                 continue;

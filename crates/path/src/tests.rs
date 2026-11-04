@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Polyline, Region, area, bead_area, bead_spacing, polyline_length};
+use layercraft_geom::{Region, area, bead_area, bead_spacing, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, SupportParams, split};
@@ -21,7 +21,9 @@ const PATHS: PathParams = PathParams {
     first_layer_width: 0.4,
     bridge_width: 0.4,
     monotone: Vec::new(),
-    resolution: 0.0,
+    // The X2D's solid infill: 250 mm/s at 10 000 mm/s².
+    crossing: Crossing { top: 6.25, inside: 6.25, first_layer: 6.25 },
+    resolution: 0.012,
     sparse_pattern: SparsePattern::Lines,
     support: None,
 };
@@ -65,6 +67,19 @@ fn hatch_segments(paths: &[Path], role: Role, angle: f64) -> Vec<([f64; 2], [f64
         .collect()
 }
 
+/// The plastic a role's beads lay, spread over the layer's height `h`: the area they fill.
+fn laid_area(paths: &[Path], role: Role, h: f64) -> f64 {
+    paths
+        .iter()
+        .filter(|p| p.role == role)
+        .map(|p| {
+            let mut points = p.points.clone();
+            points.extend(p.points.first().filter(|_| p.closed));
+            polyline_length(&points) * bead_area(p.width, h) / h
+        })
+        .sum()
+}
+
 /// The plastic the hatch lines lay, spread over the layer's height: the area they fill. The
 /// joins along the edge lie in the walls' overlap and are left out.
 fn filled_area(paths: &[Path], role: Role, angle: f64) -> f64 {
@@ -81,7 +96,7 @@ fn solid_hatch_covers_its_area() {
     let layer = &paths.layers[0];
     let solid = area(&regions.layers[0].solid);
     // On the bed, the solid is the part's bottom surface.
-    let covered = filled_area(&layer.paths, Role::BOTTOM_SURFACE, 45.0);
+    let covered = laid_area(&layer.paths, Role::BOTTOM_SURFACE, 0.2);
     assert!((covered / solid - 1.0).abs() < 0.03, "{covered} for {solid}");
 }
 
@@ -233,9 +248,25 @@ fn a_monotone_surface_is_laid_in_one_sweep() {
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let monotone = PathParams { monotone: vec![Face::Top], ..PATHS };
     let top = regions.layers.len() - 1;
-    let angle = if top % 2 == 1 { 135.0 } else { 45.0 };
     let paths = trace(&regions, &Field::uniform(monotone)).unwrap();
-    let lines = sweep_of(&paths.layers[top].paths, Role::TOP_SURFACE, angle);
+    // The surface's lines: straight, along and as wide as its longest. Its corners, narrower than
+    // its beads' crossing width, are laid round in insets, and what these leave in beads of their
+    // own widths.
+    let surface = paths.layers[top].paths.iter().filter(|p| p.role == Role::TOP_SURFACE);
+    let longest = surface
+        .clone()
+        .filter(|p| p.points.len() == 2)
+        .max_by(|p, q| polyline_length(&p.points).total_cmp(&polyline_length(&q.points)))
+        .unwrap();
+    let (a, b) = (longest.points[0], longest.points[1]);
+    let angle = (b[1] - a[1]).atan2(b[0] - a[0]);
+    let parallel = |p: &&Path| {
+        let (c, d) = (p.points[0], *p.points.last().unwrap());
+        let across = (d[0] - c[0]) * angle.sin() - (d[1] - c[1]) * angle.cos();
+        p.points.len() == 2 && p.width == longest.width && across.abs() < 1e-5
+    };
+    let straight: Vec<Path> = surface.filter(parallel).cloned().collect();
+    let lines = sweep_of(&straight, Role::TOP_SURFACE, angle.to_degrees());
     assert!(lines.len() > 10);
     // Across the surface one way, each line running back the way the last one came.
     let one_way = |s: f64| lines.windows(2).all(|w| s * (w[1].0 - w[0].0) > 0.0);
@@ -388,40 +419,25 @@ fn a_move_over_what_the_layer_above_covers_stays_down() {
 }
 
 #[test]
-fn hatch_lines_leave_their_void_at_the_ends() {
-    // A 10 × 4 mm rectangle hatched along x at the spacing: lines full length, so the void is
-    // the strip their round ends leave, and nothing is pushed outside.
-    let piece: Region = vec![vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 4.0], [0.0, 4.0]]]];
-    let (s, h, eps) = (0.4, 0.2, 0.001);
-    let lines: Vec<Polyline> =
-        (0..10).map(|k| vec![[0.0, s / 2.0 + s * k as f64], [10.0, s / 2.0 + s * k as f64]]).collect();
-    let (interior, plastic) = dense::rank(&piece, &lines, s, h, eps).unwrap();
-    // At each end, the cap's disc of radius r = s/2, centred c = π·s/8 inside: of the strip
-    // [0, c] × s it covers the half disc less the segment beyond the edge, which it pushes out.
-    let (r, c) = (s / 2.0, std::f64::consts::PI * s / 8.0);
-    let beyond = r * r * (c / r).acos() - c * (r * r - c * c).sqrt();
-    let covered = std::f64::consts::PI * r * r / 2.0 - beyond;
-    let expected = 2.0 * 10.0 * ((c * s - covered) + beyond);
-    let interior = interior as f64 * eps.powi(3) / h;
-    assert!((interior - expected).abs() < 0.02 * expected + 1e-3, "{interior} for {expected}");
-    // The plastic is the beads' sections along their lines.
-    assert!((plastic as f64 * eps.powi(3) - 10.0 * 10.0 * s * h).abs() < 1e-6);
-}
-
-#[test]
-fn a_dense_strip_is_hatched_along_its_length() {
-    // A strip 20 mm long and five beads wide, lying at 30° on the hatch's grid: across it, at
-    // the layer's 45° or 135°, lines are short and end often; along its long edges they run its
-    // length, tile its width exactly and end least.
+fn a_dense_strip_is_laid_along_its_length() {
+    // A strip 20 mm long and five beads wide, lying at 30°: lines across it would be short, all
+    // ends; its insets run its length, round its ends, and tile its width.
     let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
     let at = |u: f64, v: f64| [u * c - v * s, u * s + v * c];
     let piece: Region = vec![vec![vec![at(0.0, -0.2), at(20.0, -0.2), at(20.0, 1.8), at(0.0, 1.8)]]];
-    let lines = dense::best_hatch(&piece, 0.4, 0.2, 45.0, 0.012, |_| None).unwrap();
-    assert!(!lines.is_empty());
-    for line in &lines {
-        let (a, b) = (line[0], line[line.len() - 1]);
-        let angle = (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees().rem_euclid(180.0);
-        assert!((angle - 30.0).abs() < 0.5, "a line at {angle}°");
+    let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 6.25 };
+    let laid = families::fill(&piece, spacing, &families::Beneath::default(), |_| None).unwrap();
+    assert!(laid.lines.is_empty(), "{:?}", laid.lines);
+    assert_eq!(laid.insets.len(), 2, "{:?}", laid.insets);
+    for (points, closed) in &laid.insets {
+        assert!(closed);
+        let mut ring = points.clone();
+        ring.push(ring[0]);
+        for w in ring.windows(2) {
+            let angle = (w[1][1] - w[0][1]).atan2(w[1][0] - w[0][0]).to_degrees().rem_euclid(180.0);
+            let length = polyline_length(w);
+            assert!(length < 2.0 || (angle - 30.0).abs() < 0.01, "a {length} mm stretch at {angle}°");
+        }
     }
 }
 
@@ -515,7 +531,7 @@ fn a_reversed_bead_keeps_each_segment_overhang() {
 
 #[test]
 fn a_top_on_a_bent_layer_is_hatched_along_its_fall_line() {
-    use crate::dense::fall_line;
+    use crate::families::fall_line;
     use layercraft_geom::{Grid, Relief};
     let grid = Grid { origin: [0.0, 0.0], cell: 0.5 };
     let relief =
@@ -713,6 +729,131 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
     for layer in &paths.layers {
         for path in layer.paths.iter().filter(|p| p.role.kind == Kind::Support) {
             assert!(path.points.iter().all(|p| p[0].abs() >= 2.35 + 0.2 - 1e-3 || p[1].abs() > 2.0));
+        }
+    }
+}
+
+#[test]
+fn ridges_along_either_axis_lay_their_lines_along_themselves() {
+    // A plate under a cross of ridges 3 mm wide, one along x and one along y, as on a game board.
+    // Within its walls each ridge holds a band four beads wide, which hatching at one angle for
+    // the whole cross would lay along one ridge and across the other, in dots.
+    let mesh = Mesh {
+        bodies: vec![
+            cuboid("plate", [0.0; 3], [30.0, 30.0, 1.0]),
+            cuboid("along x", [2.0, 13.5, 1.0], [28.0, 16.5, 2.0]),
+            cuboid("along y", [13.5, 2.0, 1.0], [16.5, 28.0, 2.0]),
+        ],
+        ..Mesh::default()
+    };
+    let (_, paths) = paths_of(&mesh);
+    for layer in &paths.layers[7..10] {
+        let dense: Vec<&Path> = layer.paths.iter().filter(|p| p.role.kind == Kind::Solid).collect();
+        assert!(!dense.is_empty(), "layer {}", layer.index);
+        for bead in dense {
+            let mut points = bead.points.clone();
+            points.extend(bead.points.first().filter(|_| bead.closed));
+            for w in points.windows(2) {
+                let (a, b) = (w[0], w[1]);
+                let middle = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                let (dx, dy) = ((b[0] - a[0]).abs(), (b[1] - a[1]).abs());
+                // Round the junction and the ridges' ends, the insets turn.
+                let (x, y) = (middle[0], middle[1]);
+                let junction = (x - 15.0).abs().max((y - 15.0).abs()) < 1.5;
+                let end = x.min(y) < 3.5 || x.max(y) > 26.5;
+                if polyline_length(w) < 0.5 || junction || end {
+                    continue;
+                }
+                let along = if (middle[1] - 15.0).abs() < 1.5 { dy } else { dx };
+                assert!(along < 1e-6, "layer {}: {a:?} → {b:?} across its ridge", layer.index);
+            }
+        }
+    }
+}
+
+/// A part with a thick body, a finger thinner than its beads' crossing width along its foot, a
+/// thinner arm out of its side and a bite out of its top: every kind of dense area, and no
+/// symmetry.
+fn bracket() -> Vec<Point> {
+    let mut outline = vec![
+        [0.0, 0.0],
+        [60.0, 0.0],
+        [60.0, 3.0],
+        [25.0, 3.0],
+        [25.0, 6.0],
+        [60.0, 6.0],
+        [60.0, 30.0],
+        [75.0, 30.0],
+        [75.0, 32.5],
+        [60.0, 32.5],
+        [60.0, 40.0],
+        [23.0, 40.0],
+    ];
+    outline.extend((1..32).map(|k| {
+        let t = -std::f64::consts::PI * k as f64 / 32.0;
+        [15.0 + 8.0 * t.cos(), 40.0 + 8.0 * t.sin()]
+    }));
+    outline.extend([[7.0, 40.0], [0.0, 40.0]]);
+    outline
+}
+
+/// The beads of a slab a millimetre thick over `outline`, all of it dense.
+fn slab_beads(outline: &[Point]) -> Paths {
+    let mesh =
+        Mesh { bodies: vec![layercraft_mesh::solids::prism("b", outline, 0.0, 1.0)], ..Mesh::default() };
+    paths_of(&mesh).1
+}
+
+#[test]
+fn dense_beads_turn_move_and_mirror_with_their_part() {
+    // The plate has no direction: the part turned, moved or mirrored on it is laid turned, moved
+    // or mirrored, its walls and its dense beads the same curves, to the lattice's rounding. A
+    // square is laid alike turned a quarter turn, which nothing of its own tells apart: turned
+    // less than an eighth of a turn, its frame turns with it, and with it what the frame
+    // settles, as the line of the bead its insets leave at its middle.
+    let square = vec![[0.0, 0.0], [6.3, 0.0], [6.3, 6.3], [0.0, 6.3]];
+    let parts = [
+        (bracket(), [(37.0f64, false, [12.5, -7.0]), (110.0, true, [-30.0, 4.0])]),
+        (square, [(37.0, false, [12.5, -7.0]), (20.0, true, [-30.0, 4.0])]),
+    ];
+    for (part, (angle, mirror, shift)) in
+        parts.iter().flat_map(|(p, turns)| turns.iter().map(move |t| (p, *t)))
+    {
+        let here = slab_beads(part);
+        let (s, c) = angle.to_radians().sin_cos();
+        let g = |p: Point| {
+            let p = if mirror { [p[0], -p[1]] } else { p };
+            [c * p[0] - s * p[1] + shift[0], s * p[0] + c * p[1] + shift[1]]
+        };
+        let mut outline: Vec<Point> = part.iter().map(|&p| g(p)).collect();
+        if mirror {
+            outline.reverse();
+        }
+        let there = slab_beads(&outline);
+        assert_eq!(here.layers.len(), there.layers.len());
+        for (a, b) in here.layers.iter().zip(&there.layers) {
+            let curves = |layer: &PathLayer, map: &dyn Fn(Point) -> Point| -> Vec<(Role, Vec<Point>)> {
+                layer
+                    .paths
+                    .iter()
+                    .map(|p| {
+                        let mut points: Vec<Point> = p.points.iter().map(|&q| map(q)).collect();
+                        points.extend(points.first().copied().filter(|_| p.closed));
+                        (p.role, points)
+                    })
+                    .collect()
+            };
+            let (moved, theirs) = (curves(a, &g), curves(b, &|p| p));
+            for (from, to) in [(&moved, &theirs), (&theirs, &moved)] {
+                for (role, points) in from.iter() {
+                    let same: Vec<Vec<Point>> =
+                        to.iter().filter(|(r, _)| r == role).map(|(_, p)| p.clone()).collect();
+                    for &p in points {
+                        let d = distance_to(p, &same);
+                        assert!(d < 1e-3, "layer {}, {angle}°: {role:?} at {p:?} is {d} mm off", a.index);
+                    }
+                }
+            }
         }
     }
 }

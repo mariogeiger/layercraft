@@ -21,10 +21,12 @@ pub fn strips(region: &Region, s: f64) -> Result<(Region, Region), GeomError> {
 }
 
 /// The beads filling the strips `thin`, on a layer `h` high, at most two lines `s` apart thick,
-/// each of one width to within `resolution` and of the role `role_at` gives along it.
+/// each of one width to within `resolution` and of the role `role_at` gives along it; a piece
+/// too short for a strip that leaves its line open lies the way `axis_at` settles it.
 pub fn gap_fill(
     thin: &Region,
     role_at: impl Fn(Point) -> Role,
+    axis_at: &dyn Fn(Point) -> [f64; 2],
     s: f64,
     h: f64,
     resolution: f64,
@@ -32,7 +34,7 @@ pub fn gap_fill(
     let mut out = Vec::new();
     // Sides sampled closer than the narrowest bead of rounded sides, a quarter turn of the
     // layer's height across: a thinner strip's line still runs between its sides.
-    for line in chordal_axis(thin, PI * h / 4.0, resolution)? {
+    for line in chordal_axis(thin, PI * h / 4.0, resolution, axis_at)? {
         let mut points = line.points.clone();
         let mut thickness = line.thickness.clone();
         if line.closed {
