@@ -115,3 +115,27 @@ fn support_lines_turn_move_and_mirror_with_their_part() {
         assert_beads_move_with_their_part(&part, turn, &compared, 0.05, &supported);
     }
 }
+
+#[test]
+fn each_part_gets_the_rolls_it_gets_alone() {
+    // Two parts on one plate: the pentagon, and a copy turned 40° and moved 40 mm away. Each
+    // has the rolls of its own frame, whatever else stands on the plate.
+    let (_, copy) = placed(&PENTAGON, 40.0, false, [40.0, 10.0]);
+    let both = rolls_over_all(&[PENTAGON.to_vec(), copy.clone()], 30.0, 2);
+    let first = rolls_over(&PENTAGON, 30.0, 2);
+    let second = rolls_over(&copy, 30.0, 2);
+    let lines = |beads: &[Path]| -> Vec<Vec<Point>> { beads.iter().map(|b| b.points.clone()).collect() };
+    for k in 0..2 {
+        let together = lines(&both[k]);
+        for alone in [lines(&first[k]), lines(&second[k])] {
+            assert!(!alone.is_empty());
+            for p in alone.iter().flatten() {
+                assert!(distance_to(*p, &together) < 1e-3, "layer {k}: {p:?} not in the shared plate's");
+            }
+        }
+        for p in together.iter().flatten() {
+            let (a, b) = (lines(&first[k]), lines(&second[k]));
+            assert!(distance_to(*p, &a).min(distance_to(*p, &b)) < 1e-3, "layer {k}: {p:?} extra");
+        }
+    }
+}

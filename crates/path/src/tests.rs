@@ -555,11 +555,16 @@ const PENTAGON: [Point; 5] = [[0.0, 0.0], [16.0, 0.0], [16.0, 4.0], [7.0, 8.0], 
 /// Layers of sparse infill alone over `shape`, 0.2 mm each from z = 0.4, rolls `tilt` degrees
 /// off square, the other way every millimetre: their sparse beads.
 fn rolls_over(shape: &[Point], tilt: f64, layers: usize) -> Vec<Vec<Path>> {
+    rolls_over_all(&[shape.to_vec()], tilt, layers)
+}
+
+/// As `rolls_over`, over every one of `shapes` at once.
+pub(crate) fn rolls_over_all(shapes: &[Vec<Point>], tilt: f64, layers: usize) -> Vec<Vec<Path>> {
     let layer = |k: usize| layercraft_region::RegionLayer {
         index: k,
         top: 0.2 * (k + 1) as f64,
         height: 0.2,
-        sparse: vec![vec![shape.to_vec()]],
+        sparse: shapes.iter().map(|shape| vec![shape.clone()]).collect(),
         ..Default::default()
     };
     let regions = Regions { layers: (1..=layers).map(layer).collect() };
@@ -649,22 +654,24 @@ fn tilted_rolls_rest_on_those_below_and_turn_the_other_way_each_ply() {
 }
 
 #[test]
-fn rolls_turn_and_move_with_their_part() {
-    let (s, c) = 40f64.to_radians().sin_cos();
-    let moved = |p: Point| [30.0 + c * p[0] - s * p[1], -5.0 + s * p[0] + c * p[1]];
-    let back = |p: Point| [c * (p[0] - 30.0) + s * (p[1] + 5.0), -s * (p[0] - 30.0) + c * (p[1] + 5.0)];
-    let shape: Vec<Point> = PENTAGON.iter().map(|&p| moved(p)).collect();
-    let (here, there) = (rolls_over(&PENTAGON, 30.0, 2), rolls_over(&shape, 30.0, 2));
-    let lines: Vec<Vec<Point>> = here[1].iter().map(|b| b.points.clone()).collect();
-    let length = |beads: &[Path]| beads.iter().map(|b| polyline_length(&b.points)).sum::<f64>();
-    assert!(
-        (length(&here[1]) - length(&there[1])).abs() < 1e-3,
-        "{} against {}",
-        length(&here[1]),
-        length(&there[1])
-    );
-    for p in there[1].iter().flat_map(|b| b.points.iter()) {
-        assert!(distance_to(back(*p), &lines) < 1e-3, "{p:?} off the lines turned back");
+fn rolls_turn_move_and_mirror_with_their_part() {
+    for (angle, mirror, shift) in [(40.0, false, [30.0, -5.0]), (110.0, true, [-12.0, 7.0])] {
+        let (moved, shape) = placed(&PENTAGON, angle, mirror, shift);
+        let (here, there) = (rolls_over(&PENTAGON, 30.0, 2), rolls_over(&shape, 30.0, 2));
+        let lines = |beads: &[Path], map: &dyn Fn(Point) -> Point| -> Vec<Vec<Point>> {
+            beads.iter().map(|b| b.points.iter().map(|&p| map(p)).collect()).collect()
+        };
+        let (mine, theirs) = (lines(&here[1], &moved), lines(&there[1], &|p| p));
+        let length = |lines: &[Vec<Point>]| lines.iter().map(|l| polyline_length(l)).sum::<f64>();
+        assert!(
+            (length(&mine) - length(&theirs)).abs() < 1e-3,
+            "{angle}°: {} against {}",
+            length(&mine),
+            length(&theirs)
+        );
+        for p in theirs.iter().flatten() {
+            assert!(distance_to(*p, &mine) < 1e-3, "{angle}°: {p:?} off the lines moved");
+        }
     }
 }
 

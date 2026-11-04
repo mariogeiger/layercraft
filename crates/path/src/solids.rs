@@ -4,7 +4,7 @@
 //! settles, where its seams go and the way its loops turn, turn, move and mirror with the solid,
 //! stay the same from layer to layer, and change with nothing else on the plate.
 
-use crate::frame::Frame;
+use crate::frame::{Frame, inside};
 use crate::order::holder;
 use layercraft_geom::{
     Contour, GeomError, Point, RESOLUTION_MM, Region, Shape, bounds, intersection, offset,
@@ -150,6 +150,16 @@ impl Solids {
     /// The solid whose island on pass `pass` has the outer contour `outline`.
     pub fn solid_of(&self, pass: usize, outline: &Contour) -> Option<usize> {
         self.passes.get(pass)?.iter().find(|(c, _)| c == outline).map(|(_, s)| *s)
+    }
+
+    /// How many solids there are.
+    pub fn count(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// The solid whose island on pass `pass` holds `shape`, found by a point inside it.
+    pub fn solid_of_shape(&self, pass: usize, shape: &Shape) -> Option<usize> {
+        self.solid_at(pass, inside(shape)?)
     }
 
     /// The frame of solid `solid`; the plate's where there is none.

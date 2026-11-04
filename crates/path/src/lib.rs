@@ -231,8 +231,9 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     check(field.base())?;
     let mut layers = Vec::with_capacity(regions.layers.len());
     let mut at: Point = [0.0, 0.0];
-    // Made on the first layer whose sparse area asks for them, over all the layers.
-    let mut rolls: Option<rolls::Rolls> = None;
+    // Made on the first layer whose sparse area asks for them, over all the layers, one for
+    // each solid.
+    let mut rolls: Option<rolls::SolidRolls> = None;
     // The dense beads of the layer below, and of the passes laid so far at this height.
     let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
     let solids = solids::Solids::of(&regions.layers, RegionLayer::outline)?;
@@ -253,11 +254,9 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             Some((p, tilt, ply)) => {
                 let (width, spacing) = order::sparse_bead(layer, p);
                 let grow = p.infill_wall_overlap * width;
-                if rolls.is_none() {
-                    rolls = rolls::Rolls::new(&regions.layers, spacing, grow, tilt, ply);
-                }
+                let made = || rolls::SolidRolls::new(&regions.layers, &solids, (spacing, grow), (tilt, ply));
                 let area = layercraft_geom::offset(&layer.sparse, grow)?;
-                rolls.as_mut().map(|r| r.lines(layer, &area, spacing)).transpose()?
+                Some(rolls.get_or_insert_with(made).lines(layer, pass, &solids, &area, spacing)?)
             }
             None => None,
         };

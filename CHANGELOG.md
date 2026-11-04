@@ -6,6 +6,9 @@ All notable user-visible changes to this project are documented here.
 
 ### Changed
 
+- Convection rolls are made for each solid, over its own sparse areas and in its own frame,
+  not one set over the whole plate: a part's rolls no longer change with what else stands on
+  the plate, and two parts do not share a grid.
 - Seams follow the part, not the plate: a wall loop starts at the concave corner nearest the
   seam of its solid on the layer below, else at the vertex nearest it; on a solid's first layer,
   at the point of its outline farthest along its frame's axis. Holes, inner walls and closed

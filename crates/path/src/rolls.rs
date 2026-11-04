@@ -5,17 +5,19 @@
 //! loose end inside. Each layer's field starts from the one below and is pulled toward it, so its
 //! lines rest on the lines below; the tilt changes way every `ply` of height, and each way's field
 //! goes on from the last layer it lay on, two plies down. The first field starts from a hash of
-//! its grid's nodes, the grid lying in the part's own frame (`frame`), so a part turned and moved
+//! its grid's nodes, the grid lying in the solid's own frame (`frame`), so a part turned and moved
 //! gets the same lines, turned and moved. The lines are the field's zeros (`contour`), cut to the
-//! area.
+//! area. Each solid of the print has rolls of its own, over its own sparse areas and in its own
+//! frame (`SolidRolls`), so a part's lines do not change with what else stands on the plate.
 
 mod contour;
 mod field;
 mod walls;
 
 use crate::frame::Frame;
+use crate::solids::Solids;
 use field::Flow;
-use layercraft_geom::{GeomError, Point, Polyline, Region, clip_lines};
+use layercraft_geom::{GeomError, Point, Polyline, Region, Shape, clip_lines};
 use layercraft_region::RegionLayer;
 use walls::Walls;
 
@@ -95,16 +97,15 @@ pub(crate) struct Rolls {
 }
 
 impl Rolls {
-    /// Rolls `spacing` apart over the sparse areas of `layers` grown by `grow`, tilted `tilt`
-    /// degrees off square to the walls, the other way every `ply` of height; none when the
-    /// layers have no sparse area or the grid would be too large.
-    pub fn new(layers: &[RegionLayer], spacing: f64, grow: f64, tilt: f64, ply: f64) -> Option<Rolls> {
+    /// Rolls `spacing` apart in `frame` over the sparse `areas` grown by `grow`, tilted `tilt`
+    /// degrees off square to the walls, the other way every `ply` of height; none when there
+    /// is no sparse area or the grid would be too large.
+    fn new(frame: Frame, areas: &[Region], spacing: f64, grow: f64, tilt: f64, ply: f64) -> Option<Rolls> {
         if !(spacing.is_finite() && spacing > 0.0 && grow.is_finite() && tilt.is_finite() && ply.is_finite())
         {
             return None;
         }
-        let frame = Frame::of(layers.iter().map(|l| (&l.sparse, l.height)));
-        let points = layers.iter().flat_map(|l| l.sparse.iter().flatten().flatten()).map(|&p| frame.local(p));
+        let points = areas.iter().flat_map(|a| a.iter().flatten().flatten()).map(|&p| frame.local(p));
         let [lo, hi] = points.fold([[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]], |[lo, hi], p| {
             [[lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]]
         });
@@ -182,5 +183,59 @@ impl Rolls {
             *slot = Some(Ply { u, layer: layer.index, live });
         }
         clip_lines(&curves, area)
+    }
+}
+
+/// The rolls of every solid of a print, each over its own sparse areas in its own frame.
+pub(crate) struct SolidRolls {
+    solids: Vec<Option<Rolls>>,
+}
+
+impl SolidRolls {
+    /// The rolls `spacing` apart of each solid of `bodies` (see `Rolls::new`), over the sparse
+    /// areas `layers` give it; none for a solid with no sparse area.
+    pub fn new(
+        layers: &[RegionLayer],
+        bodies: &Solids,
+        (spacing, grow): (f64, f64),
+        (tilt, ply): (f64, f64),
+    ) -> SolidRolls {
+        let mut areas: Vec<Vec<Region>> = vec![Vec::new(); bodies.count()];
+        for (pass, layer) in layers.iter().enumerate() {
+            for shape in &layer.sparse {
+                let home = bodies.solid_of_shape(pass, shape).and_then(|s| areas.get_mut(s));
+                home.into_iter().for_each(|list| list.push(vec![shape.clone()]));
+            }
+        }
+        let solids = areas
+            .iter()
+            .enumerate()
+            .map(|(s, list)| Rolls::new(bodies.frame(s), list, spacing, grow, tilt, ply))
+            .collect();
+        SolidRolls { solids }
+    }
+
+    /// The lines of the sparse `area` of pass `pass`, each shape's from the rolls of the solid
+    /// holding it. Layers come in order.
+    pub fn lines(
+        &mut self,
+        layer: &RegionLayer,
+        pass: usize,
+        bodies: &Solids,
+        area: &Region,
+        spacing: f64,
+    ) -> Result<Vec<Polyline>, GeomError> {
+        let mut parts: Vec<Region> = vec![Vec::new(); self.solids.len()];
+        for shape in area {
+            let part = bodies.solid_of_shape(pass, shape).and_then(|s| parts.get_mut(s));
+            part.into_iter().for_each(|part| part.push(Shape::clone(shape)));
+        }
+        let mut lines = Vec::new();
+        for (rolls, part) in self.solids.iter_mut().zip(&parts) {
+            if let Some(rolls) = rolls {
+                lines.extend(rolls.lines(layer, part, spacing)?);
+            }
+        }
+        Ok(lines)
     }
 }
