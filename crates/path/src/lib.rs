@@ -293,6 +293,4 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
 }
 
 #[cfg(test)]
-mod seam_tests;
-#[cfg(test)]
 mod tests;

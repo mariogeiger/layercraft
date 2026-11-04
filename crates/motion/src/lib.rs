@@ -258,6 +258,4 @@ pub enum MotionError {
 }
 
 #[cfg(test)]
-mod cool_tests;
-#[cfg(test)]
 mod tests;

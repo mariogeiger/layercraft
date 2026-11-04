@@ -45,7 +45,7 @@ fn region_params() -> RegionParams {
     }
 }
 
-pub(crate) fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
+fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
     let sections =
         section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
@@ -781,7 +781,7 @@ fn ridges_along_either_axis_lay_their_lines_along_themselves() {
 /// A part with a thick body, a finger thinner than its beads' crossing width along its foot, a
 /// thinner arm out of its side and a bite out of its top: every kind of dense area, and no
 /// symmetry.
-pub(crate) fn bracket() -> Vec<Point> {
+fn bracket() -> Vec<Point> {
     let mut outline = vec![
         [0.0, 0.0],
         [60.0, 0.0],
@@ -805,7 +805,7 @@ pub(crate) fn bracket() -> Vec<Point> {
 }
 
 /// The beads of a slab a millimetre thick over `outline`, all of it dense.
-pub(crate) fn slab_beads(outline: &[Point]) -> Paths {
+fn slab_beads(outline: &[Point]) -> Paths {
     let mesh =
         Mesh { bodies: vec![layercraft_mesh::solids::prism("b", outline, 0.0, 1.0)], ..Mesh::default() };
     paths_of(&mesh).1
@@ -813,12 +813,7 @@ pub(crate) fn slab_beads(outline: &[Point]) -> Paths {
 
 /// The map of the plate that mirrors (across the x axis), turns by `angle` degrees and moves by
 /// `shift`, and the outline it takes `part` to, still anticlockwise.
-pub(crate) fn placed(
-    part: &[Point],
-    angle: f64,
-    mirror: bool,
-    shift: Point,
-) -> (impl Fn(Point) -> Point, Vec<Point>) {
+fn placed(part: &[Point], angle: f64, mirror: bool, shift: Point) -> (impl Fn(Point) -> Point, Vec<Point>) {
     let (s, c) = angle.to_radians().sin_cos();
     let g = move |p: Point| {
         let p = if mirror { [p[0], -p[1]] } else { p };
@@ -832,6 +827,7 @@ pub(crate) fn placed(
 }
 
 mod directions;
+mod seams;
 
 #[test]
 fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {

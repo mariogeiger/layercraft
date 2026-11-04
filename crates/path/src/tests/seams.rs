@@ -1,8 +1,6 @@
 //! Tests of where loops start and which way they run: the seams follow the part, not the plate.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use crate::tests::{bracket, paths_of, placed, slab_beads};
 use layercraft_geom::{polyline_length, signed_area};
 use layercraft_mesh::Mesh;
 

@@ -1,8 +1,6 @@
 //! Where a layer too short to cool waits: clear of its beads, the same turned, moved or mirrored.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use crate::tests::{PLATE, compiled, params};
 use layercraft_path::{Path, PathLayer, Paths};
 use layercraft_tune::Field;
 
