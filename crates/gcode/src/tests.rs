@@ -47,6 +47,7 @@ fn moves_name_only_what_changes() {
         mv(Some([15.0, 25.0, 0.2]), None, 0.1, 50.0, Some(wall)),
     ];
     let program = Program {
+        carrier: Default::default(),
         layers: vec![Layer {
             index: 0,
             z: 0.2,
@@ -103,6 +104,7 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
         mv(Some([10.0, 20.0, 1.4]), turn([9.0, 20.0], full), 0.0, 300.0, None),
     ];
     let program = Program {
+        carrier: Default::default(),
         layers: vec![
             Layer {
                 index: 0,
@@ -188,6 +190,7 @@ fn what_is_written_reads_back() {
         mv(Some([35.0, 30.0, 0.4]), None, 0.1, 50.0, Some(wall)),
     ];
     let program = Program {
+        carrier: Default::default(),
         layers: vec![
             Layer {
                 index: 0,
@@ -268,6 +271,7 @@ fn filament_too_fine_to_write_is_carried_not_lost() {
             .map(|i| mv(Some([10.0 + 0.0003 * i as f64, 20.0, 0.2]), None, 0.0000123, 50.0, Some(wall))),
     );
     let program = Program {
+        carrier: Default::default(),
         layers: vec![Layer {
             index: 0,
             z: 0.2,
@@ -363,7 +367,10 @@ fn a_layer_in_several_passes_is_announced_once_and_its_filaments_listed() {
         ],
         material,
     };
-    let program = Program { layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 0.5)] };
+    let program = Program {
+        carrier: Default::default(),
+        layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 0.5)],
+    };
     let text = write(&program, &frame(&["; layer 0", "; layer 1", "; change to 1"]), &LIMITS, &header());
     assert_eq!(text.matches("; CHANGE_LAYER").count(), 2);
     let body = body(&text);

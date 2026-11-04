@@ -34,7 +34,7 @@ mod tour;
 
 pub use role::{Face, Kind, Role, Support};
 
-use layercraft_geom::{GeomError, Point, Relief};
+use layercraft_geom::{Carrier, GeomError, Point, Warp};
 use layercraft_region::{RegionLayer, Regions};
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
@@ -85,15 +85,19 @@ pub struct PathLayer {
     /// The material this pass of the layer prints.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub material: usize,
-    /// How far the layer's top lies above `top` over the plate: the beads lie on it.
-    #[serde(default, skip_serializing_if = "Relief::is_zero")]
-    pub warp: Relief,
+    /// How far the layer's top lies above `top` at each corner of the stage's carrier: the beads
+    /// lie on it.
+    #[serde(default, skip_serializing_if = "Warp::is_zero")]
+    pub warp: Warp,
     pub paths: Vec<Path>,
 }
 
 /// The output of the path stage: the layers' passes, in printing order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paths {
+    /// The triangles the bent layers' warps are linear on, as the regions give them.
+    #[serde(default, skip_serializing_if = "Carrier::is_empty")]
+    pub carrier: Carrier,
     pub layers: Vec<PathLayer>,
 }
 
@@ -249,6 +253,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             height = Some(layer.top);
         }
         let parts = order::parts(layer, field)?;
+        let relief = regions.carrier.relief(&layer.warp)?;
         let asked = parts.iter().find_map(|(p, _)| match p.sparse_pattern {
             SparsePattern::Rolls { tilt, ply } if !layer.sparse.is_empty() => Some((p, tilt, ply)),
             _ => None,
@@ -263,17 +268,10 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             }
             None => None,
         };
+        let guides = order::Guides { rolls: lines.as_deref(), beneath: &beneath, relief: &relief };
         let mut islands = Vec::new();
         for (params, part) in parts {
-            islands.extend(order::islands(
-                &part,
-                &params,
-                lines.as_deref(),
-                &beneath,
-                &solids,
-                pass,
-                &mut seams,
-            )?);
+            islands.extend(order::islands(&part, &params, guides, &solids, pass, &mut seams)?);
         }
         seams.commit();
         islands.extend(supports::islands(layer, field.base(), &columns, pass)?);
@@ -292,7 +290,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             paths,
         });
     }
-    Ok(Paths { layers })
+    Ok(Paths { carrier: regions.carrier.clone(), layers })
 }
 
 #[cfg(test)]

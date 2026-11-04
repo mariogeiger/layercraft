@@ -20,8 +20,8 @@
 //! walled alone, judged against the whole layer, the first the material the last layer ended in.
 
 use layercraft_geom::{
-    GeomError, Region, Relief, Shape, bead_spacing, difference, intersection, offset, opening, signed_area,
-    union,
+    Carrier, GeomError, Region, Shape, Warp, bead_spacing, difference, intersection, offset, opening,
+    signed_area, union,
 };
 use layercraft_section::{Layer, Sections};
 use layercraft_tune::{Field, TuneError, centre};
@@ -85,9 +85,10 @@ pub struct RegionLayer {
     /// The material this pass of the layer prints.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub material: usize,
-    /// How far the layer's top lies above `top` over the plate, as its section gives it.
-    #[serde(default, skip_serializing_if = "Relief::is_zero")]
-    pub warp: Relief,
+    /// How far the layer's top lies above `top` at each corner of the stage's carrier, as its
+    /// section gives it.
+    #[serde(default, skip_serializing_if = "Warp::is_zero")]
+    pub warp: Warp,
     /// Wall centre lines, outermost first.
     pub walls: Vec<Region>,
     /// Where inner walls are drawn, when not everywhere: under the layer above.
@@ -146,6 +147,9 @@ impl RegionLayer {
 /// The output of the region stage: the layers' passes, in printing order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Regions {
+    /// The triangles the bent layers' warps are linear on, as the sections give them.
+    #[serde(default, skip_serializing_if = "Carrier::is_empty")]
+    pub carrier: Carrier,
     pub layers: Vec<RegionLayer>,
 }
 
@@ -417,7 +421,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             }
         }
     }
-    Ok(Regions { layers: passes.into_iter().flatten().collect() })
+    Ok(Regions { carrier: sections.carrier.clone(), layers: passes.into_iter().flatten().collect() })
 }
 
 /// The layers around the one being split, whole.

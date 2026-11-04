@@ -62,6 +62,7 @@ fn a_triangle_on_a_missing_vertex_is_refused() {
 fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
     let region = union_contours(&[square(0.0, 0.0, 10.0), square(2.0, 2.0, 6.0)]).unwrap();
     let s = Sections {
+        carrier: Default::default(),
         layers: vec![Layer {
             index: 3,
             top: 0.8,
@@ -98,7 +99,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         supports: Vec::new(),
         support_interface: Vec::new(),
     };
-    let c = regions(&Regions { layers: vec![layer] }).unwrap();
+    let c = regions(&Regions { carrier: Default::default(), layers: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.
     let roles: Vec<f64> = c.segments.rows.iter().map(|(_, v)| v[1]).collect();
     assert_eq!(roles, [[0.0; 8].as_slice(), &[2.0; 4]].concat());
@@ -125,6 +126,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         overhang: Vec::new(),
     };
     let p = Paths {
+        carrier: Default::default(),
         layers: vec![PathLayer {
             index: 1,
             top: 0.4,
@@ -176,7 +178,7 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         moves,
         material: 0,
     };
-    let c = program(&Program { layers: vec![layer] }, &limits).unwrap();
+    let c = program(&Program { carrier: Default::default(), layers: vec![layer] }, &limits).unwrap();
     let segments = &c.segments.rows;
     // Nothing before the nozzle is known; the bead, the helix's chords, the travel.
     let moves: Vec<f64> = segments.iter().map(|(_, v)| v[1]).collect();

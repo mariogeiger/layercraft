@@ -35,6 +35,7 @@ fn arc(to: [f64; 3], centre: [f64; 2], turn: f64) -> Move {
 
 fn program(moves: Vec<Move>) -> Program {
     Program {
+        carrier: Default::default(),
         layers: vec![Layer {
             index: 0,
             z: 0.2,
@@ -95,7 +96,7 @@ fn each_danger_is_caught() {
         moves: safe(),
         material: 0,
     });
-    assert!(!verify(&Program { layers }, &ENVELOPE).is_empty());
+    assert!(!verify(&Program { carrier: Default::default(), layers }, &ENVELOPE).is_empty());
 }
 
 /// A layer of one bead from (10, 10) to (20, 10) at `z`, shifted `dy` across it.
@@ -118,7 +119,7 @@ fn the_head_never_comes_down_into_what_is_printed() {
     let beside = |dy: f64| {
         let mut layers: Vec<Layer> = tower(0.0).collect();
         layers.push(bead_layer(10, 0.2, dy));
-        verify(&Program { layers }, &ENVELOPE)
+        verify(&Program { carrier: Default::default(), layers }, &ENVELOPE)
     };
     assert_eq!(beside(40.0), vec![], "far off");
     assert_eq!(beside(3.0), vec![], "past the column");
@@ -127,13 +128,16 @@ fn the_head_never_comes_down_into_what_is_printed() {
     // A tower taller than the head's clearance reaches its plane, however far: the head meets it.
     let mut tall: Vec<Layer> = (0..25).map(|k| bead_layer(k, 0.2 * (k + 1) as f64, 0.0)).collect();
     tall.push(bead_layer(25, 0.2, 60.0));
-    assert!(!verify(&Program { layers: tall }, &ENVELOPE).is_empty(), "under the head");
+    assert!(
+        !verify(&Program { carrier: Default::default(), layers: tall }, &ENVELOPE).is_empty(),
+        "under the head"
+    );
     // Two towers side by side, each laid up a layer at a time, pass.
     let mut both: Vec<Layer> = Vec::new();
     for (a, b) in tower(0.0).zip(tower(30.0)) {
         both.extend([a, b]);
     }
-    assert_eq!(verify(&Program { layers: both }, &ENVELOPE), vec![]);
+    assert_eq!(verify(&Program { carrier: Default::default(), layers: both }, &ENVELOPE), vec![]);
 }
 
 #[test]
@@ -170,14 +174,15 @@ fn an_arc_turns_inside_the_plate_from_a_known_place_and_ends_on_its_circle() {
 /// to 20, its beads at `z(x)`: up the ramp along y = 10, then back down beside it.
 fn ramped(z: impl Fn(f64) -> f64) -> Program {
     let values: Vec<f64> = (0..41 * 21).map(|k| 0.02 * (k % 41).min(20) as f64).collect();
-    let warp = Relief::from_grid([0.0, 0.0], 1.0, [0, 0], [41, 21], &values).unwrap();
+    let ramp = Relief::from_grid([0.0, 0.0], 1.0, [0, 0], [41, 21], &values).unwrap();
     let mut moves = vec![mv([10.0, 10.0, 1.2], 0.0, 500.0), mv([10.0, 10.0, z(10.0)], 0.0, 20.0)];
     moves.extend((11..=20).map(|x| mv([x as f64, 10.0, z(x as f64)], 0.03, 50.0)));
     moves.push(mv([20.0, 10.4, z(20.0)], 0.0, 20.0));
     moves.extend((10..20).rev().map(|x| mv([x as f64, 10.4, z(x as f64)], 0.03, 50.0)));
     moves.push(mv([10.0, 10.4, 1.2], 0.0, 20.0));
+    let warp = ramp.warp().clone();
     let bent = Layer { index: 1, z: 0.4, height: 0.2, warp, free: false, moves, material: 0 };
-    Program { layers: vec![bead_layer(0, 0.2, 0.0), bent] }
+    Program { carrier: ramp.carrier().clone(), layers: vec![bead_layer(0, 0.2, 0.0), bent] }
 }
 
 #[test]
@@ -231,7 +236,7 @@ fn beside_bead(y: f64, z: f64, same_layer: bool) -> Program {
             material: 0,
         });
     }
-    Program { layers }
+    Program { carrier: Default::default(), layers }
 }
 
 #[test]
@@ -271,7 +276,7 @@ fn strand_across(z_start: f64, z: f64) -> Program {
         moves: strand,
         material: 0,
     };
-    Program { layers: vec![bead_layer(0, 0.2, 0.0), free] }
+    Program { carrier: Default::default(), layers: vec![bead_layer(0, 0.2, 0.0), free] }
 }
 
 #[test]

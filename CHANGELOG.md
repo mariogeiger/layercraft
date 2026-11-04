@@ -2,6 +2,40 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.16.0
+
+### Changed
+
+- A stage file holds its print's triangles once. The section, region, path and program stages
+  hold one `carrier`, its `points` and `triangles`: those of the triangulation where some layer
+  is bent. Each bent layer's `warp` is its value at each of the carrier's corners, a plain list;
+  it held triangles of its own (0.15.0). The ramps' section stage takes 11 MB instead of 30
+  (6.8 in 0.14.2), and a wavy plate 100 mm square's 66 MB instead of 176 (45). What is left is
+  the values: one at every corner of the carrier for each bent layer, zero where that layer is
+  flat. The section stage takes as long and holds as much as before, 289 MB on the wavy plate,
+  most of it while the leaves are found.
+- Older stage files with bent layers are refused, to be made again; those whose layers are all
+  flat still load.
+- `merge` joins the programs' carriers. A merged layer is bent where any of its pieces is, their
+  warps added on the carriers joined, where their triangles are the same or lie apart on the
+  plate. A program whose triangles overlap another's otherwise keeps its bends out, and its beads
+  then fail verification.
+- `verify` reports a layer whose warp does not fit its program's carrier, and checks its beads as
+  on a flat layer.
+
+### Added
+
+- `layercraft_geom::Warp`: a layer's value at each corner of a carrier, flat when it holds none.
+  `Carrier::relief` makes it a `Relief`; `Carrier::trim` keeps the triangles where some warp is
+  not zero, with the warps on them; `Carrier::union` joins two carriers and tells where the
+  other's corners went; `Carrier::len` counts the corners.
+- `Sections`, `Regions`, `Paths` and `Program` gain `carrier`, and their layers' `warp` is a
+  `Warp`. `MotionError::Geometry` reports a warp that does not fit its carrier.
+
+### Removed
+
+- `Relief::combine`: warps on one carrier add value by value.
+
 ## 0.15.0
 
 ### Changed

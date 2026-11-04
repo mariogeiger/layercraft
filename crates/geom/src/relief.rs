@@ -1,33 +1,31 @@
-//! Reliefs: piecewise linear heights over the plate, on triangles that any number of them share.
+//! Reliefs: piecewise linear heights over the plate, on triangles every layer of a print shares.
 //!
-//! A carrier holds triangles and their corners; a relief on it, its value at each corner. The
-//! relief is linear on each triangle, zero past them and zero along their outer edges, so it is
-//! continuous. A triangle where it is zero at every corner takes no part: every query passes it
-//! by and the relief is stored without it, so a relief behaves as the triangles where it is not
-//! zero alone, whatever else its carrier holds. Along a segment it is linear between the points
-//! where the segment crosses those triangles' edges: cut there (`Relief::breaks`), the segment
-//! carries it exactly, as straight pieces. Its extremes over a box lie at the box's corners,
-//! where the box's sides cross those edges, or at corners inside it.
-//!
-//! Stage files from before reliefs had triangles of their own hold a block of values on a
-//! regular grid, each square split by its diagonal from `(i, j)` to `(i + 1, j + 1)` and the
-//! values zero a square past the block: read, they become those very triangles.
+//! A carrier holds triangles and their corners; a warp, a value at each corner; a relief is a
+//! warp on its carrier. It is linear on each triangle, zero past them and zero along their
+//! outer edges, so it is continuous. A triangle where it is zero at every corner takes no part:
+//! every query passes it by, so a relief behaves as the triangles where it is not zero alone.
+//! Along a segment it is linear between the points where the segment crosses those triangles'
+//! edges: cut there (`Relief::breaks`), the segment carries it exactly, as straight pieces. Its
+//! extremes over a box lie at the box's corners, where the box's sides cross those edges, or at
+//! corners inside it. A stage file holds its print's carrier once, its corners and triangles,
+//! and each layer's warp as its values.
 
 use crate::locate::Buckets;
 use crate::orient::orientation;
 use crate::{GRID_MM, GeomError, LIMIT_MM, Point, check_value};
-use serde::{Deserialize, Serialize};
+use serde::de::{Error as _, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// The most corners a relief holds: a plate 400 mm square, a corner every 0.1 mm.
+/// The most corners a carrier holds: a plate 400 mm square, a corner every 0.1 mm.
 pub const MAX_POINTS: usize = 1 << 24;
 /// How far outside a triangle, as a fraction of it, a point still counts as on it: rounding.
 const ON_TRIANGLE: f64 = 1e-9;
 /// Breaks closer than this along a segment, in mm, are one: a tenth of the lattice step.
 const SAME_BREAK_MM: f64 = GRID_MM / 10.0;
 
-/// Triangles over the plate with their corners, shared by every relief on them.
+/// Triangles over the plate with their corners, which the warps of a print's layers share.
 #[derive(Debug, Clone, Default)]
 pub struct Carrier(Arc<Tiling>);
 
@@ -41,24 +39,84 @@ struct Tiling {
     rim: Vec<u32>,
 }
 
-/// A piecewise linear height over the plate.
-#[derive(Debug, Clone, Default)]
-pub struct Relief {
-    carrier: Carrier,
-    /// The value at each of the carrier's corners.
+impl PartialEq for Carrier {
+    fn eq(&self, other: &Carrier) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.points == other.0.points && self.0.triangles == other.0.triangles)
+    }
+}
+
+/// A carrier as stage files hold it.
+#[derive(Serialize, Deserialize)]
+struct StoredCarrier<P, T> {
+    points: P,
+    triangles: T,
+}
+
+impl Serialize for Carrier {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        StoredCarrier { points: &self.0.points, triangles: &self.0.triangles }.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Carrier {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Carrier, D::Error> {
+        let stored = StoredCarrier::<Vec<Point>, Vec<[u32; 3]>>::deserialize(d)?;
+        Carrier::new(stored.points, stored.triangles).map_err(D::Error::custom)
+    }
+}
+
+/// A layer's displacement at each corner of its print's carrier, in mm: flat when it holds no
+/// value, as it does when every value would be zero.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Warp {
     values: Arc<[f64]>,
     /// The lowest and highest values, zero included.
     range: [f64; 2],
 }
 
-impl PartialEq for Relief {
-    /// Equal when they hold the same triangles, corners and values where they are not zero.
-    fn eq(&self, other: &Relief) -> bool {
-        if Arc::ptr_eq(&self.carrier.0, &other.carrier.0) {
-            return self.values == other.values;
-        }
-        self.trimmed() == other.trimmed()
+impl Serialize for Warp {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.values.as_ref().serialize(s)
     }
+}
+
+/// The values of a warp as stage files hold them, one at each corner.
+struct Values;
+
+impl<'de> Visitor<'de> for Values {
+    type Value = Vec<f64>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(
+            "a warp's value at each corner of its stage's carrier (stage files from before 0.16.0, \
+             whose bent layers hold triangles of their own, must be made again)",
+        )
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<f64>, A::Error> {
+        let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(MAX_POINTS));
+        while let Some(v) = seq.next_element()? {
+            if values.len() >= MAX_POINTS {
+                return Err(A::Error::custom(format!("a warp of more than {MAX_POINTS} values")));
+            }
+            values.push(v);
+        }
+        Ok(values)
+    }
+}
+
+impl<'de> Deserialize<'de> for Warp {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Warp, D::Error> {
+        Warp::new(d.deserialize_seq(Values)?).map_err(D::Error::custom)
+    }
+}
+
+/// A piecewise linear height over the plate: a warp on its carrier.
+#[derive(Debug, Clone, Default)]
+pub struct Relief {
+    carrier: Carrier,
+    warp: Warp,
 }
 
 /// A triangle of a relief holding a point: its corners, the relief's values there and the
@@ -67,48 +125,6 @@ struct Located {
     corners: [Point; 3],
     values: [f64; 3],
     weights: [f64; 3],
-}
-
-/// A relief as stage files hold it: its triangles where it is not zero, their corners and its
-/// values there.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-struct Stored {
-    points: Vec<Point>,
-    triangles: Vec<[u32; 3]>,
-    values: Vec<f64>,
-}
-
-/// What stage files hold for a relief: its triangles, or, from older files, a block on a grid.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Read {
-    Triangles(Stored),
-    Grid { grid: OldGrid, start: [i64; 2], size: [usize; 2], values: Vec<f64> },
-}
-
-/// The regular grid older stage files put reliefs on: vertex `(i, j)` at `origin + cell·(i, j)`.
-#[derive(Deserialize)]
-struct OldGrid {
-    origin: Point,
-    cell: f64,
-}
-
-impl Serialize for Relief {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        self.trimmed().serialize(s)
-    }
-}
-
-impl<'de> Deserialize<'de> for Relief {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Relief, D::Error> {
-        let made = match Read::deserialize(d)? {
-            Read::Triangles(Stored { points, triangles, values }) => Relief::new(points, triangles, values),
-            Read::Grid { grid, start, size, values } => {
-                Relief::from_grid(grid.origin, grid.cell, start, size, &values)
-            }
-        };
-        made.map_err(serde::de::Error::custom)
-    }
 }
 
 /// The sides of a triangle, each from a corner to the next.
@@ -176,12 +192,13 @@ fn overlap(p: [Point; 3], q: [Point; 3]) -> bool {
 
 impl Carrier {
     /// The carrier of `triangles`, index triples into `points`. It refuses coordinates that are
-    /// not finite or lie past `LIMIT_MM`, more than `MAX_POINTS` corners, and triangles naming a
+    /// not finite or lie past `LIMIT_MM`, more than `MAX_POINTS` corners or twice as many
+    /// triangles, more than a triangulation of that many corners has, and triangles naming a
     /// corner that is not there.
     pub fn new(points: Vec<Point>, triangles: Vec<[u32; 3]>) -> Result<Carrier, GeomError> {
         if points.len() > MAX_POINTS || triangles.len() > 2 * MAX_POINTS {
             return Err(GeomError::Engine(format!(
-                "a relief of {} corners and {} triangles is too large",
+                "a carrier of {} corners and {} triangles is too large",
                 points.len(),
                 triangles.len()
             )));
@@ -191,7 +208,7 @@ impl Carrier {
             check_value(p[1])?;
         }
         if triangles.iter().flatten().any(|&i| i as usize >= points.len()) {
-            return Err(GeomError::Engine("a relief names a corner it does not hold".into()));
+            return Err(GeomError::Engine("a carrier names a corner it does not hold".into()));
         }
         // Inside: the corners of a triangle, but for those along an edge one triangle alone has.
         let mut inside = vec![false; points.len()];
@@ -217,26 +234,159 @@ impl Carrier {
         Ok(Carrier(Arc::new(Tiling { points, triangles, buckets, rim })))
     }
 
-    /// The relief taking `values` at the corners. It refuses one value more or fewer than the
-    /// corners, values that are not finite or lie past `LIMIT_MM`, and values other than zero
-    /// along the triangles' outer edges or at corners of none.
-    pub fn relief(&self, values: Vec<f64>) -> Result<Relief, GeomError> {
-        let count = self.0.points.len();
-        if values.len() != count {
-            return Err(GeomError::Engine(format!(
-                "a relief of {count} corners holds {} values",
-                values.len()
-            )));
+    /// How many corners it holds.
+    pub fn len(&self) -> usize {
+        self.0.points.len()
+    }
+
+    /// Whether it holds no corner.
+    pub fn is_empty(&self) -> bool {
+        self.0.points.is_empty()
+    }
+
+    /// The relief of `warp` on it, the relief zero for a flat warp. It refuses a warp of one
+    /// value more or fewer than the corners, and values other than zero along the triangles'
+    /// outer edges or at corners of none.
+    pub fn relief(&self, warp: &Warp) -> Result<Relief, GeomError> {
+        if !warp.is_zero() {
+            let count = self.0.points.len();
+            if warp.values.len() != count {
+                return Err(GeomError::Engine(format!(
+                    "a warp of {} values on a carrier of {count} corners",
+                    warp.values.len()
+                )));
+            }
+            if self.0.rim.iter().any(|&i| warp.values.get(i as usize).is_some_and(|&v| v != 0.0)) {
+                return Err(GeomError::Engine("a warp is not zero along its triangles' outer edges".into()));
+            }
+        }
+        Ok(Relief { carrier: self.clone(), warp: warp.clone() })
+    }
+
+    /// The carrier of its triangles where some of `warps` is not zero, and those warps on it,
+    /// each checked as `relief` checks it. Its corners keep their order.
+    pub fn trim(&self, warps: &[Warp]) -> Result<(Carrier, Vec<Warp>), GeomError> {
+        for warp in warps {
+            self.relief(warp)?;
+        }
+        let tiling = &self.0;
+        let bends = |i: u32| warps.iter().any(|w| w.values.get(i as usize).is_some_and(|&v| v != 0.0));
+        let kept: Vec<[u32; 3]> =
+            tiling.triangles.iter().copied().filter(|t| t.iter().any(|&i| bends(i))).collect();
+        let mut renumber = vec![u32::MAX; tiling.points.len()];
+        for &i in kept.iter().flatten() {
+            if let Some(slot) = renumber.get_mut(i as usize) {
+                *slot = 0;
+            }
+        }
+        let mut points = Vec::new();
+        for (slot, p) in renumber.iter_mut().zip(&tiling.points).filter(|(slot, _)| **slot == 0) {
+            *slot = points.len() as u32;
+            points.push(*p);
+        }
+        let at = |i: u32| renumber.get(i as usize).copied().unwrap_or(0);
+        let triangles = kept.iter().map(|t| t.map(at)).collect();
+        let carrier = Carrier::new(points, triangles)?;
+        let count = carrier.0.points.len();
+        let moved = warps
+            .iter()
+            .map(|w| {
+                let mut values = vec![0.0; if w.is_zero() { 0 } else { count }];
+                for (&to, &v) in renumber.iter().zip(w.values.iter()) {
+                    if let Some(slot) = values.get_mut(to as usize) {
+                        *slot = v;
+                    }
+                }
+                Warp::new(values)
+            })
+            .collect::<Result<Vec<Warp>, GeomError>>()?;
+        Ok((carrier, moved))
+    }
+
+    /// The carrier of its triangles and `other`'s together, its corners in their places and
+    /// with where each of `other`'s lies: a triangle of `other` on the corners of one of its own
+    /// is that one. It refuses triangles of `other` that overlap its own otherwise.
+    pub fn union(&self, other: &Carrier) -> Result<(Carrier, Vec<u32>), GeomError> {
+        let (a, b) = (&self.0, &other.0);
+        // A corner is its place: adding zero makes −0 the 0 it is.
+        let key = |p: &Point| ((p[0] + 0.0).to_bits(), (p[1] + 0.0).to_bits());
+        let (mut points, mut triangles) = (a.points.clone(), a.triangles.clone());
+        let mut index: HashMap<(u64, u64), u32> =
+            points.iter().enumerate().map(|(i, p)| (key(p), i as u32)).collect();
+        let sorted = |t: [u32; 3]| {
+            let mut s = t;
+            s.sort_unstable();
+            s
+        };
+        let own: HashSet<[u32; 3]> = triangles.iter().map(|&t| sorted(t)).collect();
+        for tri in &b.triangles {
+            let Some(corners) = corners_of(&b.points, tri) else { continue };
+            if let [Some(x), Some(y), Some(z)] = corners.map(|p| index.get(&key(&p)).copied())
+                && own.contains(&sorted([x, y, z]))
+            {
+                continue;
+            }
+            let (lo, hi) = bounds(corners);
+            let meets = |s: u32| {
+                a.triangles
+                    .get(s as usize)
+                    .and_then(|t| corners_of(&a.points, t))
+                    .is_some_and(|c| overlap(c, corners))
+            };
+            if a.buckets.within(lo, hi).into_iter().any(meets) {
+                return Err(GeomError::Engine("carriers whose triangles overlap".into()));
+            }
+            let mut ids = [0u32; 3];
+            for (slot, p) in ids.iter_mut().zip(corners) {
+                *slot = *index.entry(key(&p)).or_insert_with(|| {
+                    points.push(p);
+                    (points.len() - 1) as u32
+                });
+            }
+            triangles.push(ids);
+        }
+        let mut places = Vec::with_capacity(b.points.len());
+        for p in &b.points {
+            places.push(*index.entry(key(p)).or_insert_with(|| {
+                points.push(*p);
+                (points.len() - 1) as u32
+            }));
+        }
+        Ok((Carrier::new(points, triangles)?, places))
+    }
+}
+
+impl Warp {
+    /// The warp taking `values` at the corners, in their order. It refuses values that are not
+    /// finite or lie past `LIMIT_MM`, and more than `MAX_POINTS` of them.
+    pub fn new(values: Vec<f64>) -> Result<Warp, GeomError> {
+        if values.len() > MAX_POINTS {
+            return Err(GeomError::Engine(format!("a warp of {} values is too large", values.len())));
         }
         let mut range = [0.0f64; 2];
         for &v in &values {
             check_value(v)?;
             range = [range[0].min(v), range[1].max(v)];
         }
-        if self.0.rim.iter().any(|&i| values.get(i as usize).is_some_and(|&v| v != 0.0)) {
-            return Err(GeomError::Engine("a relief is not zero along its triangles' outer edges".into()));
+        if range == [0.0, 0.0] {
+            return Ok(Warp::default());
         }
-        Ok(Relief { carrier: self.clone(), values: values.into(), range })
+        Ok(Warp { values: values.into(), range })
+    }
+
+    /// The value at each corner of its carrier; none when flat.
+    pub fn values(&self) -> &[f64] {
+        &self.values
+    }
+
+    /// Whether it is flat: zero everywhere.
+    pub fn is_zero(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// The lowest and highest values, zero included.
+    pub fn range(&self) -> [f64; 2] {
+        self.range
     }
 }
 
@@ -247,9 +397,10 @@ impl Relief {
     }
 
     /// The relief taking `values` at `points` and linear on `triangles`, index triples into
-    /// them, on a carrier of its own: as `Carrier::new` and `Carrier::relief` check them.
+    /// them, on a carrier of its own: as `Carrier::new`, `Warp::new` and `Carrier::relief`
+    /// check them.
     pub fn new(points: Vec<Point>, triangles: Vec<[u32; 3]>, values: Vec<f64>) -> Result<Relief, GeomError> {
-        Carrier::new(points, triangles)?.relief(values)
+        Carrier::new(points, triangles)?.relief(&Warp::new(values)?)
     }
 
     /// The relief with `values`, row after row, on the block of `size` vertices from `start` of
@@ -306,14 +457,19 @@ impl Relief {
         Relief::new(points, triangles, at)
     }
 
-    /// The value at each of its carrier's corners.
-    pub fn values(&self) -> &[f64] {
-        &self.values
+    /// The carrier it lies on.
+    pub fn carrier(&self) -> &Carrier {
+        &self.carrier
+    }
+
+    /// Its warp, on its carrier.
+    pub fn warp(&self) -> &Warp {
+        &self.warp
     }
 
     /// Whether the relief is zero everywhere.
     pub fn is_zero(&self) -> bool {
-        self.range == [0.0, 0.0]
+        self.warp.is_zero()
     }
 
     fn tiling(&self) -> &Tiling {
@@ -324,7 +480,7 @@ impl Relief {
     /// them.
     fn nonzero_triangle(&self, t: u32) -> Option<([Point; 3], [f64; 3])> {
         let tri = self.tiling().triangles.get(t as usize)?;
-        let value = |i: u32| self.values.get(i as usize).copied();
+        let value = |i: u32| self.warp.values.get(i as usize).copied();
         let v = [value(tri[0])?, value(tri[1])?, value(tri[2])?];
         if v.iter().all(|&x| x == 0.0) {
             return None;
@@ -400,7 +556,7 @@ impl Relief {
 
     /// The lowest and highest values over the plate, zero included.
     pub fn range(&self) -> [f64; 2] {
-        self.range
+        self.warp.range
     }
 
     /// The highest value along the segment from `a` to `b`.
@@ -449,76 +605,5 @@ impl Relief {
     /// The steepest slope of the relief, in mm per mm, over its triangles.
     pub fn steepest(&self) -> f64 {
         self.facets().map(|(_, g)| g[0].hypot(g[1])).fold(0.0, f64::max)
-    }
-
-    /// The relief as stage files hold it: its triangles where it is not zero, in order, and their
-    /// corners and its values there, in the order the triangles first name them.
-    fn trimmed(&self) -> Stored {
-        let tiling = self.tiling();
-        let mut renumber = vec![u32::MAX; tiling.points.len()];
-        let mut out = Stored { points: Vec::new(), triangles: Vec::new(), values: Vec::new() };
-        for (t, tri) in tiling.triangles.iter().enumerate() {
-            let Some((corners, values)) = self.nonzero_triangle(t as u32) else { continue };
-            let mut ids = [0u32; 3];
-            for (((slot, &i), p), v) in ids.iter_mut().zip(tri).zip(corners).zip(values) {
-                let Some(r) = renumber.get_mut(i as usize) else { continue };
-                if *r == u32::MAX {
-                    *r = out.points.len() as u32;
-                    out.points.push(p);
-                    out.values.push(v);
-                }
-                *slot = *r;
-            }
-            out.triangles.push(ids);
-        }
-        out
-    }
-
-    /// The relief `f(a, b)` of two reliefs, corner by corner, where `f(0, 0) = 0`: on their
-    /// carrier when they share one, else on their triangles together, where those of each are
-    /// either the other's own or lie apart from them; reliefs whose triangles overlap otherwise
-    /// are refused.
-    pub fn combine(a: &Relief, b: &Relief, f: impl Fn(f64, f64) -> f64) -> Result<Relief, GeomError> {
-        if Arc::ptr_eq(&a.carrier.0, &b.carrier.0) {
-            return a.carrier.relief(a.values.iter().zip(b.values.iter()).map(|(&x, &y)| f(x, y)).collect());
-        }
-        let key = |p: &Point| (p[0].to_bits(), p[1].to_bits());
-        let Stored { mut points, mut triangles, values: own } = a.trimmed();
-        let mut index: HashMap<(u64, u64), u32> =
-            points.iter().enumerate().map(|(i, p)| (key(p), i as u32)).collect();
-        let sorted = |t: [u32; 3]| {
-            let mut s = t;
-            s.sort_unstable();
-            s
-        };
-        let shared: HashSet<[u32; 3]> = triangles.iter().map(|&t| sorted(t)).collect();
-        for t in 0..b.tiling().triangles.len() as u32 {
-            let Some((corners, _)) = b.nonzero_triangle(t) else { continue };
-            if let [Some(x), Some(y), Some(z)] = corners.map(|p| index.get(&key(&p)).copied())
-                && shared.contains(&sorted([x, y, z]))
-            {
-                continue;
-            }
-            let (lo, hi) = bounds(corners);
-            let meets = |s: u32| a.nonzero_triangle(s).is_some_and(|(c, _)| overlap(c, corners));
-            if a.tiling().buckets.within(lo, hi).into_iter().any(meets) {
-                return Err(GeomError::Engine("reliefs on overlapping triangles of their own".into()));
-            }
-            let mut ids = [0u32; 3];
-            for (slot, p) in ids.iter_mut().zip(corners) {
-                *slot = *index.entry(key(&p)).or_insert_with(|| {
-                    points.push(p);
-                    (points.len() - 1) as u32
-                });
-            }
-            triangles.push(ids);
-        }
-        // Each relief's value at every corner, the first's as it holds it at its own.
-        let values: Vec<f64> = points
-            .iter()
-            .enumerate()
-            .map(|(i, p)| f(own.get(i).copied().unwrap_or_else(|| a.at(*p)), b.at(*p)))
-            .collect();
-        Relief::new(points, triangles, values)
     }
 }

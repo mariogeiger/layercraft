@@ -321,58 +321,89 @@ fn a_field_is_linear_between_its_breaks() {
     }
 }
 
+/// Two reliefs added on their carriers joined: the first's corners where they were, the
+/// other's where the union put them.
+fn joined_sum(a: &Relief, b: &Relief) -> Relief {
+    let (joined, places) = a.carrier().union(b.carrier()).unwrap();
+    let mut values = vec![0.0; joined.len()];
+    for (slot, &v) in values.iter_mut().zip(a.warp().values()) {
+        *slot += v;
+    }
+    for (&to, &v) in places.iter().zip(b.warp().values()) {
+        values[to as usize] += v;
+    }
+    joined.relief(&Warp::new(values).unwrap()).unwrap()
+}
+
 #[test]
-fn fields_combine_trim_and_check() {
-    let one = sampled(|p| if p[0] > 0.0 { 0.1 } else { 0.0 });
-    let other = sampled(|p| if p[1] > 0.0 { 0.3 } else { 0.0 });
-    let mean = Relief::combine(&one, &other, |a, b| (a + b) / 2.0).unwrap();
-    for p in [[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [0.4, 0.2]] {
-        assert!(close(mean.at(p), (one.at(p) + other.at(p)) / 2.0), "{p:?}");
-    }
-    let zero = Relief::zero();
-    assert_eq!(Relief::combine(&zero, &zero, |a, b| a + b).unwrap(), zero);
-    assert_eq!(Relief::combine(&one, &zero, |a, b| a + b).unwrap(), one);
-    // Stored, it keeps the triangles where it is not zero: those of the 11 × 10 vertices
-    // widened by a ring of zeros, but for the columns left of x = 0.
-    let kept = serde_json::to_value(&one).unwrap()["points"].as_array().map_or(0, Vec::len);
-    assert!(kept > 0 && kept < 11 * 10, "{kept}");
-    // Reliefs apart on the plate, each on triangles of its own, add up side by side; reliefs on
-    // triangles of their own that overlap do not.
-    let both = Relief::combine(&irregular(0.0), &irregular(20.0), |a, b| a + b).unwrap();
+fn carriers_join_trim_and_check() {
+    // Two reliefs apart on the plate, each on triangles of its own, add up side by side on
+    // their carriers joined.
+    let (near, far) = (irregular(0.0), irregular(20.0));
+    let both = joined_sum(&near, &far);
     for p in [[1.0, 1.0], [21.0, 1.0], [2.0, 0.5], [22.0, 0.5], [11.0, 1.0]] {
-        assert!(close(both.at(p), irregular(0.0).at(p) + irregular(20.0).at(p)), "{p:?}");
+        assert!(close(both.at(p), near.at(p) + far.at(p)), "{p:?}");
     }
-    assert!(Relief::combine(&irregular(0.0), &irregular(0.5), |a, b| a + b).is_err());
+    // Joined with itself, a carrier is itself; with one whose triangles overlap its own
+    // otherwise, it does not join.
+    let (same, places) = near.carrier().union(near.carrier()).unwrap();
+    assert_eq!((&same, places), (near.carrier(), (0..near.carrier().len() as u32).collect()));
+    assert!(near.carrier().union(irregular(0.5).carrier()).is_err());
+    // A corner at −0 is the one at 0.
+    let unit =
+        |z: f64| Carrier::new(vec![[z, z], [1.0, z], [1.0, 1.0], [z, 1.0]], vec![[0, 1, 2], [0, 2, 3]]);
+    let (same, places) = unit(0.0).unwrap().union(&unit(-0.0).unwrap()).unwrap();
+    assert_eq!((same, places), (unit(0.0).unwrap(), vec![0, 1, 2, 3]));
+    // Trimmed to the triangles where some warp is not zero: those of the 11 × 10 vertices
+    // widened by a ring of zeros, but for the columns left of x = 0; each warp the same there.
+    let one = sampled(|p| if p[0] > 0.0 { 0.1 } else { 0.0 });
+    let two = sampled(|p| if p[0] > 1.0 { -0.2 } else { 0.0 });
+    assert_eq!(one.carrier(), two.carrier());
+    let warps = [one.warp().clone(), two.warp().clone(), Warp::default()];
+    let (trimmed, warps) = one.carrier().trim(&warps).unwrap();
+    assert!(trimmed.len() < 11 * 10, "{}", trimmed.len());
+    assert!(warps[2].is_zero());
+    for (warp, whole) in warps.iter().zip([&one, &two]) {
+        let alone = trimmed.relief(warp).unwrap();
+        for p in [[1.0, 1.0], [-1.0, 1.0], [1.3, -0.4], [0.4, 0.2], [-2.5, 0.1]] {
+            assert!(close(alone.at(p), whole.at(p)), "{p:?}");
+        }
+    }
     // Corners, values and triangles are checked.
     let square = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     let halves = vec![[0, 1, 2], [0, 2, 3]];
     assert!(Relief::new(square.clone(), halves.clone(), vec![f64::NAN, 0.0, 0.0, 0.0]).is_err());
-    assert!(Relief::new(square.clone(), halves.clone(), vec![0.0; 3]).is_err());
+    assert!(Relief::new(square.clone(), halves.clone(), vec![0.1; 3]).is_err());
     assert!(Relief::new(square.clone(), vec![[0, 1, 4]], vec![0.0; 4]).is_err());
     assert!(Relief::new(square, halves, vec![0.1, 0.0, 0.0, 0.0]).is_err(), "not zero on its outer edge");
+    assert!(Warp::new(vec![0.1, f64::INFINITY]).is_err());
     let plane = sampled(|p| 0.25 * p[0]);
     assert!((plane.steepest() - 0.25).abs() < 1e-9 || plane.steepest() > 0.25, "{}", plane.steepest());
 }
 
 #[test]
 fn reliefs_on_one_carrier_behave_as_their_own_triangles_alone() {
-    // The fan carries two reliefs, one not zero on the six triangles about its corner
-    // (1.6, 2.3) alone, one on the six about (0.6, −0.4). Each answers, and is stored, as those
-    // triangles alone: read back on a carrier of its own it is the same, even along the edges
-    // it shares with triangles where it is zero, which bend it nowhere.
+    // The fan carries two warps, one not zero on the six triangles about its corner (1.6, 2.3)
+    // alone, one on the six about (0.6, −0.4). Each answers as those triangles alone, trimmed
+    // to a carrier of their own, even along the edges they share with triangles where it is
+    // zero, which bend it nowhere.
     let (points, triangles) = fan(0.0);
     let carrier = Carrier::new(points, triangles).unwrap();
     let peak = |corner: usize, value: f64| {
         let mut values = vec![0.0; 11];
         values[corner] = value;
-        carrier.relief(values).unwrap()
+        Warp::new(values).unwrap()
     };
-    let (top, low) = (peak(2, -0.2), peak(4, 0.25));
+    let (high, deep) = (peak(2, -0.2), peak(4, 0.25));
+    let (top, low) = (carrier.relief(&high).unwrap(), carrier.relief(&deep).unwrap());
     assert_eq!((top.range(), low.range()), ([-0.2, 0.0], [0.0, 0.25]));
-    let alone = |r: &Relief| -> Relief { serde_json::from_str(&serde_json::to_string(r).unwrap()).unwrap() };
-    for relief in [&top, &low] {
-        let own = alone(relief);
-        assert_eq!(&own, relief);
+    let alone = |warp: &Warp| {
+        let (own, warps) = carrier.trim(std::slice::from_ref(warp)).unwrap();
+        own.relief(&warps[0]).unwrap()
+    };
+    for (warp, relief) in [(&high, &top), (&deep, &low)] {
+        let own = alone(warp);
+        assert_eq!(own.carrier().len(), 7);
         assert_eq!((relief.facets().count(), own.facets().count()), (6, 6));
         // On the edge from (1, 1) to (2.4, 0.9), and inside triangles about it.
         for p in [[1.7, 0.95], [1.6, 1.3], [1.4, 0.6], [0.2, 2.0], [3.0, 1.0]] {
@@ -391,59 +422,35 @@ fn reliefs_on_one_carrier_behave_as_their_own_triangles_alone() {
     // In across the outer edge from (−1.6, −0.2) to (0.9, −1.9), `top` is zero and flat.
     let (a, b) = ([-1.5, -0.5], [0.8, -1.7]);
     assert!(top.breaks(a, b).is_empty() && !low.breaks(a, b).is_empty());
-    // Added on their carrier, or each on its own, they are the same relief.
-    let sum = Relief::combine(&top, &low, |a, b| a + b).unwrap();
-    let apart = Relief::combine(&alone(&top), &alone(&low), |a, b| a + b).unwrap();
+    // Added on their carrier, or each on its own and joined, they are the same relief.
+    let added: Vec<f64> = high.values().iter().zip(deep.values()).map(|(a, b)| a + b).collect();
+    let sum = carrier.relief(&Warp::new(added).unwrap()).unwrap();
+    let apart = joined_sum(&alone(&high), &alone(&deep));
     for p in [[1.0, 1.0], [1.7, 0.95], [0.6, -0.4], [1.6, 2.3], [0.4, 0.9]] {
         assert!(close(sum.at(p), top.at(p) + low.at(p)) && close(apart.at(p), sum.at(p)), "{p:?}");
     }
+    // Stored, the carrier is its corners and triangles and each warp its values: read back,
+    // they are the same; a flat warp holds none.
+    let flat = Warp::new(vec![0.0; 11]).unwrap();
+    assert!(flat.is_zero() && flat == Warp::default() && carrier.relief(&flat).unwrap().is_zero());
+    let stored = serde_json::to_string(&(&carrier, [&high, &deep, &flat])).unwrap();
+    let read: (Carrier, Vec<Warp>) = serde_json::from_str(&stored).unwrap();
+    assert_eq!(read, (carrier.clone(), vec![high.clone(), deep.clone(), flat]));
+    // An older stage file's relief, on triangles of its own, is not a warp.
+    let old = r#"{"points":[[0,0],[1,0],[0,1]],"triangles":[[0,1,2]],"values":[0,0,0]}"#;
+    let refused = serde_json::from_str::<Warp>(old).unwrap_err().to_string();
+    assert!(refused.contains("0.16.0"), "{refused}");
     // Its values are checked: one at each corner, zero on the rim and off the triangles.
-    assert!(carrier.relief(vec![0.0; 10]).is_err());
+    assert!(carrier.relief(&Warp::new(vec![0.1; 10]).unwrap()).is_err());
     let mut rim = vec![0.0; 11];
     rim[5] = 0.1;
-    assert!(carrier.relief(rim).is_err(), "not zero on the rim");
+    assert!(carrier.relief(&Warp::new(rim).unwrap()).is_err(), "not zero on the rim");
     let (mut points, triangles) = fan(0.0);
     points.push([9.0, 9.0]);
     let spare = Carrier::new(points, triangles).unwrap();
     let mut off = vec![0.0; 12];
-    assert!(spare.relief(off.clone()).unwrap().is_zero());
     off[11] = 0.1;
-    assert!(spare.relief(off).is_err(), "not zero off the triangles");
-}
-
-#[test]
-fn a_relief_from_an_older_stage_file_is_its_grid_split_by_diagonals() {
-    let old = r#"{"grid":{"origin":[0.3,-0.7],"cell":0.5},"start":[-1,0],"size":[3,2],"values":[0.1,0.2,0.0,-0.05,0.4,0.3]}"#;
-    let read: Relief = serde_json::from_str(old).unwrap();
-    // The value the older files' grid gave a point: in its square `(i, j)`, on the lower
-    // triangle when `u − i ≥ v − j`.
-    let value = |i: i64, j: i64| -> f64 {
-        let (di, dj) = (i + 1, j);
-        if !(0..3).contains(&di) || !(0..2).contains(&dj) {
-            return 0.0;
-        }
-        [0.1, 0.2, 0.0, -0.05, 0.4, 0.3][(dj * 3 + di) as usize]
-    };
-    let grid_at = |p: Point| {
-        let (u, v) = ((p[0] - 0.3) / 0.5, (p[1] + 0.7) / 0.5);
-        let (i, j) = (u.floor() as i64, v.floor() as i64);
-        let (fu, fv) = (u - i as f64, v - j as f64);
-        let (f00, f11) = (value(i, j), value(i + 1, j + 1));
-        if fu >= fv {
-            let f10 = value(i + 1, j);
-            f00 + fu * (f10 - f00) + fv * (f11 - f10)
-        } else {
-            let f01 = value(i, j + 1);
-            f00 + fv * (f01 - f00) + fu * (f11 - f01)
-        }
-    };
-    for k in 0..200 {
-        let p = [-1.5 + 0.0173 * k as f64, -1.3 + 0.0139 * k as f64];
-        assert!((read.at(p) - grid_at(p)).abs() < 1e-12, "{p:?}: {} vs {}", read.at(p), grid_at(p));
-    }
-    // Written back, it keeps its triangles.
-    let again: Relief = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
-    assert_eq!(again, read);
+    assert!(spare.relief(&Warp::new(off).unwrap()).is_err(), "not zero off the triangles");
 }
 
 #[test]

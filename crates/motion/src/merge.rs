@@ -5,13 +5,13 @@
 //! program after another, each next the one nearest where the last ended. Each program's moves
 //! expect the filament as that program left it, pulled back so far: where the piece before
 //! left it otherwise, the difference is pushed or pulled in place first. A layer is as thick as
-//! the step from the one below it, and bent where any of its pieces is: their reliefs add up
-//! when they lie on the same triangles or apart on the plate; a piece whose triangles overlap
-//! another's otherwise keeps its own bend out of the layer, and its beads then fail
-//! verification.
+//! the step from the one below it, and bent where any of its pieces is: their warps add up on
+//! the programs' carriers joined, where their triangles are the same or lie apart on the plate;
+//! a program whose triangles overlap another's otherwise keeps its bends out of the plate, and
+//! its beads then fail verification.
 
 use crate::{Layer, Move, Program};
-use layercraft_geom::Relief;
+use layercraft_geom::{Carrier, Warp};
 
 /// How far a program's filament is pulled back after each of its moves: retractions and wipes
 /// pull, pushes in place give back, beads leave it as it is.
@@ -23,21 +23,36 @@ fn distance2(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
 }
 
-/// One layer of one program, with the filament it expects pulled before it and leaves after.
+/// One layer of one program, with the filament it expects pulled before it and leaves after,
+/// and where its program's corners lie on the plate's carrier, unless kept out.
 struct Piece<'a> {
     layer: &'a Layer,
     before: f64,
     after: f64,
+    places: Option<&'a [u32]>,
 }
 
 /// `programs` printed together; a filament difference between pieces is made up at `speed`.
 pub fn merge(programs: &[Program], speed: f64) -> Program {
-    let mut pieces: Vec<(i64, Piece)> = Vec::new();
+    // The programs' carriers joined, the corners of each where the union put them.
+    let mut carrier = Carrier::default();
+    let mut places: Vec<Option<Vec<u32>>> = Vec::with_capacity(programs.len());
     for program in programs {
+        match carrier.union(&program.carrier) {
+            Ok((joined, moved)) => {
+                carrier = joined;
+                places.push(Some(moved));
+            }
+            Err(_) => places.push(None),
+        }
+    }
+    let mut pieces: Vec<(i64, Piece)> = Vec::new();
+    for (program, places) in programs.iter().zip(&places) {
         let mut state = 0.0;
         for layer in &program.layers {
             let after = pulled(&layer.moves, state);
-            pieces.push(((layer.z * 1e6).round() as i64, Piece { layer, before: state, after }));
+            let piece = Piece { layer, before: state, after, places: places.as_deref() };
+            pieces.push(((layer.z * 1e6).round() as i64, piece));
             state = after;
         }
     }
@@ -62,6 +77,7 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
             material: 0,
         };
         below = height;
+        let mut values: Option<Vec<f64>> = None;
         while !left.is_empty() {
             let start = |p: &Piece| p.layer.moves.iter().find_map(|m| m.to);
             let pick = match at {
@@ -90,17 +106,20 @@ pub fn merge(programs: &[Program], speed: f64) -> Program {
                 });
             }
             layer.moves.extend(piece.layer.moves.iter().cloned());
-            if !piece.layer.warp.is_zero() {
-                layer.warp = if layer.warp.is_zero() {
-                    piece.layer.warp.clone()
-                } else {
-                    Relief::combine(&layer.warp, &piece.layer.warp, |a, b| a + b).unwrap_or(layer.warp)
-                };
+            let warp = piece.layer.warp.values();
+            if let Some(places) = piece.places.filter(|p| !warp.is_empty() && p.len() == warp.len()) {
+                let sum = values.get_or_insert_with(|| vec![0.0; carrier.len()]);
+                for (&to, &v) in places.iter().zip(warp) {
+                    if let Some(slot) = sum.get_mut(to as usize) {
+                        *slot += v;
+                    }
+                }
             }
             state = piece.after;
             at = piece.layer.moves.iter().rev().find_map(|m| m.to).or(at);
         }
+        layer.warp = values.map_or(Ok(Warp::default()), Warp::new).unwrap_or_default();
         layers.push(layer);
     }
-    Program { layers }
+    Program { carrier, layers }
 }

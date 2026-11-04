@@ -490,7 +490,7 @@ pub(crate) fn rolls_over_all(shapes: &[Vec<Point>], tilt: f64, layers: usize) ->
         sparse: shapes.iter().map(|shape| vec![shape.clone()]).collect(),
         ..Default::default()
     };
-    let regions = Regions { layers: (1..=layers).map(layer).collect() };
+    let regions = Regions { carrier: Default::default(), layers: (1..=layers).map(layer).collect() };
     let params = PathParams { sparse_pattern: SparsePattern::Rolls { tilt, ply: 1.0 }, ..PATHS };
     let paths = trace(&regions, &Field::uniform(params)).unwrap();
     paths

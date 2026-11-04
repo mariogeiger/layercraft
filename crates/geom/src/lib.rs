@@ -26,7 +26,7 @@ pub use hatch::{bridge_angle, hatch, phase_through};
 pub use locate::Buckets;
 pub use moments::{Axes, Moments};
 pub use orient::orientation;
-pub use relief::{Carrier, MAX_POINTS, Relief};
+pub use relief::{Carrier, MAX_POINTS, Relief, Warp};
 
 pub use ops::{
     GRID_MM, RESOLUTION_MM, area, clip_lines, difference, disc_offset, disc_opening, intersection, offset,

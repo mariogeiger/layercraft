@@ -29,7 +29,7 @@ use crate::cut::section_over;
 use crate::foliate::Leaves;
 use crate::refine::refine;
 use crate::trace::Net;
-use layercraft_geom::{Carrier, GeomError, Region, Relief, difference, union, winding_region};
+use layercraft_geom::{Carrier, GeomError, Region, Warp, difference, union, winding_region};
 use layercraft_mesh::{Body, Mesh};
 use serde::{Deserialize, Serialize};
 
@@ -55,10 +55,10 @@ pub struct Layer {
     /// The nozzle height while printing this layer, where it is flat.
     pub top: f64,
     pub height: f64,
-    /// How far the layer's top lies above `top` over the plate: zero where it is flat. The
-    /// layer's bottom is the top of the layer below, or the bed.
-    #[serde(default, skip_serializing_if = "Relief::is_zero")]
-    pub warp: Relief,
+    /// How far the layer's top lies above `top` at each corner of the stage's carrier: zero
+    /// where it is flat. The layer's bottom is the top of the layer below, or the bed.
+    #[serde(default, skip_serializing_if = "Warp::is_zero")]
+    pub warp: Warp,
     /// The section of the solid at the layer's middle.
     pub region: Region,
     /// Each material's part of `region`, by material; empty when there is one material.
@@ -76,6 +76,10 @@ impl Layer {
 /// The output of the section stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sections {
+    /// The triangles the bent layers' warps are linear on, those where some layer is bent, with
+    /// their corners; none when every layer is flat.
+    #[serde(default, skip_serializing_if = "Carrier::is_empty")]
+    pub carrier: Carrier,
     pub layers: Vec<Layer>,
     /// Section chains that stopped at a crack in the mesh; each was joined to the chain whose start
     /// lay nearest its end.
@@ -133,22 +137,22 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
     };
     let t = &leaves.triangulation;
     let inner = t.triangles.get(..t.inner).unwrap_or(&[]);
-    // Each layer's top, a relief on the bent triangles, which every bent leaf shares and comes
-    // back to flat along the edge of.
-    let carrier = Carrier::new(t.points.clone(), inner.to_vec())?;
+    // Each layer's top, a warp on the bent triangles, which it comes back to flat along the edge
+    // of; stored on those alone where some layer is bent.
     let warps = leaves
         .values
         .into_iter()
-        .map(|leaf| leaf.map_or(Ok(Relief::zero()), |values| carrier.relief(values)))
-        .collect::<Result<Vec<Relief>, GeomError>>()?;
-    // Each layer's middle at their corners, where bent: halfway between the top of the layer
-    // below, or the bed, and its own.
+        .map(|leaf| leaf.map_or(Ok(Warp::default()), Warp::new))
+        .collect::<Result<Vec<Warp>, GeomError>>()?;
+    let (carrier, stored) = Carrier::new(t.points.clone(), inner.to_vec())?.trim(&warps)?;
+    // Each layer's middle at the triangles' corners, where bent: halfway between the top of the
+    // layer below, or the bed, and its own.
     let middle = |k: usize| -> Option<Vec<f64>> {
         let (below, own) = (k.checked_sub(1).and_then(|j| warps.get(j)), warps.get(k));
-        if below.is_none_or(Relief::is_zero) && own.is_none_or(Relief::is_zero) {
+        if below.is_none_or(Warp::is_zero) && own.is_none_or(Warp::is_zero) {
             return None;
         }
-        let value = |r: Option<&Relief>, i: usize| r.and_then(|r| r.values().get(i)).copied().unwrap_or(0.0);
+        let value = |w: Option<&Warp>, i: usize| w.and_then(|w| w.values().get(i)).copied().unwrap_or(0.0);
         let m: Vec<f64> = (0..t.points.len()).map(|i| (value(below, i) + value(own, i)) / 2.0).collect();
         m.iter().any(|&v| v != 0.0).then_some(m)
     };
@@ -212,7 +216,7 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
             }
             parts.reverse();
         }
-        let warp = warps.get(index).cloned().unwrap_or_default();
+        let warp = stored.get(index).cloned().unwrap_or_default();
         layers.push(Layer {
             index,
             top,
@@ -223,7 +227,7 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
         });
     }
     let unsplit_cells = refined.map_or(0, |r| r.unsplit);
-    Ok(Sections { layers, open_chains, widest_crack, unsplit_cells })
+    Ok(Sections { carrier, layers, open_chains, widest_crack, unsplit_cells })
 }
 
 #[cfg(test)]

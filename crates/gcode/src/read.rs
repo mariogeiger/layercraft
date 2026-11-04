@@ -294,5 +294,6 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
         }
         out.push(layer);
     }
-    Ok(Program { layers: out })
+    // G-code tells nothing of how a layer bends: every layer read is flat.
+    Ok(Program { carrier: Default::default(), layers: out })
 }

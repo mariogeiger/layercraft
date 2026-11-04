@@ -24,7 +24,7 @@ fn waiting_point(points: &[[f64; 2]]) -> [f64; 2] {
     };
     let mut p = params();
     p.slow_down_layer_time = 40.0;
-    let mut program = compiled(&Paths { layers: vec![layer(0), layer(1)] }, &p);
+    let mut program = compiled(&Paths { carrier: Default::default(), layers: vec![layer(0), layer(1)] }, &p);
     let n = program.layers[0].moves.len();
     cool(&mut program, &Field::uniform(p), PLATE).unwrap();
     let to = program.layers[0].moves[n..].iter().find_map(|m| m.to).unwrap();

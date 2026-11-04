@@ -15,6 +15,7 @@ fn first_helix(lines: &[[Point; 2]]) -> Arc {
         overhang: Vec::new(),
     };
     let paths = Paths {
+        carrier: Default::default(),
         layers: vec![PathLayer {
             index: 0,
             top: 0.2,

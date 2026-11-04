@@ -19,6 +19,7 @@ mod clearance;
 
 use beads::{Allowed, Beads};
 use clearance::intrusion;
+use layercraft_geom::Relief;
 use layercraft_motion::{Layer, Move, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
@@ -78,17 +79,17 @@ const MAX_LISTED: usize = 50;
 /// The most filament pulled or pushed in place, in mm.
 const MAX_IN_PLACE: f64 = 20.0;
 
-/// What is wrong with move `m` from `from` on `layer`, over the lowest layer at `bed`, if
-/// anything.
+/// What is wrong with move `m` from `from` on `layer`, whose top lies `relief` over its plane,
+/// over the lowest layer at `bed`, if anything.
 fn check(
     m: &Move,
     from: Option<[f64; 3]>,
-    layer: (usize, &Layer),
+    layer: (usize, &Layer, &Relief),
     beads: &Beads,
     bed: f64,
     e: &Envelope,
 ) -> Option<String> {
-    let (at_layer, layer) = layer;
+    let (at_layer, layer, relief) = layer;
     let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
     if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
         return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
@@ -161,10 +162,10 @@ fn check(
                 }
             }
         } else {
-            let on = |p: [f64; 3]| layer.z + layer.warp.at([p[0], p[1]]);
+            let on = |p: [f64; 3]| layer.z + relief.at([p[0], p[1]]);
             // On a flat layer, at its height; on a bent one, within a quarter of the layer's
             // thickness of its top, short of the layer below by far.
-            let stray = if layer.warp.is_zero() { SLACK } else { layer.height / 4.0 };
+            let stray = if relief.is_zero() { SLACK } else { layer.height / 4.0 };
             if (to[2] - on(to)).abs() > stray || (half[2] - on(half)).abs() > stray {
                 return Some(format!("extrusion at z = {} on the layer whose top is at {}", to[2], on(to)));
             }
@@ -221,13 +222,16 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
         if let Some(&low) = lowest.get(k) {
             beads.forget_below(low);
         }
+        // The layer's top over its plane, its warp on the program's carrier; a warp that does not
+        // fit the carrier leaves the layer's beads nothing to lie on.
+        let relief = program.carrier.relief(&layer.warp).unwrap_or_else(|e| {
+            note(k, 0, format!("the layer's warp: {e}"));
+            Relief::zero()
+        });
         // A bent layer's moves are written within the resolution of its top in space, so in
         // height within that times `√(1 + G²)`, `G` its steepest lean; a flat one's on it.
-        let lift = if layer.warp.is_zero() {
-            0.0
-        } else {
-            envelope.resolution.max(0.0) * layer.warp.steepest().hypot(1.0)
-        };
+        let lift =
+            if relief.is_zero() { 0.0 } else { envelope.resolution.max(0.0) * relief.steepest().hypot(1.0) };
         let allowed = Allowed {
             head: &envelope.toolhead,
             layer: k,
@@ -247,7 +251,7 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
         for (i, m) in layer.moves.iter().enumerate() {
             // A free layer's beads stand one bead's height over the plate at the lowest.
             let floor = if layer.free { bed.min(layer.height) } else { bed };
-            if let Some(reason) = check(m, at, (k, layer), &beads, floor, envelope) {
+            if let Some(reason) = check(m, at, (k, layer, &relief), &beads, floor, envelope) {
                 note(k, i, reason);
             }
             if let Some(from) = at.or(left)

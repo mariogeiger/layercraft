@@ -12,7 +12,7 @@
 use crate::leaf::Leaf;
 use crate::room::{self, Cuts};
 use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area, disc_area};
-use layercraft_geom::{Point, Relief, bead_spacing};
+use layercraft_geom::{GeomError, Point, Relief, bead_spacing};
 use layercraft_machine::{Scope, Value};
 use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
 use layercraft_tune::{Field, centre};
@@ -435,6 +435,12 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
     // The parameters of the bead last laid, which leaving it takes.
     let mut last = Rc::new(base.clone());
     let mut layers: Vec<Layer> = Vec::with_capacity(paths.layers.len());
+    // Each layer's top over its plane, its warp on the paths' carrier.
+    let reliefs = paths
+        .layers
+        .iter()
+        .map(|l| paths.carrier.relief(&l.warp))
+        .collect::<Result<Vec<Relief>, GeomError>>()?;
     let bed = Relief::default();
     let mut below = &bed;
     // The layer the passes so far belong to, and its top: a pass stands on the layer before its
@@ -443,7 +449,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
     let mut previous_leaf: Option<Leaf> = None;
     // How deep the nozzle's face, one for the whole print, cut into the layer below's top.
     let mut cuts = Cuts::default();
-    for layer in &paths.layers {
+    for (layer, relief) in paths.layers.iter().zip(&reliefs) {
         if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
             previous.moves = s.close(&last, left);
             cuts = room::keep(&mut previous.moves, left, &cuts, base.face_radius);
@@ -453,7 +459,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         {
             below = warp;
         }
-        let leaf = Leaf { top: layer.top, height: layer.height, warp: &layer.warp, below };
+        let leaf = Leaf { top: layer.top, height: layer.height, warp: relief, below };
         layers.push(Layer {
             index: layer.index,
             z: layer.top,
@@ -497,7 +503,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             }
             last = p;
         }
-        current = Some((layer.index, &layer.warp));
+        current = Some((layer.index, relief));
         previous_leaf = Some(leaf);
     }
     // Off the part at once, before the machine's own slow end sequence.
@@ -505,5 +511,5 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         previous.moves = s.close(&last, left);
         room::keep(&mut previous.moves, left, &cuts, base.face_radius);
     }
-    Ok(Program { layers })
+    Ok(Program { carrier: paths.carrier.clone(), layers })
 }

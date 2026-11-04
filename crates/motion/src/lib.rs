@@ -39,7 +39,7 @@ pub use merge::merge;
 pub use plan::{compile, placeholders};
 pub use time::{Limits, estimate};
 
-use layercraft_geom::Relief;
+use layercraft_geom::{Carrier, GeomError, Warp};
 pub use layercraft_geom::{bead_area, disc_area};
 use layercraft_machine::TemplateError;
 use layercraft_path::Role;
@@ -100,10 +100,10 @@ pub struct Layer {
     /// several passes, one after the other, with the filament changed between them.
     #[serde(default, skip_serializing_if = "is_first")]
     pub material: usize,
-    /// How far the layer's top, where its beads lie, rises above `z` over the plate: zero where
-    /// it is flat.
-    #[serde(default, skip_serializing_if = "Relief::is_zero")]
-    pub warp: Relief,
+    /// How far the layer's top, where its beads lie, rises above `z` at each corner of the
+    /// program's carrier: zero where it is flat.
+    #[serde(default, skip_serializing_if = "Warp::is_zero")]
+    pub warp: Warp,
     /// Whether the layer's beads follow no top: free strands, each resting on the plate or on the
     /// beads laid before it (`verify` holds it to that), `z` the highest the nozzle goes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -125,6 +125,10 @@ fn is_first(n: &usize) -> bool {
 /// The output of the motion stage: what it does is read from it (`finish`), never stored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Program {
+    /// The triangles the bent layers' warps are linear on, with their corners; none when every
+    /// layer is flat.
+    #[serde(default, skip_serializing_if = "Carrier::is_empty")]
+    pub carrier: Carrier,
     pub layers: Vec<Layer>,
 }
 
@@ -255,6 +259,8 @@ pub enum MotionError {
     Tune(#[from] TuneError),
     #[error("the machine's {0} G-code: {1}")]
     Template(String, TemplateError),
+    #[error("motion geometry: {0}")]
+    Geometry(#[from] GeomError),
 }
 
 #[cfg(test)]

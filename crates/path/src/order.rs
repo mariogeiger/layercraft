@@ -10,8 +10,8 @@ use crate::solids::Solids;
 use crate::tour::tour;
 use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
-    Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area, edges,
-    encloses, hatch, intersection, offset, phase_through, polyline_length, signed_area, union,
+    Contour, GRID_MM, Point, Polyline, Region, Relief, bead_spacing, bridge_angle, clip_lines, disc_area,
+    edges, encloses, hatch, intersection, offset, phase_through, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -201,19 +201,29 @@ struct Mark {
     right_handed: bool,
 }
 
+/// What a layer's infill lines follow, the same for every part of the layer.
+#[derive(Clone, Copy)]
+pub struct Guides<'a> {
+    /// The sparse lines of the rolls, where the layer has them: each part asking for rolls cuts
+    /// its own from them.
+    pub rolls: Option<&'a [Polyline]>,
+    /// The dense beads of the layer below, which the dense lines cross.
+    pub beneath: &'a Beneath,
+    /// The layer's top over its plane, whose fall line a top surface's lines follow.
+    pub relief: &'a Relief,
+}
+
 /// Splits a layer, or a part of one, into islands, each holding its walls, the infill inside
-/// them and the part's infill areas for joining their lines; the sparse lines are `rolls`, cut
-/// to the part, where its parameters ask for rolls and the layer has them; the dense areas cross
-/// the dense beads `beneath`, the layer below's.
+/// them and the part's infill areas for joining their lines, which follow `guides`.
 pub fn islands(
     layer: &RegionLayer,
     p: &PathParams,
-    rolls: Option<&[Polyline]>,
-    beneath: &Beneath,
+    guides: Guides,
     bodies: &Solids,
     pass: usize,
     seams: &mut Seams,
 ) -> Result<Vec<Island>, PathError> {
+    let Guides { rolls, beneath, relief } = guides;
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, mark: &Mark| {
@@ -366,7 +376,7 @@ pub fn islands(
             }
         } else if role.kind == Kind::Solid && role.support == Support::Solid {
             let on_top = role.face == Face::Top;
-            let fall = |piece: &Region| if on_top { fall_line(piece, &layer.warp) } else { None };
+            let fall = |piece: &Region| if on_top { fall_line(piece, relief) } else { None };
             let laid = fill(&reach, Spacing { spacing, width, crossing: crossing(role) }, beneath, fall)?;
             lines = laid.lines;
             along = laid.insets;

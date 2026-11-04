@@ -215,21 +215,32 @@ fn closed(body: &layercraft_mesh::Body) -> bool {
     uses.values().all(|&u| u == 0)
 }
 
+/// Each layer's top over its plane, its warp on the stage's carrier.
+fn tops(sections: &Sections) -> Vec<Relief> {
+    sections.layers.iter().map(|l| sections.carrier.relief(&l.warp).unwrap()).collect()
+}
+
+/// The height of each layer's top at `p`.
+fn heights(sections: &Sections, p: [f64; 2]) -> Vec<f64> {
+    sections.layers.iter().zip(tops(sections)).map(|(l, top)| l.top + top.at(p)).collect()
+}
+
 /// The top of the highest layer whose region holds `p`, and that layer.
 fn top_at(sections: &Sections, p: [f64; 2]) -> Option<(f64, usize)> {
     let inside = |r: &Region| {
         r.iter()
             .any(|shape| layercraft_geom::encloses(shape.iter().flat_map(|c| layercraft_geom::edges(c)), p))
     };
-    sections.layers.iter().rev().find(|l| inside(&l.region)).map(|l| (l.top + l.warp.at(p), l.index))
+    let heights = heights(sections, p);
+    sections.layers.iter().zip(heights).rev().find(|(l, _)| inside(&l.region)).map(|(l, z)| (z, l.index))
 }
 
 /// The volume the layers fill, summing each one's thickness over a fine grid of its region.
 fn filled(sections: &Sections, lo: [f64; 2], hi: [f64; 2], step: f64) -> f64 {
     let mut volume = 0.0;
-    let zero = Relief::default();
-    for l in &sections.layers {
-        let below = l.index.checked_sub(1).map(|b| &sections.layers[b]);
+    let tops = tops(sections);
+    let height = |k: usize, p: [f64; 2]| sections.layers[k].top + tops[k].at(p);
+    for (k, l) in sections.layers.iter().enumerate() {
         let edges: Vec<_> = l.region.iter().flatten().flat_map(|c| layercraft_geom::edges(c)).collect();
         let mut y = lo[1] + step / 2.0;
         while y < hi[1] {
@@ -237,9 +248,8 @@ fn filled(sections: &Sections, lo: [f64; 2], hi: [f64; 2], step: f64) -> f64 {
             while x < hi[0] {
                 let p = [x, y];
                 if layercraft_geom::encloses(edges.iter().copied(), p) {
-                    let bottom = below.map_or(0.0, |b| b.top + b.warp.at(p));
-                    let _ = &zero;
-                    volume += (l.top + l.warp.at(p) - bottom) * step * step;
+                    let bottom = k.checked_sub(1).map_or(0.0, |b| height(b, p));
+                    volume += (height(k, p) - bottom) * step * step;
                 }
                 x += step;
             }
@@ -252,14 +262,15 @@ fn filled(sections: &Sections, lo: [f64; 2], hi: [f64; 2], step: f64) -> f64 {
 /// The thinnest and thickest slab over the rectangle, the steepest leaf.
 fn bounds_of(sections: &Sections, lo: [f64; 2], hi: [f64; 2]) -> (f64, f64, f64) {
     let (mut thin, mut thick, mut steep) = (f64::MAX, 0.0f64, 0.0f64);
-    for l in &sections.layers {
-        steep = steep.max(l.warp.steepest());
-        let below = l.index.checked_sub(1).map(|b| &sections.layers[b]);
+    let tops = tops(sections);
+    let height = |k: usize, p: [f64; 2]| sections.layers[k].top + tops[k].at(p);
+    for (k, top) in tops.iter().enumerate() {
+        steep = steep.max(top.steepest());
         for j in 0..=40 {
             for i in 0..=40 {
                 let p =
                     [lo[0] + (hi[0] - lo[0]) * i as f64 / 40.0, lo[1] + (hi[1] - lo[1]) * j as f64 / 40.0];
-                let t = l.top + l.warp.at(p) - below.map_or(0.0, |b| b.top + b.warp.at(p));
+                let t = height(k, p) - k.checked_sub(1).map_or(0.0, |b| height(b, p));
                 thin = thin.min(t);
                 thick = thick.max(t);
             }
@@ -282,8 +293,8 @@ fn lean_bound([a, b, c]: [[f64; 2]; 3]) -> f64 {
 /// The steepest any layer leans over its own bound, the slope times its triangle's lean bound.
 fn steepest_lean(sections: &Sections, slope: f64) -> f64 {
     let mut worst = 0.0f64;
-    for l in &sections.layers {
-        for (corners, g) in l.warp.facets() {
+    for top in tops(sections) {
+        for (corners, g) in top.facets() {
             worst = worst.max(g[0].hypot(g[1]) / (slope * lean_bound(corners)));
         }
     }
@@ -305,6 +316,10 @@ fn bent_layers_follow_a_sloped_top_exactly() {
         let sections = section(&mesh, &bent()).unwrap();
         assert_eq!((sections.open_chains, sections.unsplit_cells), (0, 0), "{name}");
         assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
+        // Stored, the stage holds its carrier once and each layer's warp on it.
+        let stored = serde_json::to_string(&sections).unwrap();
+        assert_eq!(stored.matches("\"triangles\"").count(), 1, "{name}");
+        assert_eq!(serde_json::from_str::<Sections>(&stored).unwrap(), sections, "{name}");
         // The highest layer over each point tops out on the surface itself, the ridge included:
         // the leaves bend along it, but for the lattice their corners lie on, a nanometre.
         for p in [[0.7, 0.4], [2.3, 4.1], [3.9, 7.6], [6.1, 2.2], [9.6, 7.7], [4.95, 3.3], [5.0, 6.0]] {
@@ -358,14 +373,15 @@ fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
         // Every leaf, at every point, a micrometre's rounding apart at most.
         let mut worst = 0.0f64;
         let mut at_worst = (0, [0.0; 2], 0.0, 0.0);
-        for (a, b) in sections.layers.iter().zip(&other.layers) {
+        let pairs = sections.layers.iter().zip(tops(&sections)).zip(other.layers.iter().zip(tops(&other)));
+        for ((a, top_a), (b, top_b)) in pairs {
             for j in 0..=32 {
                 for i in 0..=40 {
                     let p = [-1.0 + 12.0 * i as f64 / 40.0, -1.0 + 10.0 * j as f64 / 32.0];
-                    let d = (a.warp.at(p) - b.warp.at(map(p))).abs();
+                    let d = (top_a.at(p) - top_b.at(map(p))).abs();
                     if d > worst {
                         worst = d;
-                        at_worst = (a.index, p, a.warp.at(p), b.warp.at(map(p)));
+                        at_worst = (a.index, p, top_a.at(p), top_b.at(map(p)));
                     }
                 }
             }
@@ -385,13 +401,14 @@ fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
 fn face_contact(sections: &Sections, lo: [f64; 2], hi: [f64; 2], face: f64) -> f64 {
     let mut worst = f64::NEG_INFINITY;
     let inside = |p: [f64; 2]| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
-    for pair in sections.layers.windows(2) {
-        let (below, layer) = (&pair[0], &pair[1]);
-        if below.warp.is_zero() && layer.warp.is_zero() {
+    let tops = tops(sections);
+    for (pair, warps) in sections.layers.windows(2).zip(tops.windows(2)) {
+        let ((below, layer), (under, over)) = ((&pair[0], &pair[1]), (&warps[0], &warps[1]));
+        if under.is_zero() && over.is_zero() {
             continue;
         }
         let mut samples: Vec<[f64; 2]> = Vec::new();
-        for warp in [&below.warp, &layer.warp] {
+        for warp in [under, over] {
             for (c, _) in warp.facets() {
                 samples.extend(c);
                 let w = [0.62, 0.29, 0.09];
@@ -402,12 +419,12 @@ fn face_contact(sections: &Sections, lo: [f64; 2], hi: [f64; 2], face: f64) -> f
             }
         }
         for x in samples.into_iter().filter(|&p| inside(p)) {
-            let tip = layer.top + layer.warp.at(x);
+            let tip = layer.top + over.at(x);
             for r in [face, face / 2.0] {
                 for k in 0..64 {
                     let phi = k as f64 * std::f64::consts::TAU / 64.0;
                     let y = [x[0] + r * phi.cos(), x[1] + r * phi.sin()];
-                    worst = worst.max(below.top + below.warp.at(y) - tip);
+                    worst = worst.max(below.top + under.at(y) - tip);
                 }
             }
         }
@@ -499,8 +516,7 @@ fn under_a_steep_top_the_slab_thickens_only_as_the_face_needs() {
     for p in [[2.3, 4.1], [3.1, 2.6], [6.9, 5.2], [7.7, 3.3]] {
         let (z, layer) = top_at(&sections, p).unwrap();
         assert!((z - top(p[0], p[1])).abs() <= 0.3 * GRID_MM, "at {p:?}: layer {layer} tops at {z}");
-        let below = &sections.layers[layer - 1];
-        slabs.push(z - (below.top + below.warp.at(p)));
+        slabs.push(z - heights(&sections, p)[layer - 1]);
     }
     for slab in &slabs {
         assert!(*slab >= least - 1e-9 && *slab <= 0.3 + 1e-9, "the slab under the top is {slab} mm");
