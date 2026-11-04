@@ -32,7 +32,10 @@ All notable user-visible changes to this project are documented here.
   touching on one layer and from each layer to the next, all its layers weighing at once, so it
   stays the same from layer to layer and changes with nothing else on the plate. A frame's
   second axis is the quarter turn its areas skew towards, so a mirrored part has a mirrored
-  frame: the dense lines' ties and the line of a symmetric piece of gap fill follow it.
+  frame: the dense lines' ties and the line of a symmetric piece of gap fill follow it. Two
+  ways along a line tie only where moving the boundary a micrometre could swap them, weighed by
+  how far the boundary spreads along that line, so a part that skews only slightly, as two
+  posts of unequal depth under a beam, still has its frame mirrored with it.
 
 ## 0.13.0
 

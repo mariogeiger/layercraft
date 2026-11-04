@@ -478,6 +478,35 @@ fn a_regions_own_lines_turn_and_mirror_with_it() {
     let wedge = union_contours(&[vec![[0.0, 0.0], [3.0, 0.0], [0.0, 1.0]]]).unwrap();
     let moments = Moments::of(wedge.iter().map(|s| (s.as_slice(), 1.0))).unwrap();
     assert_eq!(moments.most_skewed([[-1.0, 0.0], [1.0, 0.0]].into_iter()), Some([1.0, 0.0]));
+    // Two posts 2 and 1 mm deep under a beam 2 mm deep skew, slightly, toward the deeper post's
+    // side: so does the part turned, and the other way mirrored, however little they skew
+    // against how far apart they stand.
+    let part = |angle: f64, mirror: bool| {
+        let (s, c) = angle.to_radians().sin_cos();
+        let place = |p: [f64; 2]| {
+            let p = if mirror { [p[0], -p[1]] } else { p };
+            [c * p[0] - s * p[1] + 3.0, s * p[0] + c * p[1] - 1.0]
+        };
+        [(rect(0.0, 0.0, 2.0, 2.0), 1.0), (rect(7.0, 0.0, 10.0, 1.0), 1.0), (rect(0.0, 0.0, 10.0, 2.0), 0.6)]
+            .map(|(r, w)| {
+                let mut outline: Vec<[f64; 2]> = r.into_iter().map(place).collect();
+                if mirror {
+                    outline.reverse();
+                }
+                (union_contours(&[outline]).unwrap(), w)
+            })
+    };
+    let side = |angle: f64, mirror: bool| {
+        let shapes = part(angle, mirror);
+        let moments =
+            Moments::of(shapes.iter().flat_map(|(r, w)| r.iter().map(move |s| (s.as_slice(), *w)))).unwrap();
+        let (s, c) = angle.to_radians().sin_cos();
+        let (up, down) = ([-s, c], [s, -c]);
+        moments.most_skewed([up, down].into_iter()) == Some(up)
+    };
+    let upward = side(0.0, false);
+    assert_eq!(side(37.0, false), upward);
+    assert_eq!(side(110.0, true), !upward);
     assert!(
         close(moments.centroid[0], 1.0) && close(moments.centroid[1], 1.0 / 3.0) && close(moments.area, 1.5)
     );

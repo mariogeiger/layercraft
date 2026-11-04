@@ -10,7 +10,9 @@
 //! vanishes when moving the boundary by `RESOLUTION_MM` could cancel it: a displacement `η`
 //! moves the second by `∮ (x + iy)² η ds`, the edges' `k`-th by `(k² − 1) ∮ κ e^{ikθ} η ds`
 //! to first order, `κ` the boundary's curvature, its corners' turns. The third moments,
-//! `∫∫ (p·u)³`, tell which way along a line the region skews.
+//! `∫∫ (p·u)³`, tell which way along a line the region skews; the displacement moves one by
+//! `∮ (p·u)³ η ds`, less than `RESOLUTION_MM` times `∮ |p·u|³ ds`, which the boundary's second
+//! and fourth moments bound (Cauchy–Schwarz): a skew along `u` weighs only the spread along `u`.
 
 use crate::{Contour, Point, RESOLUTION_MM, edges};
 use std::f64::consts::PI;
@@ -30,8 +32,8 @@ pub struct Moments {
     pub axes: Option<Axes>,
     /// `∫∫ x³, x²y, xy², y³` about the centroid.
     third: [f64; 4],
-    /// How much a displacement of the boundary within `RESOLUTION_MM` could move a skew.
-    skew_tie: f64,
+    /// `∮ x², xy, y²` and `∮ x⁴, x³y, x²y², xy³, y⁴` along the boundary about the centroid.
+    boundary: [f64; 8],
 }
 
 /// Lines through one point, `count` of them `π/count` apart, the first along `first`.
@@ -104,15 +106,26 @@ impl Moments {
             syyy - 3.0 * cy * syy + 2.0 * cy * cy * sy,
         ];
         let centroid = [about[0] + cx, about[1] + cy];
-        // ∮ r² ds about the centroid, and a bound on ∮ r³ ds.
+        // ∮ r² ds about the centroid; the boundary's second and fourth moments, exact by
+        // Gauss–Legendre's three points, exact to the fifth degree.
         let ring = b[3] - 2.0 * (cx * b[1] + cy * b[2]) + (cx * cx + cy * cy) * b[0];
-        let cube = contours()
-            .flat_map(|(c, w)| edges(c).map(move |e| (e, w)))
-            .map(|((p, q), w)| {
-                let r = |p: Point| (p[0] - centroid[0]).hypot(p[1] - centroid[1]);
-                w * (q[0] - p[0]).hypot(q[1] - p[1]) * r(p).max(r(q)).powi(3)
-            })
-            .sum::<f64>();
+        let gauss =
+            [(0.5 - 0.15f64.sqrt(), 5.0 / 18.0), (0.5, 8.0 / 18.0), (0.5 + 0.15f64.sqrt(), 5.0 / 18.0)];
+        let mut boundary = [0.0f64; 8];
+        for (contour, w) in contours() {
+            for (p, q) in edges(contour) {
+                let l = w * (q[0] - p[0]).hypot(q[1] - p[1]);
+                for (t, weight) in gauss {
+                    let x = p[0] + t * (q[0] - p[0]) - centroid[0];
+                    let y = p[1] + t * (q[1] - p[1]) - centroid[1];
+                    let (xx, yy) = (x * x, y * y);
+                    let terms = [xx, x * y, yy, xx * xx, xx * x * y, xx * yy, x * y * yy, yy * yy];
+                    for (sum, term) in boundary.iter_mut().zip(terms) {
+                        *sum += l * weight * term;
+                    }
+                }
+            }
+        }
         let spread = (mxx - myy).hypot(2.0 * mxy);
         let axes = if spread > RESOLUTION_MM * ring {
             let angle = 0.5 * (2.0 * mxy).atan2(mxx - myy);
@@ -120,7 +133,7 @@ impl Moments {
         } else {
             edge_axes(contours(), b[0], turning)
         };
-        Some(Moments { area: a, centroid, axes, third, skew_tie: RESOLUTION_MM * cube })
+        Some(Moments { area: a, centroid, axes, third, boundary })
     }
 
     /// `∫∫ (p·u)³` about the centroid: how far the region skews along the unit `u`.
@@ -129,13 +142,24 @@ impl Moments {
         a * x * x * x + 3.0 * b * x * x * y + 3.0 * c * x * y * y + d * y * y * y
     }
 
+    /// How far moving the boundary by `RESOLUTION_MM` could move the skew along the unit `u`:
+    /// `∮ |p·u|³ ds` times it, at most `√(∮ (p·u)² ds ∮ (p·u)⁴ ds)`.
+    fn skew_tie(&self, u: [f64; 2]) -> f64 {
+        let ([a, b, c, d, e, f, g, h], [x, y]) = (self.boundary, u);
+        let second = a * x * x + 2.0 * b * x * y + c * y * y;
+        let (xx, yy) = (x * x, y * y);
+        let fourth =
+            d * xx * xx + 4.0 * e * xx * x * y + 6.0 * f * xx * yy + 4.0 * g * x * y * yy + h * yy * yy;
+        RESOLUTION_MM * (second.max(0.0) * fourth.max(0.0)).sqrt()
+    }
+
     /// Of `directions`, the one the region skews the most toward: a later one only where it
-    /// skews more by more than the boundary's resolution could make it.
+    /// skews more by more than the boundary's resolution could make either skew.
     pub fn most_skewed(&self, directions: impl Iterator<Item = [f64; 2]>) -> Option<[f64; 2]> {
         let mut best: Option<([f64; 2], f64)> = None;
         for u in directions {
             let s = self.skew(u);
-            if best.is_none_or(|(_, b)| s > b + self.skew_tie) {
+            if best.is_none_or(|(v, b)| s > b + self.skew_tie(u) + self.skew_tie(v)) {
                 best = Some((u, s));
             }
         }
