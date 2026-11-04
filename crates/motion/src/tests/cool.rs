@@ -11,7 +11,7 @@ fn waiting_point(points: &[[f64; 2]]) -> [f64; 2] {
         width: 0.4,
         closed: false,
         points: points.to_vec(),
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let layer = |index: usize| PathLayer {

@@ -63,7 +63,7 @@ fn line(len: f64) -> Paths {
         width: 0.4,
         closed: false,
         points: vec![[10.0, 10.0], [10.0 + len, 10.0]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     Paths {
@@ -250,7 +250,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
         width: 0.4,
         closed: true,
         points: vec![[10.0, 10.0], [20.0, 10.0], [20.0, 20.0], [10.0, 20.0]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let bridge = Path {
@@ -258,7 +258,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
         width: 0.4,
         closed: false,
         points: vec![[10.0, 10.0], [20.0, 10.0]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let paths = Paths {
@@ -301,37 +301,39 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
 }
 
 #[test]
-fn a_move_inside_the_part_neither_retracts_nor_lifts() {
-    let line = |y: f64, inside: bool| Path {
-        role: Role::SOLID,
-        width: 0.4,
-        closed: false,
-        points: vec![[10.0, y], [20.0, y]],
-        travel_inside: inside,
-        overhang: Vec::new(),
+fn a_short_move_slides_and_a_long_one_retracts_and_lifts() {
+    let line = |a: [f64; 2], b: [f64; 2]| Path::new(Role::SOLID, 0.4, false, vec![a, b]);
+    let between = |second: Path| {
+        let paths = Paths {
+            layers: vec![PathLayer {
+                index: 1,
+                top: 0.2,
+                height: 0.2,
+                warp: Default::default(),
+                paths: vec![line([10.0, 10.0], [20.0, 10.0]), second],
+                material: 0,
+            }],
+        };
+        let program = compiled(&paths, &params());
+        let moves = &program.layers[0].moves;
+        let after_first = moves.iter().position(|m| m.bead.is_some()).unwrap();
+        let between: Vec<Move> = moves[after_first..]
+            .iter()
+            .skip_while(|m| m.bead.is_some())
+            .take_while(|m| m.bead.is_none())
+            .cloned()
+            .collect();
+        between
     };
-    let paths = Paths {
-        layers: vec![PathLayer {
-            index: 1,
-            top: 0.2,
-            height: 0.2,
-            warp: Default::default(),
-            paths: vec![line(10.0, false), line(15.0, true)],
-            material: 0,
-        }],
-    };
-    let program = compiled(&paths, &params());
-    let moves = &program.layers[0].moves;
-    let after_first = moves.iter().position(|m| m.bead.is_some()).unwrap();
-    let between: Vec<&Move> = moves[after_first..]
-        .iter()
-        .skip_while(|m| m.bead.is_some())
-        .take_while(|m| m.bead.is_none())
-        .collect();
+    let short = between(line([20.0, 10.5], [10.0, 10.5]));
     assert!(
-        between.iter().all(|m| m.e == 0.0 && m.arc.is_none() && m.to.is_some_and(|t| t[2] == 0.2)),
-        "{between:?}"
+        short.iter().all(|m| m.e == 0.0 && m.arc.is_none() && m.to.is_some_and(|t| t[2] == 0.2)),
+        "{short:?}"
     );
+    // However well the layer above would hide it: a string is drawn over whatever lies below.
+    let long = between(line([20.0, 15.0], [10.0, 15.0]));
+    assert!(long.iter().any(|m| m.e < 0.0), "{long:?}");
+    assert!(long.iter().any(|m| m.to.is_some_and(|t| t[2] > 0.2)), "{long:?}");
 }
 
 #[test]
@@ -341,7 +343,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
         width: 0.4,
         closed: false,
         points: vec![[10.0, y], [20.0, y]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let paths = Paths {
@@ -551,7 +553,7 @@ fn a_wall_slows_by_how_far_it_hangs() {
         width: 0.4,
         closed: false,
         points: vec![[10.0, 10.0], [12.0, 10.0], [14.0, 10.0], [16.0, 10.0], [18.0, 10.0]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: vec![0.0, 0.3, 0.75, 1.0],
     };
     let paths = Paths {
@@ -589,7 +591,7 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
         width: 0.4,
         closed: false,
         points: vec![[10.0, y], [20.0, y]],
-        travel_inside: true,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let paths = Paths {
@@ -598,7 +600,11 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
             top: 0.4,
             height: 0.2,
             warp: Default::default(),
-            paths: vec![line(Role::OUTER_WALL, 10.0), line(Role::SPARSE, 10.5)],
+            paths: vec![line(Role::OUTER_WALL, 10.0), {
+                let mut back = line(Role::SPARSE, 10.5);
+                back.reverse();
+                back
+            }],
             material: 0,
         }],
     };
@@ -632,7 +638,7 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
         width: 0.4,
         closed: false,
         points: points.clone(),
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let paths = Paths {
@@ -703,7 +709,7 @@ fn ramp() -> Relief {
 }
 
 fn bead(points: Vec<[f64; 2]>) -> Path {
-    Path { role: Role::SOLID, width: 0.4, closed: false, points, travel_inside: false, overhang: Vec::new() }
+    Path { role: Role::SOLID, width: 0.4, closed: false, points, travel_crosses: false, overhang: Vec::new() }
 }
 
 /// A flat first layer, laying nothing, and over it a second bent by `ramp`, laying `paths`.
@@ -946,4 +952,49 @@ fn passes_of_other_materials_change_the_filament_between_them() {
     assert_eq!(s.filament_mm_by_material, [0.2, 0.2]);
     assert!((s.filament_mm - 0.4).abs() < 1e-12);
     assert_eq!(s.volume_per_layer.len(), 3);
+}
+
+/// A short move inside the part slides along the layer, unless it crosses a laid bead: then it
+/// lifts, and it pulls no filament back.
+#[test]
+fn a_short_move_lifts_over_a_laid_bead_it_crosses() {
+    let p = params();
+    let bead = |points: Vec<[f64; 2]>, crosses: bool| Path {
+        role: Role::SPARSE,
+        width: 0.4,
+        closed: false,
+        points,
+        travel_crosses: crosses,
+        overhang: Vec::new(),
+    };
+    let hop = (p.retract_min_travel / 2.0).max(0.1);
+    let layer = |crosses: bool| Paths {
+        layers: vec![PathLayer {
+            index: 0,
+            top: 0.2,
+            height: 0.2,
+            warp: Default::default(),
+            paths: vec![
+                bead(vec![[10.0, 10.0], [20.0, 10.0]], false),
+                bead(vec![[20.0 + hop, 10.0], [30.0, 10.0]], crosses),
+            ],
+            material: 0,
+        }],
+    };
+    let highest_between = |program: &Program| {
+        let moves = &program.layers[0].moves;
+        let first = moves.iter().position(|m| m.e > 0.0).unwrap();
+        let second = moves.iter().rposition(|m| m.e > 0.0).unwrap();
+        let (mut z, mut pulled) = (0.0f64, false);
+        for m in &moves[first..second] {
+            z = m.to.map_or(z, |t| z.max(t[2]));
+            pulled |= m.e < 0.0;
+        }
+        (z, pulled)
+    };
+    let (slid, _) = highest_between(&compiled(&layer(false), &p));
+    let (lifted, pulled) = highest_between(&compiled(&layer(true), &p));
+    assert!((slid - 0.2).abs() < 1e-9, "stays on the layer: {slid}");
+    assert!((lifted - (0.2 + p.z_hop)).abs() < 1e-9, "over the bead by the hop: {lifted}");
+    assert!(!pulled, "a hidden move keeps its filament");
 }

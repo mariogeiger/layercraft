@@ -1,21 +1,29 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
+use crate::crossing::{Cover, Laid, Segment, segments};
 use crate::families::{Beneath, Spacing, fall_line, fill};
 use crate::frame::{hatch_in_frames, inside};
 use crate::gap::{gap_fill, strips};
-use crate::link::{Cover, Fill, link};
 use crate::overhang::{Below, overhang};
 use crate::seam::{Seams, farthest_along, seamed};
 use crate::solids::Solids;
 use crate::tour::tour;
 use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
-    Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area,
-    edges, encloses, hatch, intersection, offset, phase_through, polyline_length, signed_area, union,
+    Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area, edges,
+    encloses, hatch, intersection, offset, phase_through, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
+
+/// One infill area of a layer: its role, and how far apart its lines may be swept together.
+pub struct Fill {
+    pub role: Role,
+    pub max_link: f64,
+    /// Whether its lines are laid in sweeps, each against the one before.
+    pub monotone: bool,
+}
 
 /// The beads of one connected piece of a layer.
 pub struct Island {
@@ -384,14 +392,12 @@ pub fn islands(
             }
         }
         // A role's areas join their lines as one.
-        match areas.iter_mut().find(|f: &&mut Fill| f.role == role) {
-            Some(fill) => fill.reach = union(&fill.reach, &reach)?,
-            None => areas.push(Fill {
+        if !areas.iter().any(|f: &Fill| f.role == role) {
+            areas.push(Fill {
                 role,
-                reach,
                 max_link: 3.0 * spacing,
                 monotone: role.kind == Kind::Solid && p.monotone.contains(&role.face),
-            }),
+            });
         }
     }
     let axis_at = |q: Point| bodies.frame_at(pass, q).axis();
@@ -516,9 +522,12 @@ const SAME_SWEEP: f64 = 1e-3;
 /// The layer's beads in printing order: island by island, nearest first; within an island the
 /// walls, then the beads along its strips, against them, then each infill area's lines, in
 /// sweeps for a monotone area and in the cheapest tour otherwise, joined where they can be.
-/// Each tour keeps its moves over `hidden` where it can.
-pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec<Path> {
-    let cover = Cover { hidden, join: None };
+/// Each tour keeps its moves off the beads laid before it, these and `earlier`, where it can.
+pub fn sequence(mut islands: Vec<Island>, at: &mut Point, earlier: &[Segment]) -> Vec<Path> {
+    let laid_by = |out: &[Path]| {
+        let beads = earlier.iter().copied().chain(out.iter().flat_map(segments));
+        Laid::new(&beads.map(|(a, b)| (a, b, 0)).collect::<Vec<_>>())
+    };
     let mut out = Vec::new();
     while !islands.is_empty() {
         let near = islands
@@ -534,30 +543,34 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec
         let mut depth = None;
         for (k, path) in island.walls {
             if depth != Some(k) && !walls.is_empty() {
-                tour(std::mem::take(&mut walls), at, &mut out, &cover);
+                let laid = laid_by(&out);
+                tour(std::mem::take(&mut walls), at, &mut out, &Cover { laid: &laid });
             }
             depth = Some(k);
             walls.push(path);
         }
-        tour(walls, at, &mut out, &cover);
-        tour(island.gaps, at, &mut out, &cover);
+        let laid = laid_by(&out);
+        tour(walls, at, &mut out, &Cover { laid: &laid });
+        let laid = laid_by(&out);
+        tour(island.gaps, at, &mut out, &Cover { laid: &laid });
         let mut infill = island.infill;
         for fill in island.fills.iter() {
             let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);
             infill = rest;
             let mut ordered = Vec::new();
-            let reach = Bands::new(&fill.reach);
-            let joined = Cover { hidden, join: Some((fill, &reach)) };
+            let laid = laid_by(&out);
+            let cover = Cover { laid: &laid };
             if fill.monotone {
                 for lines in by_direction(mine, *at) {
-                    sweep(lines, fill.max_link, at, &mut ordered, &joined);
+                    sweep(lines, fill.max_link, at, &mut ordered, &cover);
                 }
             } else {
-                tour(mine, at, &mut ordered, &joined);
+                tour(mine, at, &mut ordered, &cover);
             }
-            out.extend(link(ordered, fill, &reach));
+            out.extend(ordered);
         }
-        tour(infill, at, &mut out, &cover);
+        let laid = laid_by(&out);
+        tour(infill, at, &mut out, &Cover { laid: &laid });
     }
     out
 }

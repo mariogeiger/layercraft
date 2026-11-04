@@ -1,32 +1,32 @@
-//! The order of a layer's paths: the fewest moves that leave what hides them, then the least
+//! The order of a layer's paths: the fewest moves that cross a laid bead, then the least
 //! travel, every reversal of a run and every move of a short run elsewhere tried and found no
 //! better.
 
 use super::*;
-use crate::link::{Cover, Fill};
+use crate::crossing::{Cover, Laid};
 use crate::tour::tour;
-use layercraft_geom::{Bands, difference, union_contours};
 use std::collections::HashMap;
 
 fn dot(x: f64) -> Path {
     Path::new(Role::SOLID, 0.4, false, vec![[x, 0.0]])
 }
 
-fn square(lo: Point, hi: Point) -> Vec<Point> {
-    vec![lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]]
-}
-
-/// A cover that hides every move between points of the square from `lo` to `hi`.
-fn everywhere(lo: Point, hi: Point) -> Bands {
-    Bands::new(&union_contours(&[square(lo, hi)]).unwrap())
+/// The edges of the rectangles from `lo` to `hi`, as laid beads.
+fn rings(squares: &[(Point, Point)]) -> Laid {
+    let mut all = Vec::new();
+    for &(lo, hi) in squares {
+        let c = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]], lo];
+        all.extend(c.windows(2).map(|w| (w[0], w[1], 0)));
+    }
+    Laid::new(&all)
 }
 
 #[test]
 fn a_tour_moves_a_path_rather_than_zigzag() {
     // Nearest first goes 1, −2, 4, −8: 22 mm; the least, one way or another, is 16.
-    let hidden = everywhere([-10.0, -1.0], [10.0, 1.0]);
+    let laid = rings(&[]);
     let (mut at, mut out) = ([0.0, 0.0], Vec::new());
-    tour([1.0, -2.0, 4.0, -8.0].map(dot).to_vec(), &mut at, &mut out, &Cover { hidden: &hidden, join: None });
+    tour([1.0, -2.0, 4.0, -8.0].map(dot).to_vec(), &mut at, &mut out, &Cover { laid: &laid });
     let travel = out
         .iter()
         .fold((0.0, 0.0), |(sum, x): (f64, f64), p| (sum + (p.points[0][0] - x).abs(), p.points[0][0]));
@@ -34,16 +34,14 @@ fn a_tour_moves_a_path_rather_than_zigzag() {
 }
 
 #[test]
-fn a_tour_goes_farther_to_keep_its_moves_hidden() {
-    // A slit across the hidden square parts (1, 0) from (1, 1): from (0, 0), going round its end
-    // by (2, 0.5) takes 3.24 mm, against 3.12 mm across it, but no retraction.
-    let slit = union_contours(&[square([0.2, 0.45], [1.5, 0.55])]).unwrap();
-    let region = difference(&union_contours(&[square([-5.0, -5.0], [5.0, 5.0])]).unwrap(), &slit).unwrap();
-    let hidden = Bands::new(&region);
+fn a_tour_goes_farther_to_stay_off_a_laid_bead() {
+    // A bead parts (1, 0) from (1, 1): from (0, 0), going round its end by (2, 0.5) takes 3.24 mm,
+    // against 3.12 mm across it, but no lift.
+    let laid = rings(&[([0.2, 0.45], [1.5, 0.55])]);
     let dots: Vec<Path> =
         [[1.0, 0.0], [1.0, 1.0], [2.0, 0.5]].map(|p| Path::new(Role::SOLID, 0.4, false, vec![p])).to_vec();
     let (mut at, mut out) = ([0.0, 0.0], Vec::new());
-    tour(dots, &mut at, &mut out, &Cover { hidden: &hidden, join: None });
+    tour(dots, &mut at, &mut out, &Cover { laid: &laid });
     let laid: Vec<Point> = out.iter().map(|p| p.points[0]).collect();
     assert_eq!(laid, [[1.0, 0.0], [2.0, 0.5], [1.0, 1.0]]);
 }
@@ -52,9 +50,9 @@ fn a_tour_goes_farther_to_keep_its_moves_hidden() {
 fn a_tour_lays_open_paths_either_way_and_loops_from_their_start() {
     // Two strokes side by side: the second laid back toward the first's end.
     let stroke = |y: f64| Path::new(Role::SOLID, 0.4, false, vec![[0.0, y], [10.0, y]]);
-    let hidden = everywhere([-1.0, -1.0], [11.0, 2.0]);
+    let laid = rings(&[]);
     let (mut at, mut out) = ([0.0, 0.0], Vec::new());
-    tour(vec![stroke(1.0), stroke(0.0)], &mut at, &mut out, &Cover { hidden: &hidden, join: None });
+    tour(vec![stroke(1.0), stroke(0.0)], &mut at, &mut out, &Cover { laid: &laid });
     assert_eq!(out[0].points, [[0.0, 0.0], [10.0, 0.0]]);
     assert_eq!(out[1].points, [[10.0, 1.0], [0.0, 1.0]]);
     assert_eq!(at, [0.0, 1.0]);
@@ -156,22 +154,10 @@ fn assert_no_change_shortens(paths: &[Path], from: Point, cover: &Cover) {
 
 #[test]
 fn no_reversal_or_move_of_a_run_shortens_a_tour() {
-    // Over a hidden square with two holes, and over lines joined only where short inside an
-    // area: the tour is as short as the full search of both changes leaves it.
-    let outer = union_contours(&[square([-1.0, -1.0], [21.0, 21.0])]).unwrap();
-    let holes =
-        union_contours(&[square([5.0, 3.0], [9.0, 15.0]), square([12.0, 8.0], [16.0, 19.0])]).unwrap();
-    let holed = Bands::new(&difference(&outer, &holes).unwrap());
-    let corner = Bands::new(&union_contours(&[square([0.0, 0.0], [6.0, 6.0])]).unwrap());
-    let fill = Fill {
-        role: Role::SOLID,
-        reach: difference(&outer, &holes).unwrap(),
-        max_link: 2.0,
-        monotone: false,
-    };
-    let reach = Bands::new(&fill.reach);
-    let covers =
-        [Cover { hidden: &holed, join: None }, Cover { hidden: &corner, join: Some((&fill, &reach)) }];
+    // Among no beads, and around two rings of them: the tour is as short as the full search of
+    // both changes leaves it.
+    let (open, ringed) = (rings(&[]), rings(&[([5.0, 3.0], [9.0, 15.0]), ([12.0, 8.0], [16.0, 19.0])]));
+    let covers = [Cover { laid: &ringed }, Cover { laid: &open }];
     let mut state = 0x2545_f491_4f6c_dd1d;
     for round in 0..40 {
         let cover = &covers[round % 2];
@@ -188,4 +174,24 @@ fn no_reversal_or_move_of_a_run_shortens_a_tour() {
         assert_eq!(Some(at), out.last().and_then(Path::end));
         assert_no_change_shortens(&out, from, cover);
     }
+}
+
+/// A tour takes the pieces on each side of a laid bead in runs, crossing it as seldom as it can.
+#[test]
+fn a_tour_crosses_a_laid_bead_as_seldom_as_it_can() {
+    let lines: Vec<Path> = (0..12)
+        .flat_map(|k| {
+            let x = k as f64;
+            [
+                Path::new(Role::SPARSE, 0.4, false, vec![[x, 0.0], [x, 4.0]]),
+                Path::new(Role::SPARSE, 0.4, false, vec![[x, 6.0], [x, 10.0]]),
+            ]
+        })
+        .collect();
+    let wall = Laid::new(&[([-1.0, 5.0], [13.0, 5.0], 0)]);
+    let mut out = Vec::new();
+    let mut at = [0.0, 0.0];
+    tour(lines, &mut at, &mut out, &Cover { laid: &wall });
+    let crossings = out.windows(2).filter(|w| wall.crossed(w[0].end().unwrap(), w[1].points[0], 1)).count();
+    assert_eq!(crossings, 1);
 }

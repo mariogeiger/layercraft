@@ -173,12 +173,16 @@ fn sparse_beads_never_cross_on_a_layer() {
 }
 
 #[test]
-fn moves_between_neighbouring_lines_stay_inside() {
+fn moves_between_neighbouring_lines_are_short() {
     let (_, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])], ..Mesh::default() });
     let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::SOLID).collect();
-    let outside = solid.iter().skip(1).filter(|p| !p.travel_inside).count();
-    assert!(outside <= 1, "{outside} of {} moves leave the part", solid.len());
+    let far = solid.windows(2).filter(|w| {
+        let (a, b) = (w[0].end().unwrap(), w[1].points[0]);
+        (a[0] - b[0]).hypot(a[1] - b[1]) > 1.0
+    });
+    let far = far.count();
+    assert!(far <= 1, "{far} of {} moves go far", solid.len());
 }
 
 #[test]
@@ -373,49 +377,6 @@ fn a_wall_hangs_the_share_of_its_bead_past_the_layer_below() {
             }
         }
     }
-}
-
-#[test]
-fn a_move_over_what_the_layer_above_covers_stays_down() {
-    // A square ring, 20 mm with a 8 mm hole. Inside the part, under the layer above, the nozzle
-    // goes from bead to bead without leaving: from wall to wall and on into the infill, never
-    // over the hole. On the top layer, nothing covers what oozes: only the links between
-    // neighbouring lines of the surface stay down.
-    let mesh = Mesh {
-        bodies: vec![
-            cuboid("front", [0.0; 3], [20.0, 6.0, 3.0]),
-            cuboid("back", [0.0, 14.0, 0.0], [20.0, 20.0, 3.0]),
-            cuboid("left", [0.0, 6.0, 0.0], [6.0, 14.0, 3.0]),
-            cuboid("right", [14.0, 6.0, 0.0], [20.0, 14.0, 3.0]),
-        ],
-        ..Mesh::default()
-    };
-    let (_, paths) = paths_of(&mesh);
-    let over_hole = |a: Point, b: Point| {
-        (0..=100).map(|k| k as f64 / 100.0).any(|t| {
-            let p = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
-            (6.0..=14.0).contains(&p[0]) && (6.0..=14.0).contains(&p[1])
-        })
-    };
-    let moves = |layer: &PathLayer| -> Vec<(Point, Point, bool, Role)> {
-        layer
-            .paths
-            .windows(2)
-            .map(|w| {
-                let end = if w[0].closed { w[0].points[0] } else { *w[0].points.last().unwrap() };
-                (end, w[1].points[0], w[1].travel_inside, w[1].role)
-            })
-            .collect()
-    };
-    let middle = moves(&paths.layers[7]);
-    for &(a, b, inside, _) in &middle {
-        assert!(!(inside && over_hole(a, b)), "{a:?} → {b:?} over the hole");
-    }
-    let down = middle.iter().filter(|m| m.2).count();
-    let around = middle.iter().filter(|m| !m.2 && !over_hole(m.0, m.1)).count();
-    assert_eq!(around, 0, "{down} moves stay down, {around} around the hole leave");
-    let top = moves(paths.layers.last().unwrap());
-    assert!(top.iter().all(|&(_, _, inside, role)| !inside || role == Role::TOP_SURFACE));
 }
 
 #[test]
@@ -822,4 +783,34 @@ fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
         let (u, v) = (f.local(*p), g.local([p[0], -p[1]]));
         assert!((u[0] - v[0]).abs() < 1e-6 && (u[1] - v[1]).abs() < 1e-6, "{p:?}: {u:?} against {v:?}");
     }
+}
+
+/// A move is marked only when it crosses a bead laid before it: not one reaching the wall its
+/// line overlaps, not one between neighbouring lines, nor one over a bead not laid yet.
+#[test]
+fn a_move_is_marked_when_it_crosses_a_laid_bead() {
+    let line = |a: Point, b: Point| Path::new(Role::SPARSE, 0.4, false, vec![a, b]);
+    let wall = line([0.0, 5.0], [20.0, 5.0]);
+    let later = line([0.0, 7.0], [20.0, 7.0]);
+    let paths = crossing::mark(
+        vec![
+            wall,
+            line([1.0, 0.0], [1.0, 4.9]),
+            // Across the wall, then along it, then to a line over one not laid yet.
+            line([1.0, 5.1], [1.0, 6.0]),
+            line([2.0, 6.0], [2.0, 5.1]),
+            line([3.0, 5.1], [3.0, 6.0]),
+            line([4.0, 8.0], [4.0, 9.0]),
+            later,
+        ],
+        &[],
+    );
+    let marks: Vec<bool> = paths.iter().map(|p| p.travel_crosses).collect();
+    assert_eq!(marks, [false, false, true, false, false, false, false]);
+    // A bead of an earlier pass at this height counts as well.
+    let earlier = crossing::mark(
+        vec![line([1.0, 0.0], [1.0, 4.0]), line([1.0, 6.0], [1.0, 8.0])],
+        &[([0.0, 5.0], [20.0, 5.0])],
+    );
+    assert!(earlier[1].travel_crosses);
 }

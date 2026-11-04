@@ -1,11 +1,13 @@
 //! From ordered beads to the program: travels, retractions, wipes and lifts, layer by layer.
 //!
 //! On a bent layer every bead is cut where the layer bends (`leaf`), each piece laying its exact
-//! mean section; a travel that stays inside the part slides along the layer, and one that leaves
-//! it climbs straight up over the highest the layer reaches on its way, the helix kept for where
-//! the layer is level around the nozzle. A layer starts over its own highest point, the layer
-//! before left at least over its own; done, its beads keep the room the nozzle's face leaves them
-//! (`room`). No move runs faster than the Z axis lets it climb.
+//! mean section. A travel longer than the retraction's minimum pulls the filament back and climbs
+//! straight up over the highest the layer reaches on its way: left under pressure, the nozzle
+//! would draw a string behind it, wherever it goes. A shorter one slides along the layer, unless
+//! it crosses a bead laid at this height: that one lifts too, nothing pulled back. The helix is
+//! kept for where the layer is level around the nozzle. A layer starts over its own highest point,
+//! the layer before left at least over its own; done, its beads keep the room the nozzle's face
+//! leaves them (`room`). No move runs faster than the Z axis lets it climb.
 
 use crate::leaf::Leaf;
 use crate::room::{self, Cuts};
@@ -360,8 +362,32 @@ impl State {
         }
     }
 
-    /// Moves to `start` on the layer `leaf`: short hops slide along it, longer ones retract and
-    /// lift. Leaving takes the parameters of the bead left, `from`, whose string it breaks;
+    /// Lifts over the layer `leaf` on the way to `start`, travels there and comes down on it.
+    fn hop(
+        &mut self,
+        from: &MotionParams,
+        to: &MotionParams,
+        start: Point,
+        leaf: &Leaf,
+        first_of_layer: bool,
+    ) {
+        self.accel = to.travel.accel;
+        // Up first: the travel crosses nothing below the hop over the layer on its way.
+        let over = if self.placed && !first_of_layer {
+            leaf.highest_along([self.at[0], self.at[1]], start)
+        } else {
+            leaf.highest()
+        };
+        let hop = over + from.z_hop;
+        let heading = self.heading_to(start);
+        self.lift(from, hop, heading, leaf);
+        let height = if self.placed { self.at[2].max(hop) } else { hop };
+        self.travel([start[0], start[1], height], to.travel.speed);
+        self.travel([start[0], start[1], leaf.z(start)], to.travel.speed);
+    }
+
+    /// Moves to `start` on the layer `leaf`: short hops slide along it, or lift over the laid bead
+    /// they `cross`, and longer ones retract and lift. Leaving takes the parameters of the bead left, `from`, whose string it breaks;
     /// arriving takes those of the bead reached, `to`. From where a layer starts, which is
     /// unknown, the nozzle goes over the layer's highest point by the hop.
     fn go_to(
@@ -371,24 +397,14 @@ impl State {
         start: Point,
         leaf: &Leaf,
         first_of_layer: bool,
+        cross: bool,
     ) {
-        let z = leaf.z(start);
         let d = (start[0] - self.at[0]).hypot(start[1] - self.at[1]);
         if first_of_layer || !self.placed || d > from.retract_min_travel {
             self.retract(from);
-            self.accel = to.travel.accel;
-            // Up first: the travel crosses nothing below the hop over the layer on its way.
-            let over = if self.placed && !first_of_layer {
-                leaf.highest_along([self.at[0], self.at[1]], start)
-            } else {
-                leaf.highest()
-            };
-            let hop = over + from.z_hop;
-            let heading = self.heading_to(start);
-            self.lift(from, hop, heading, leaf);
-            let height = if self.placed { self.at[2].max(hop) } else { hop };
-            self.travel([start[0], start[1], height], to.travel.speed);
-            self.travel([start[0], start[1], z], to.travel.speed);
+            self.hop(from, to, start, leaf, first_of_layer);
+        } else if cross {
+            self.hop(from, to, start, leaf, false);
         } else {
             self.glide(leaf, start, to.travel.speed);
         }
@@ -455,15 +471,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             let Some(&start) = points.first() else { continue };
             let fan = if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed };
             s.fan = fan;
-            if path.travel_inside && k > 0 && s.placed {
-                // Inside the part from the last bead: along the layer, nothing pulled back.
-                s.deretract(&p);
-                s.glide(&leaf, start, p.travel.speed);
-                s.bead.clear();
-                s.bead.push(s.at);
-            } else {
-                s.go_to(&last, &p, start, &leaf, k == 0);
-            }
+            s.go_to(&last, &p, start, &leaf, k == 0, path.travel_crosses);
             s.accel = if layer.index == 0 { p.first_layer_accel } else { role_motion(&p, path.role).accel };
             let speed = bead_speed(&p, path, layer);
             let per_mm3 = p.flow_ratio * role_motion(&p, path.role).flow / filament_area;

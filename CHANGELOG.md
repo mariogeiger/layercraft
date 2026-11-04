@@ -2,6 +2,22 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.14.2
+
+### Fixed
+
+- No more strings across infill: every travel longer than the retraction's minimum retracts and
+  lifts, wherever it runs. Moves under the layer above used to go on with the filament under
+  pressure, up to 118 mm at a time on a Scrabble board quarter, on the grounds that what oozed
+  would be buried; it drew fine strings across the open cells of the sparse infill.
+- The nozzle no longer strikes beads it has just laid: a travel that crosses a bead's centre line
+  at its own height lifts over it, however short, and the tours avoid such moves first.
+
+### Changed
+
+- The path stage no longer marks moves as staying inside the part (`travel_inside`); it marks the
+  moves that cross a laid bead (`travel_crosses`). Length decides retraction in the motion stage.
+  
 ## 0.14.1
 
 ### Changed

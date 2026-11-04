@@ -2,8 +2,8 @@
 //! salesman from where the nozzle is to wherever the last path ends, each open path taken from
 //! either end and a loop from its start.
 //!
-//! A move costs first whether it leaves what hides it (`Cover`), and so retracts and lifts, then
-//! its length. The tour is a cycle through the paths and the nozzle, whose second end is free:
+//! A move costs first whether it crosses a laid bead (`Cover`), and so lifts, then its length.
+//! The tour is a cycle through the paths and the nozzle, whose second end is free:
 //! the move from the last path to it costs nothing. Nearest first lays the cycle out; two
 //! changes then shorten it until neither can: reversing a run of it (2-opt), and moving a run of
 //! up to `MAX_RUN` paths elsewhere, either way round (Or-opt). Pair each move a change adds with
@@ -15,7 +15,7 @@
 //! reaches: every change that shortens the tour is found, for the cost of each end's neighbours.
 
 use crate::Path;
-use crate::link::Cover;
+use crate::crossing::Cover;
 use crate::near::Near;
 use layercraft_geom::Point;
 use std::collections::{HashMap, VecDeque};
@@ -59,7 +59,7 @@ impl std::hash::Hasher for Pairs {
     }
 }
 
-/// What moves cost: how many leave what hides them, then how far they go; or what a change
+/// What moves cost: how many cross a laid bead, then how far they go; or what a change
 /// saves of both.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Cost {
@@ -520,7 +520,7 @@ fn nearest_first(ends: &[[Option<Point>; 2]], nozzle: usize, mut at: Point) -> V
     order
 }
 
-/// Orders `paths` for the least travel from `at` through them all, a move that `cover` hides
+/// Orders `paths` for the least travel from `at` through them all, a move that `cover` lets stay
 /// costing less than any that leaves it, and leaves `at` where the last one ends.
 pub(crate) fn tour(paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>, cover: &Cover) {
     let (paths, pointless): (Vec<Path>, Vec<Path>) = paths.into_iter().partition(|p| ends(p).is_some());

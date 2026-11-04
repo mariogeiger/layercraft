@@ -113,7 +113,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         width: 0.42,
         closed: true,
         points: square(0.0, 0.0, 5.0),
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let strand = Path {
@@ -121,7 +121,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
         width: 0.4,
         closed: false,
         points: vec![[0.0, 0.0], [5.0, 0.0]],
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let p = Paths {

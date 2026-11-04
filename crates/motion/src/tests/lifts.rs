@@ -11,7 +11,7 @@ fn first_helix(lines: &[[Point; 2]]) -> Arc {
         width: 0.4,
         closed: false,
         points: ends.to_vec(),
-        travel_inside: false,
+        travel_crosses: false,
         overhang: Vec::new(),
     };
     let paths = Paths {

@@ -7,7 +7,7 @@
 //! retracting. On the first layer the lines take its width, to grip.
 
 use crate::frame::hatch_in_frames;
-use crate::link::Fill;
+use crate::order::Fill;
 use crate::order::{Island, holder, on_line};
 use crate::solids::Solids;
 use crate::{Path, PathError, PathParams, Role};
@@ -54,7 +54,7 @@ pub fn islands(
                 island.push(Path::new(role, width, false, line));
             }
         }
-        fills.push(Fill { role, reach: region.clone(), max_link: 3.0 * pitch, monotone: false });
+        fills.push(Fill { role, max_link: 3.0 * pitch, monotone: false });
     }
     let fills = Rc::new(fills);
     for island in &mut islands {

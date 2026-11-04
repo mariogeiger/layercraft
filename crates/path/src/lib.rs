@@ -9,9 +9,8 @@
 //! two beads cross on a layer, or convection rolls as far apart (`rolls`), running from wall to
 //! wall and resting on those below. Bridges are strands one nozzle wide: side by side over air,
 //! where they hang; over sparse infill, where they rest, spaced to fill their layer exactly.
-//! Sparse lines lie on a fixed grid, so layers stack; the move between neighbouring lines is
-//! marked as staying inside the part, so it needs no retraction, as is any move over what the
-//! layer above covers. Each island is printed whole —
+//! Sparse lines lie on a fixed grid, so layers stack. A move that crosses a bead already laid at
+//! its height is marked, and the tours avoid it first (`crossing`). Each island is printed whole —
 //! inner walls, outer wall, then its infill — and islands follow each other nearest first.
 //! Within an island, the beads of each kind follow the tour that retracts least often, then
 //! travels least; the lines of a `monotone` role are laid in sweeps instead, each against the
@@ -19,10 +18,10 @@
 //! carries the share of its bead that hangs past the layer below (`overhang`). Each island is
 //! traced by the parameters at its centre. The supports are islands of their own (`supports`).
 
+mod crossing;
 mod families;
 mod frame;
 mod gap;
-mod link;
 mod near;
 mod order;
 mod overhang;
@@ -35,7 +34,7 @@ mod tour;
 
 pub use role::{Face, Kind, Role, Support};
 
-use layercraft_geom::{Bands, GeomError, Point, Relief};
+use layercraft_geom::{GeomError, Point, Relief};
 use layercraft_region::{RegionLayer, Regions};
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
@@ -47,9 +46,9 @@ pub struct Path {
     pub width: f64,
     pub closed: bool,
     pub points: Vec<Point>,
-    /// The move here from the previous bead stays inside the part: no need to retract or lift.
-    #[serde(default)]
-    pub travel_inside: bool,
+    /// The move here crosses a bead already laid at this height: the nozzle goes over it, lifted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub travel_crosses: bool,
     /// How far each segment hangs over air, as a fraction of the bead's width from 0 to 1,
     /// segment `i` running from point `i` to the next; empty where nothing hangs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,7 +58,7 @@ pub struct Path {
 impl Path {
     /// A bead along `points`, reached by an ordinary move and hanging nowhere.
     pub fn new(role: Role, width: f64, closed: bool, points: Vec<Point>) -> Path {
-        Path { role, width, closed, points, travel_inside: false, overhang: Vec::new() }
+        Path { role, width, closed, points, travel_crosses: false, overhang: Vec::new() }
     }
 
     /// Where the nozzle leaves the bead: back at its start when it is closed.
@@ -241,9 +240,12 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     let mut seams = seam::Seams::default();
     let columns =
         solids::Solids::of(&regions.layers, |l| l.supports.iter().chain(&l.support_interface).collect())?;
+    // Every bead of the passes laid so far at this height.
+    let mut earlier: Vec<crossing::Segment> = Vec::new();
     for (pass, layer) in regions.layers.iter().enumerate() {
         if height != Some(layer.top) {
             beneath = families::Beneath::new(std::mem::take(&mut laid));
+            earlier.clear();
             height = Some(layer.top);
         }
         let parts = order::parts(layer, field)?;
@@ -275,8 +277,8 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         }
         seams.commit();
         islands.extend(supports::islands(layer, field.base(), &columns, pass)?);
-        let hidden = Bands::new(&link::hidden(layer)?);
-        let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
+        let paths = crossing::mark(order::sequence(islands, &mut at, &earlier), &earlier);
+        earlier.extend(paths.iter().flat_map(crossing::segments));
         for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {
             let points = path.points.iter().chain(path.points.first().filter(|_| path.closed));
             laid.extend(points.clone().zip(points.skip(1)).map(|(a, b)| (*a, *b, path.width)));

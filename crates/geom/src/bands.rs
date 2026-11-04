@@ -31,7 +31,7 @@ fn length(a: Point, b: Point) -> f64 {
 
 /// Whether segments `ab` and `cd` cross: each one's ends lie farther than `ON_EDGE_MM` from the
 /// other's line, on either side of it.
-fn crosses(a: Point, b: Point, c: Point, d: Point) -> bool {
+pub fn crosses(a: Point, b: Point, c: Point, d: Point) -> bool {
     let apart =
         |s: f64, t: f64, tolerance: f64| s > tolerance && t < -tolerance || s < -tolerance && t > tolerance;
     apart(cross(a, b, c), cross(a, b, d), ON_EDGE_MM * length(a, b))
