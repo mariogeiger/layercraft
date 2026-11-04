@@ -857,3 +857,38 @@ fn dense_beads_turn_move_and_mirror_with_their_part() {
         }
     }
 }
+
+#[test]
+fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
+    use crate::frame::Frame;
+    use crate::solids::Solids;
+    use layercraft_region::RegionLayer;
+    // Two posts under one beam stand apart on the lower layers but make one solid; a block
+    // beside them is a solid of its own.
+    let bodies = vec![
+        cuboid("post", [0.0, 0.0, 0.0], [2.0, 2.0, 1.0]),
+        cuboid("post", [8.0, 0.0, 0.0], [10.0, 2.0, 1.0]),
+        cuboid("beam", [0.0, 0.0, 1.0], [10.0, 2.0, 1.6]),
+        cuboid("block", [20.0, 0.0, 0.0], [23.0, 5.0, 1.6]),
+    ];
+    let (regions, _) = paths_of(&Mesh { bodies, ..Mesh::default() });
+    let solids = Solids::of(&regions.layers, RegionLayer::outline).unwrap();
+    let at = |p: Point| solids.solid_at(0, p);
+    assert!(
+        at([1.0, 1.0]).is_some() && at([1.0, 1.0]) == at([9.0, 1.0]) && at([21.5, 2.5]) != at([1.0, 1.0])
+    );
+    assert!(at([21.5, 2.5]).is_some() && at([5.0, 1.0]).is_none());
+    // An L and its mirror image: mirrored frames, of the other hand, the same in each.
+    let l = vec![[0.0, 0.0], [6.0, 0.0], [6.0, 1.0], [1.0, 1.0], [1.0, 3.0], [0.0, 3.0]];
+    let mirrored: Vec<Point> = l.iter().rev().map(|p| [p[0], -p[1]]).collect();
+    let frame = |outline: &[Point]| {
+        let region = layercraft_geom::union_contours(&[outline.to_vec()]).unwrap();
+        Frame::of(std::iter::once((&region, 1.0)))
+    };
+    let (f, g) = (frame(&l), frame(&mirrored));
+    assert_ne!(f.right_handed(), g.right_handed());
+    for p in &l {
+        let (u, v) = (f.local(*p), g.local([p[0], -p[1]]));
+        assert!((u[0] - v[0]).abs() < 1e-6 && (u[1] - v[1]).abs() < 1e-6, "{p:?}: {u:?} against {v:?}");
+    }
+}

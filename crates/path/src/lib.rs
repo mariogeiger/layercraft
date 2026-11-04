@@ -27,13 +27,14 @@ mod order;
 mod overhang;
 mod role;
 mod rolls;
+mod solids;
 mod supports;
 mod tour;
 
 pub use role::{Face, Kind, Role, Support};
 
 use layercraft_geom::{Bands, GeomError, Point, Relief};
-use layercraft_region::Regions;
+use layercraft_region::{RegionLayer, Regions};
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
 
@@ -233,7 +234,8 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     let mut rolls: Option<rolls::Rolls> = None;
     // The dense beads of the layer below, and of the passes laid so far at this height.
     let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
-    for layer in &regions.layers {
+    let solids = solids::Solids::of(&regions.layers, RegionLayer::outline)?;
+    for (pass, layer) in regions.layers.iter().enumerate() {
         if height != Some(layer.top) {
             beneath = families::Beneath::new(std::mem::take(&mut laid));
             height = Some(layer.top);
@@ -257,7 +259,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         };
         let mut islands = Vec::new();
         for (params, part) in parts {
-            islands.extend(order::islands(&part, &params, lines.as_deref(), &beneath)?);
+            islands.extend(order::islands(&part, &params, lines.as_deref(), &beneath, &solids, pass)?);
         }
         islands.extend(supports::islands(layer, field.base())?);
         let hidden = Bands::new(&link::hidden(layer)?);

@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## Unreleased
+
+### Changed
+
+- What a part's frame settles is settled by its solid's: what holds together, its islands
+  touching on one layer and from each layer to the next, all its layers weighing at once, so it
+  stays the same from layer to layer and changes with nothing else on the plate. A frame's
+  second axis is the quarter turn its areas skew towards, so a mirrored part has a mirrored
+  frame: the dense lines' ties and the line of a symmetric piece of gap fill follow it.
+
 ## 0.13.0
 
 ### Changed

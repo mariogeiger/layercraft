@@ -110,12 +110,13 @@ fn apart(a: f64, b: f64) -> f64 {
     d.min(180.0 - d)
 }
 
-/// Lines at `a` and at `b` degrees in the order ties go in, beside a frame whose first axis lies
-/// at `frame`: nearest its axes first, then nearest its first, then on from it anticlockwise.
-fn frame_order(a: f64, b: f64, frame: f64) -> Ordering {
+/// Lines at `a` and at `b` degrees in the order ties go in, beside `frame`: nearest its axes
+/// first, then nearest its first, then on from it towards its second.
+fn frame_order(a: f64, b: f64, frame: &Frame) -> Ordering {
+    let (first, sense) = (frame.angle(), if frame.right_handed() { 1.0 } else { -1.0 });
     let key = |x: f64| {
-        let d = apart(x, frame);
-        (d.min(90.0 - d), d, (x - frame).rem_euclid(180.0))
+        let d = apart(x, first);
+        (d.min(90.0 - d), d, (sense * (x - first)).rem_euclid(180.0))
     };
     let (x, y) = (key(a), key(b));
     x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.total_cmp(&y.2))
@@ -474,8 +475,7 @@ fn families(cells: &[Cell], host: &[usize], components: &[Component]) -> Vec<Vec
                 lines.push(a);
             }
         }
-        let frame = component.frame.angle();
-        lines.sort_by(|&a, &b| frame_order(a, b, frame));
+        lines.sort_by(|&a, &b| frame_order(a, b, &component.frame));
         let insets = cell.thin.then_some(Family::Insets);
         out.push(insets.into_iter().chain(lines.into_iter().map(Family::Lines)).collect());
     }

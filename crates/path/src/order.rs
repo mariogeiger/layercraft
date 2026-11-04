@@ -1,10 +1,10 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
 use crate::families::{Beneath, Spacing, fall_line, fill};
-use crate::frame::Frame;
 use crate::gap::{gap_fill, strips};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
+use crate::solids::Solids;
 use crate::tour::tour;
 use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
@@ -200,16 +200,16 @@ pub fn islands(
     p: &PathParams,
     rolls: Option<&[Polyline]>,
     beneath: &Beneath,
+    bodies: &Solids,
+    pass: usize,
 ) -> Result<Vec<Island>, PathError> {
     let first = layer.index == 0;
     let w = |width: f64| if first { p.first_layer_width } else { width };
     let loop_path = |role: Role, width: f64, contour: &Contour, outline: &Contour| {
         Path::new(role, width, true, start_near(contour.clone(), back_right(outline)))
     };
-    // The outer wall's shapes are the islands, each with its own frame; without walls, the
-    // infill's shapes are.
+    // The outer wall's shapes are the islands; without walls, the infill's shapes are.
     let walled = !layer.walls.is_empty();
-    let mut frames: Vec<Frame> = Vec::new();
     let mut islands: Vec<Island> = layer
         .outline()
         .into_iter()
@@ -220,7 +220,6 @@ pub fn islands(
                 .filter(|_| walled)
                 .map(|c| (0, loop_path(Role::OUTER_WALL, w(p.outer_wall_width), c, &outline)))
                 .collect();
-            frames.push(Frame::of(std::iter::once((&vec![shape.clone()], 1.0))));
             Some(Island { outline, walls, gaps: Vec::new(), infill: Vec::new(), fills: Rc::default() })
         })
         .collect();
@@ -373,7 +372,7 @@ pub fn islands(
             }),
         }
     }
-    let axis_at = |q: Point| home(&islands, q).and_then(|i| frames.get(i)).map_or([1.0, 0.0], Frame::axis);
+    let axis_at = |q: Point| bodies.frame_at(pass, q).axis();
     let gaps = gap_fill(&union(&thin, &residue)?, role_at, &axis_at, s, h, p.resolution)?;
     for gap in gaps {
         let Some(&start) = gap.points.first() else { continue };
