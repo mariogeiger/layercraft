@@ -41,6 +41,27 @@ pub fn joins(fill: &Fill, reach: &Bands, a: Point, b: Point) -> bool {
     gap <= fill.max_link && (gap < EPS || reach.holds(a, b))
 }
 
+/// Where a move from bead to bead stays hidden: over `hidden`, however long, or, between two
+/// lines of a fill, no longer than its longest join and over its area.
+pub struct Cover<'a> {
+    pub hidden: &'a Bands,
+    pub join: Option<(&'a Fill, &'a Bands)>,
+}
+
+impl Cover<'_> {
+    /// Whether a move from `a` to `b` stays hidden.
+    pub fn stays(&self, a: Point, b: Point) -> bool {
+        hides(self.hidden, a, b) || self.join.is_some_and(|(fill, reach)| joins(fill, reach, a, b))
+    }
+
+    /// How long a hidden move from `a` can be: one over `hidden` starts on it, a join is no
+    /// longer than its fill's longest, and a move shorter than `EPS` goes nowhere.
+    pub fn reach(&self, a: Point) -> f64 {
+        let over = if self.hidden.covers(a) { f64::INFINITY } else { EPS };
+        self.join.map_or(over, |(fill, _)| over.max(fill.max_link))
+    }
+}
+
 /// The part of a layer where a move needs no retraction: inside its outer wall (inside its
 /// areas, with none), covered by the layer above, and not hanging over air.
 pub fn hidden(layer: &RegionLayer) -> Result<Region, GeomError> {

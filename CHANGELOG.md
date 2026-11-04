@@ -2,6 +2,19 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.14.1
+
+### Changed
+
+- A layer's beads are put in order in a fraction of the time, with no more retractions and less
+  travel. The search still tries every reversal of a run of beads and every move of up to three
+  of them elsewhere, either way round, and now goes on until none shortens the tour, where it
+  gave up after 32 passes; but each end of a bead looks only at the ends nearer than its own
+  move, and, where that move retracts, at those a hidden move from it reaches, which misses no
+  change that shortens the tour. On the board 120 mm square under 16 + 16 ridges, the paths
+  stage takes 4 s instead of 169 s, run alongside, its moves retracting 1,651 times instead of
+  1,654, over 21.9 m of travel instead of 29.4 m.
+
 ## 0.14.0
 
 ### Changed

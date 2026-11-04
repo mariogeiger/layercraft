@@ -3,7 +3,7 @@
 use crate::families::{Beneath, Spacing, fall_line, fill};
 use crate::frame::{hatch_in_frames, inside};
 use crate::gap::{gap_fill, strips};
-use crate::link::{Fill, hides, joins, link};
+use crate::link::{Cover, Fill, link};
 use crate::overhang::{Below, overhang};
 use crate::seam::{Seams, farthest_along, seamed};
 use crate::solids::Solids;
@@ -423,13 +423,13 @@ pub fn islands(
 /// sweeps the same way: from the side nearer the nozzle, each sweep takes the next line across
 /// that overlaps the last one along their direction and lies within `reach`, and a new sweep
 /// starts at the first line left. Each line starts where the last one ended.
-fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>) {
+fn sweep(mut lines: Vec<Path>, reach: f64, at: &mut Point, out: &mut Vec<Path>, cover: &Cover) {
     let Some((a, b)) = lines.first().and_then(|l| Some((*l.points.first()?, *l.points.last()?))) else {
-        return tour(lines, at, out, &|_, _| true);
+        return tour(lines, at, out, cover);
     };
     let length = (b[0] - a[0]).hypot(b[1] - a[1]);
     if length <= 0.0 {
-        return tour(lines, at, out, &|_, _| true);
+        return tour(lines, at, out, cover);
     }
     let along = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
     let mut across = [-along[1], along[0]];
@@ -518,7 +518,7 @@ const SAME_SWEEP: f64 = 1e-3;
 /// sweeps for a monotone area and in the cheapest tour otherwise, joined where they can be.
 /// Each tour keeps its moves over `hidden` where it can.
 pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec<Path> {
-    let hides = |a: Point, b: Point| hides(hidden, a, b);
+    let cover = Cover { hidden, join: None };
     let mut out = Vec::new();
     while !islands.is_empty() {
         let near = islands
@@ -534,29 +534,30 @@ pub fn sequence(mut islands: Vec<Island>, at: &mut Point, hidden: &Bands) -> Vec
         let mut depth = None;
         for (k, path) in island.walls {
             if depth != Some(k) && !walls.is_empty() {
-                tour(std::mem::take(&mut walls), at, &mut out, &hides);
+                tour(std::mem::take(&mut walls), at, &mut out, &cover);
             }
             depth = Some(k);
             walls.push(path);
         }
-        tour(walls, at, &mut out, &hides);
-        tour(island.gaps, at, &mut out, &hides);
+        tour(walls, at, &mut out, &cover);
+        tour(island.gaps, at, &mut out, &cover);
         let mut infill = island.infill;
         for fill in island.fills.iter() {
             let (mine, rest): (Vec<Path>, Vec<Path>) = infill.into_iter().partition(|p| p.role == fill.role);
             infill = rest;
             let mut ordered = Vec::new();
             let reach = Bands::new(&fill.reach);
+            let joined = Cover { hidden, join: Some((fill, &reach)) };
             if fill.monotone {
                 for lines in by_direction(mine, *at) {
-                    sweep(lines, fill.max_link, at, &mut ordered);
+                    sweep(lines, fill.max_link, at, &mut ordered, &joined);
                 }
             } else {
-                tour(mine, at, &mut ordered, &|a, b| hides(a, b) || joins(fill, &reach, a, b));
+                tour(mine, at, &mut ordered, &joined);
             }
             out.extend(link(ordered, fill, &reach));
         }
-        tour(infill, at, &mut out, &hides);
+        tour(infill, at, &mut out, &cover);
     }
     out
 }
