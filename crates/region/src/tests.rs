@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::area;
+use layercraft_geom::{Region, area, difference};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_section::{Layering, section};
@@ -414,4 +414,36 @@ fn materials_split_into_passes_judged_against_the_whole_layer() {
     let last = regions.layers.last().unwrap();
     assert_eq!((last.index, last.material), (14, 1));
     assert!(area(&last.top_surface) > 0.0);
+}
+
+#[test]
+fn the_supports_under_a_turned_bridge_are_the_turned_supports() {
+    // The strands of a bridge too long to hang lie across its own span, on lines through its
+    // own centre, not along the plate's axes: the deck turned on the plate has its supports
+    // turned with it.
+    let turn = 37f64.to_radians();
+    let (s, c) = turn.sin_cos();
+    let at = |p: [f64; 2]| [c * p[0] - s * p[1] + 12.5, s * p[0] + c * p[1] - 7.0];
+    let supports = |turned: bool| {
+        let post = |x0: f64, x1: f64, z1: f64, z0: f64, name: &str| {
+            let outline: Vec<[f64; 2]> = [[x0, -2.0], [x1, -2.0], [x1, 2.0], [x0, 2.0]]
+                .into_iter()
+                .map(|p| if turned { at(p) } else { p })
+                .collect();
+            layercraft_mesh::solids::prism(name, &outline, z0, z1)
+        };
+        let bodies = vec![
+            post(-10.0, -6.0, 10.0, 0.0, "left"),
+            post(6.0, 10.0, 10.0, 0.0, "right"),
+            post(-10.0, 10.0, 12.0, 10.0, "deck"),
+        ];
+        supported(bodies, SupportParams { max_bridge: Some(10.0), ..SUPPORTS }).layers[20].supports.clone()
+    };
+    let (flat, turned) = (supports(false), supports(true));
+    let moved: Region = flat
+        .iter()
+        .map(|shape| shape.iter().map(|contour| contour.iter().map(|&p| at(p)).collect()).collect())
+        .collect();
+    let off = area(&difference(&moved, &turned).unwrap()) + area(&difference(&turned, &moved).unwrap());
+    assert!(area(&turned) > 40.0 && off < 0.01 * area(&turned), "{off} mm² off of {}", area(&turned));
 }

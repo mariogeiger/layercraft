@@ -237,6 +237,8 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
     let solids = solids::Solids::of(&regions.layers, RegionLayer::outline)?;
     let mut seams = seam::Seams::default();
+    let columns =
+        solids::Solids::of(&regions.layers, |l| l.supports.iter().chain(&l.support_interface).collect())?;
     for (pass, layer) in regions.layers.iter().enumerate() {
         if height != Some(layer.top) {
             beneath = families::Beneath::new(std::mem::take(&mut laid));
@@ -271,7 +273,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
                 &mut seams,
             )?);
         }
-        islands.extend(supports::islands(layer, field.base())?);
+        islands.extend(supports::islands(layer, field.base(), &columns, pass)?);
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
         for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {

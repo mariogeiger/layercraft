@@ -12,6 +12,11 @@ All notable user-visible changes to this project are documented here.
   beads follow the island's outer seam, and the loops of a mirrored part run the other way. The
   next island is the one whose first bead starts nearest the nozzle, and equally long sweeps are
   ordered by their ends' distance to it, not by plate angle.
+- Sparse lines, bridge strands, support lines and the region stage's roofs take their direction
+  and phase from the part's own frame (a roof's piece, its own axis and centre), not the plate's
+  axes and origin: a part turned, moved or mirrored on the plate has them turned, moved or
+  mirrored with it. `bridge_angle` counts its extra 15° candidates from the preferred direction
+  and takes the phase of its strands' grid.
 - What a part's frame settles is settled by its solid's: what holds together, its islands
   touching on one layer and from each layer to the next, all its layers weighing at once, so it
   stays the same from layer to layer and changes with nothing else on the plate. A frame's

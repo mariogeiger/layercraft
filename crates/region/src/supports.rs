@@ -13,8 +13,8 @@
 
 use crate::SupportParams;
 use layercraft_geom::{
-    Bands, GeomError, Point, Region, bridge_angle, difference, hatch, intersection, offset, opening,
-    polyline_length, union, winding_region,
+    Bands, GeomError, Moments, Point, Region, bridge_angle, difference, hatch, intersection, offset, opening,
+    phase_through, polyline_length, union, winding_region,
 };
 
 /// Heights closer than this are the same, in mm.
@@ -58,8 +58,15 @@ pub fn roof(
     for shape in &hang {
         // The strands reach a bead's width onto what holds them.
         let piece = intersection(&offset(&vec![shape.clone()], w)?, section)?;
-        let angle = bridge_angle(&piece, strand, 0.0, |p| !rests.covers(p))?;
-        for line in hatch(&piece, strand, angle, 0.0)? {
+        // The piece's own direction and centre, not the plate's, lay its strands.
+        let own = Moments::of(piece.iter().map(|shape| (shape.as_slice(), 1.0)));
+        let (preferred, centre) = own.map_or((0.0, [0.0, 0.0]), |m| {
+            (m.axes.map_or(0.0, |a| a.first[1].atan2(a.first[0]).to_degrees()), m.centroid)
+        });
+        let phase = phase_through(preferred, centre);
+        let angle = bridge_angle(&piece, strand, preferred, phase, |p| !rests.covers(p))?;
+        let phase = phase_through(angle, centre);
+        for line in hatch(&piece, strand, angle, phase)? {
             let ends = [line.first(), line.last()];
             let anchored = ends.iter().flatten().all(|&&p| rests.covers(p));
             if anchored && polyline_length(&line) <= max_bridge {

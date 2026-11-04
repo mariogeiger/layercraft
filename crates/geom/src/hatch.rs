@@ -33,6 +33,12 @@ pub fn hatch(region: &Region, spacing: f64, angle: f64, phase: f64) -> Result<Ve
     clip_lines(&lines, region)
 }
 
+/// The phase of the grid of `hatch` at `angle` degrees that has a line through `point`.
+pub fn phase_through(angle: f64, point: Point) -> f64 {
+    let (s, c) = angle.to_radians().sin_cos();
+    -point[0] * s + point[1] * c
+}
+
 /// The most candidate directions tried for one bridge.
 const MAX_CANDIDATES: usize = 72;
 
@@ -40,11 +46,13 @@ const MAX_CANDIDATES: usize = 72;
 /// its two ends, so it must rest on the layer below at both: the direction chosen leaves the
 /// fewest ends over air (`hangs`), and among those its longest strand, the weakest, is shortest.
 /// Both optima lie across an edge of the region, so the directions tried are those perpendicular
-/// to its edges, plus every 15°; ties keep `preferred`.
+/// to its edges, plus every 15° from `preferred`; ties keep `preferred`. The strands lie on the
+/// grid `phase` anchors, as `hatch`'s.
 pub fn bridge_angle(
     region: &Region,
     spacing: f64,
     preferred: f64,
+    phase: f64,
     hangs: impl Fn(Point) -> bool,
 ) -> Result<f64, GeomError> {
     let across = region.iter().flatten().flat_map(|c| edges(c));
@@ -52,14 +60,14 @@ pub fn bridge_angle(
         .chain(across.map(|(a, b)| (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0));
     let normalize = |a: f64| a.rem_euclid(180.0);
     let mut seen: Vec<f64> = Vec::new();
-    for a in candidates.map(normalize).chain((0..12).map(|k| 15.0 * k as f64)) {
+    for a in candidates.map(normalize).chain((0..12).map(|k| preferred + 15.0 * k as f64)) {
         if seen.len() < MAX_CANDIDATES && !seen.iter().any(|s| (s - a).abs() < 0.5) {
             seen.push(a);
         }
     }
     let mut best = ((usize::MAX, f64::INFINITY), normalize(preferred));
     for angle in seen {
-        let lines = hatch(region, spacing, angle, 0.0)?;
+        let lines = hatch(region, spacing, angle, phase)?;
         let loose = lines
             .iter()
             .flat_map(|line| [line.first(), line.last()])

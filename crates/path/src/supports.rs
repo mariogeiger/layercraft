@@ -1,19 +1,27 @@
-//! The supports' lines, their sides inside the supports' areas, which keep their gap to the
-//! part: each column's body in straight lines `gap` apart past their tiling
-//! spacing, the same way on every layer, so each line stands on the one below and the lines
-//! stack into thin walls; its interface across them, `interface_gap` apart, dense enough for the
-//! part to rest on. Each piece of the supports is an island without walls; neighbouring lines
-//! join inside it without retracting. On the first layer the lines take its width, to grip.
+//! The supports' lines, each column's in its own frame, inside the supports' areas, which keep
+//! their gap to the part: each column's body in straight lines `gap` apart past their tiling
+//! spacing, at the layer's angle from the column's axis through its origin, the same way on
+//! every layer, so each line stands on the one below and the lines stack into thin walls; its
+//! interface across them, `interface_gap` apart, dense enough for the part to rest on. Each
+//! piece of the supports is an island without walls; neighbouring lines join inside it without
+//! retracting. On the first layer the lines take its width, to grip.
 
+use crate::frame::hatch_in_frames;
 use crate::link::Fill;
 use crate::order::{Island, holder, on_line};
+use crate::solids::Solids;
 use crate::{Path, PathError, PathParams, Role};
-use layercraft_geom::{bead_spacing, hatch, offset, polyline_length, union};
+use layercraft_geom::{bead_spacing, offset, polyline_length, union};
 use layercraft_region::RegionLayer;
 use std::rc::Rc;
 
 /// The islands of the layer's supports, their lines inside them.
-pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathError> {
+pub fn islands(
+    layer: &RegionLayer,
+    p: &PathParams,
+    columns: &Solids,
+    pass: usize,
+) -> Result<Vec<Island>, PathError> {
     if layer.supports.is_empty() && layer.support_interface.is_empty() {
         return Ok(Vec::new());
     }
@@ -34,7 +42,9 @@ pub fn islands(layer: &RegionLayer, p: &PathParams) -> Result<Vec<Island>, PathE
         if region.is_empty() {
             continue;
         }
-        for line in hatch(&offset(region, -width / 2.0)?, pitch, angle, 0.0)? {
+        for line in
+            hatch_in_frames(&offset(region, -width / 2.0)?, pitch, angle, |q| columns.frame_at(pass, q))?
+        {
             // A line shorter than its bead is wide would lay a blob.
             if polyline_length(&line) < width {
                 continue;

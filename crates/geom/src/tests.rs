@@ -525,3 +525,22 @@ fn a_shape_too_short_for_a_strip_lies_along_its_own_line() {
         }
     }
 }
+
+#[test]
+fn a_bridge_across_a_turned_slab_goes_across_the_turned_slab() {
+    // A slab 20 × 6 mm, nothing hanging at the strands' ends: the shortest strands go across
+    // its width, whichever way the slab lies on the plate, and the lines of any angle lie on
+    // the grid through the slab's own centre.
+    let rectangle = [[-10.0, -3.0], [10.0, -3.0], [10.0, 3.0], [-10.0, 3.0]];
+    for turn in [0.0f64, 37.0, 110.0, -20.0] {
+        let (s, c) = turn.to_radians().sin_cos();
+        let outline: Vec<Point> =
+            rectangle.iter().map(|p| [c * p[0] - s * p[1] + 5.0, s * p[0] + c * p[1] - 2.0]).collect();
+        let region = union_contours(&[outline]).unwrap();
+        let preferred = turn + 15.0;
+        let phase = phase_through(preferred, [5.0, -2.0]);
+        let angle = bridge_angle(&region, 0.4, preferred, phase, |_| false).unwrap();
+        let across = (turn + 90.0).rem_euclid(180.0);
+        assert!((angle - across).abs() < 1e-4, "{turn}°: {angle}° for {across}°");
+    }
+}

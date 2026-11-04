@@ -1,6 +1,7 @@
 //! Grouping a layer's beads by island and putting them in printing order.
 
 use crate::families::{Beneath, Spacing, fall_line, fill};
+use crate::frame::{hatch_in_frames, inside};
 use crate::gap::{gap_fill, strips};
 use crate::link::{Fill, hides, joins, link};
 use crate::overhang::{Below, overhang};
@@ -10,7 +11,7 @@ use crate::tour::tour;
 use crate::{Crossing, Face, Kind, Path, PathError, PathParams, Role, SparsePattern, Support, check};
 use layercraft_geom::{
     Bands, Contour, GRID_MM, Point, Polyline, Region, bead_spacing, bridge_angle, clip_lines, disc_area,
-    edges, encloses, hatch, intersection, offset, polyline_length, signed_area, union,
+    edges, encloses, hatch, intersection, offset, phase_through, polyline_length, signed_area, union,
 };
 use layercraft_region::RegionLayer;
 use layercraft_tune::{Field, centre};
@@ -282,7 +283,7 @@ pub fn islands(
         }
     }
     let odd = layer.index % 2 == 1;
-    let solid_angle = p.infill_angle + if odd { 90.0 } else { 0.0 };
+    let turn = p.infill_angle + if odd { 90.0 } else { 0.0 };
     let h = layer.height;
     // One direction per layer, turning a quarter turn each layer: two beads never cross on one
     // layer, where a crossing would lay plastic twice in one place.
@@ -347,8 +348,12 @@ pub fn islands(
             let hangs = |end: Point| below.as_ref().is_none_or(|b| b.fraction(end, width) >= 1.0);
             for shape in &reach {
                 let piece = vec![shape.clone()];
-                let angle = bridge_angle(&piece, spacing, solid_angle, hangs)?;
-                lines.extend(hatch(&piece, spacing, angle, 0.0)?);
+                // Across the solid's own direction, on lines through its own origin.
+                let frame = inside(shape).map(|q| bodies.frame_at(pass, q)).unwrap_or_default();
+                let (preferred, origin) = (frame.turned(turn), frame.origin());
+                let phase = phase_through(preferred, origin);
+                let angle = bridge_angle(&piece, spacing, preferred, phase, hangs)?;
+                lines.extend(hatch(&piece, spacing, angle, phase_through(angle, origin))?);
             }
         } else if role.kind == Kind::Solid && role.support == Support::Solid {
             let on_top = role.face == Face::Top;
@@ -362,7 +367,7 @@ pub fn islands(
             lines = clip_lines(rolls, &reach)?;
             lines.retain(|line| polyline_length(line) >= 2.0 * width);
         } else {
-            lines = hatch(&reach, spacing, solid_angle, 0.0)?;
+            lines = hatch_in_frames(&reach, spacing, turn, |q| bodies.frame_at(pass, q))?;
         }
         for line in lines {
             let Some(i) = on_line(&line).and_then(|q| home(&islands, q)) else { continue };

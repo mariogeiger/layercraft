@@ -819,51 +819,7 @@ fn placed(part: &[Point], angle: f64, mirror: bool, shift: Point) -> (impl Fn(Po
     (g, outline)
 }
 
-#[test]
-fn dense_beads_turn_move_and_mirror_with_their_part() {
-    // The plate has no direction: the part turned, moved or mirrored on it is laid turned, moved
-    // or mirrored, its walls and its dense beads the same curves, to the lattice's rounding. A
-    // square is laid alike turned a quarter turn, which nothing of its own tells apart: turned
-    // less than an eighth of a turn, its frame turns with it, and with it what the frame
-    // settles, as the line of the bead its insets leave at its middle.
-    let square = vec![[0.0, 0.0], [6.3, 0.0], [6.3, 6.3], [0.0, 6.3]];
-    let parts = [
-        (bracket(), [(37.0f64, false, [12.5, -7.0]), (110.0, true, [-30.0, 4.0])]),
-        (square, [(37.0, false, [12.5, -7.0]), (20.0, true, [-30.0, 4.0])]),
-    ];
-    for (part, (angle, mirror, shift)) in
-        parts.iter().flat_map(|(p, turns)| turns.iter().map(move |t| (p, *t)))
-    {
-        let here = slab_beads(part);
-        let (g, outline) = placed(part, angle, mirror, shift);
-        let there = slab_beads(&outline);
-        assert_eq!(here.layers.len(), there.layers.len());
-        for (a, b) in here.layers.iter().zip(&there.layers) {
-            let curves = |layer: &PathLayer, map: &dyn Fn(Point) -> Point| -> Vec<(Role, Vec<Point>)> {
-                layer
-                    .paths
-                    .iter()
-                    .map(|p| {
-                        let mut points: Vec<Point> = p.points.iter().map(|&q| map(q)).collect();
-                        points.extend(points.first().copied().filter(|_| p.closed));
-                        (p.role, points)
-                    })
-                    .collect()
-            };
-            let (moved, theirs) = (curves(a, &g), curves(b, &|p| p));
-            for (from, to) in [(&moved, &theirs), (&theirs, &moved)] {
-                for (role, points) in from.iter() {
-                    let same: Vec<Vec<Point>> =
-                        to.iter().filter(|(r, _)| r == role).map(|(_, p)| p.clone()).collect();
-                    for &p in points {
-                        let d = distance_to(p, &same);
-                        assert!(d < 1e-3, "layer {}, {angle}°: {role:?} at {p:?} is {d} mm off", a.index);
-                    }
-                }
-            }
-        }
-    }
-}
+mod directions;
 
 #[test]
 fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
