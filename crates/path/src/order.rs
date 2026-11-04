@@ -222,8 +222,9 @@ pub fn islands(
         let Some(outline) = shape.first().cloned() else { continue };
         let solid = bodies.solid_of(pass, &outline);
         let frame = solid.map(|s| bodies.frame(s)).unwrap_or_default();
-        let reference =
-            solid.and_then(|s| seams.of(s)).unwrap_or_else(|| farthest_along(&outline, &frame, p.resolution));
+        let reference = solid
+            .and_then(|s| seams.follow(s, &outline, &frame, p.resolution))
+            .unwrap_or_else(|| farthest_along(&outline, &frame, p.resolution));
         let mut mark = Mark { seam: reference, right_handed: frame.right_handed() };
         let mut walls = Vec::new();
         for (n, c) in shape.iter().enumerate().filter(|_| walled) {

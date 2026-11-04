@@ -11,7 +11,9 @@ All notable user-visible changes to this project are documented here.
   at the point of its outline farthest along its frame's axis. Holes, inner walls and closed
   beads follow the island's outer seam, and the loops of a mirrored part run the other way. The
   next island is the one whose first bead starts nearest the nozzle, and equally long sweeps are
-  ordered by their ends' distance to it, not by plate angle.
+  ordered by their ends' distance to it, not by plate angle. A solid's islands on one layer
+  follow the seams of the layer below, not each other's, each the nearest to its outline; the
+  corners of a small round hole, all alike deep, are all candidates for the seam.
 - Sparse lines, bridge strands, support lines and the region stage's roofs take their direction
   and phase from the part's own frame (a roof's piece, its own axis and centre), not the plate's
   axes and origin: a part turned, moved or mirrored on the plate has them turned, moved or

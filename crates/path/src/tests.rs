@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Region, area, bead_area, bead_spacing, polyline_length, signed_area};
+use layercraft_geom::{Region, area, bead_area, bead_spacing, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, SupportParams, split};
@@ -45,7 +45,7 @@ fn region_params() -> RegionParams {
     }
 }
 
-fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
+pub(crate) fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
     let sections =
         section(mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
@@ -774,7 +774,7 @@ fn ridges_along_either_axis_lay_their_lines_along_themselves() {
 /// A part with a thick body, a finger thinner than its beads' crossing width along its foot, a
 /// thinner arm out of its side and a bite out of its top: every kind of dense area, and no
 /// symmetry.
-fn bracket() -> Vec<Point> {
+pub(crate) fn bracket() -> Vec<Point> {
     let mut outline = vec![
         [0.0, 0.0],
         [60.0, 0.0],
@@ -798,7 +798,7 @@ fn bracket() -> Vec<Point> {
 }
 
 /// The beads of a slab a millimetre thick over `outline`, all of it dense.
-fn slab_beads(outline: &[Point]) -> Paths {
+pub(crate) fn slab_beads(outline: &[Point]) -> Paths {
     let mesh =
         Mesh { bodies: vec![layercraft_mesh::solids::prism("b", outline, 0.0, 1.0)], ..Mesh::default() };
     paths_of(&mesh).1
@@ -806,7 +806,12 @@ fn slab_beads(outline: &[Point]) -> Paths {
 
 /// The map of the plate that mirrors (across the x axis), turns by `angle` degrees and moves by
 /// `shift`, and the outline it takes `part` to, still anticlockwise.
-fn placed(part: &[Point], angle: f64, mirror: bool, shift: Point) -> (impl Fn(Point) -> Point, Vec<Point>) {
+pub(crate) fn placed(
+    part: &[Point],
+    angle: f64,
+    mirror: bool,
+    shift: Point,
+) -> (impl Fn(Point) -> Point, Vec<Point>) {
     let (s, c) = angle.to_radians().sin_cos();
     let g = move |p: Point| {
         let p = if mirror { [p[0], -p[1]] } else { p };
@@ -854,83 +859,4 @@ fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
         let (u, v) = (f.local(*p), g.local([p[0], -p[1]]));
         assert!((u[0] - v[0]).abs() < 1e-6 && (u[1] - v[1]).abs() < 1e-6, "{p:?}: {u:?} against {v:?}");
     }
-}
-
-#[test]
-fn closed_beads_start_and_run_where_the_moved_part_has_them() {
-    // Each loop of the turned part starts where the moved loop does and runs the way its image
-    // does: under a mirror the loops run the other way round.
-    let part = bracket();
-    let here = slab_beads(&part);
-    for (angle, mirror, shift) in [(37.0, false, [12.5, -7.0]), (110.0, true, [-30.0, 4.0])] {
-        let (g, outline) = placed(&part, angle, mirror, shift);
-        let there = slab_beads(&outline);
-        for (a, b) in here.layers.iter().zip(&there.layers) {
-            for loop_ in a.paths.iter().filter(|p| p.closed && p.points.len() > 2) {
-                let image: Vec<Point> = loop_.points.iter().map(|&p| g(p)).collect();
-                let close = |u: Point, v: Point| polyline_length(&[u, v]) < 1e-3;
-                let found = b.paths.iter().any(|m| {
-                    m.closed
-                        && m.role == loop_.role
-                        && close(m.points[0], image[0])
-                        && signed_area(&m.points) * signed_area(&image) > 0.0
-                });
-                assert!(
-                    found,
-                    "layer {}, {angle}°: {:?} loop from {:?} not found",
-                    a.index, loop_.role, image[0]
-                );
-            }
-        }
-    }
-}
-
-/// The first outer wall of each layer of `paths`.
-fn seams_of(paths: &Paths) -> Vec<&Path> {
-    paths.layers.iter().filter_map(|l| l.paths.iter().find(|p| p.role == Role::OUTER_WALL)).collect()
-}
-
-#[test]
-fn a_notch_gives_the_outer_wall_a_concave_seam_on_every_layer() {
-    // A 20 mm slab with a notch 4 mm wide and 3 deep in one side: the seam goes to one of the
-    // notch's two inner corners, the same on every layer.
-    let outline = [
-        [0.0, 0.0],
-        [8.0, 0.0],
-        [8.0, 3.0],
-        [12.0, 3.0],
-        [12.0, 0.0],
-        [20.0, 0.0],
-        [20.0, 20.0],
-        [0.0, 20.0],
-    ];
-    let paths = slab_beads(&outline);
-    let seams: Vec<Point> = seams_of(&paths).iter().map(|p| p.points[0]).collect();
-    let corners = [[8.0, 3.0], [12.0, 3.0]];
-    let near = |s: &Point| corners.iter().any(|c| polyline_length(&[*s, *c]) < 0.3);
-    assert!(seams.iter().all(near), "{seams:?}");
-    assert!(seams.windows(2).all(|w| w[0] == w[1]), "{seams:?}");
-}
-
-#[test]
-fn a_cylinders_seams_line_up_at_the_far_end_of_its_axis() {
-    use crate::frame::Frame;
-    use crate::solids::Solids;
-    let ring: Vec<Point> = (0..64)
-        .map(|k| {
-            let t = std::f64::consts::TAU * f64::from(k) / 64.0;
-            [10.0 * t.cos(), 10.0 * t.sin()]
-        })
-        .collect();
-    let mesh = Mesh { bodies: vec![layercraft_mesh::solids::prism("c", &ring, 0.0, 2.0)], ..Mesh::default() };
-    let (regions, paths) = paths_of(&mesh);
-    let seams: Vec<Point> = seams_of(&paths).iter().map(|p| p.points[0]).collect();
-    assert!(seams.windows(2).all(|w| w[0] == w[1]), "{seams:?}");
-    let solids = Solids::of(&regions.layers, layercraft_region::RegionLayer::outline).unwrap();
-    let frame: Frame = solids.frame_at(0, [0.0, 0.0]);
-    let far = |p: &Point| p[0] * frame.axis()[0] + p[1] * frame.axis()[1];
-    // The wall's own farthest point along the axis, the wall lying inside the outline.
-    let wall = seams_of(&paths)[0];
-    let best = wall.points.iter().map(far).fold(f64::MIN, f64::max);
-    assert!((far(&seams[0]) - best).abs() < 1e-3, "{:?} against {best}", seams[0]);
 }

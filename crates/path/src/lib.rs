@@ -273,6 +273,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
                 &mut seams,
             )?);
         }
+        seams.commit();
         islands.extend(supports::islands(layer, field.base(), &columns, pass)?);
         let hidden = Bands::new(&link::hidden(layer)?);
         let paths = link::hide(order::sequence(islands, &mut at, &hidden), &hidden);
@@ -292,5 +293,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
     Ok(Paths { layers })
 }
 
+#[cfg(test)]
+mod seam_tests;
 #[cfg(test)]
 mod tests;

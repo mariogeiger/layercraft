@@ -8,18 +8,53 @@ use crate::frame::Frame;
 use layercraft_geom::Point;
 use std::collections::HashMap;
 
-/// The last seam of each solid, which the layer above's seams follow.
+/// The seams of each solid's islands on the last pass, which the next pass's seams follow. A
+/// pass's seams are held back until `commit`, so that no island follows another of its own pass:
+/// the order of a pass's islands comes from the clipper, not from the part.
 #[derive(Default)]
-pub(crate) struct Seams(HashMap<usize, Point>);
+pub(crate) struct Seams {
+    last: HashMap<usize, Vec<Point>>,
+    pending: HashMap<usize, Vec<Point>>,
+}
 
 impl Seams {
-    pub fn of(&self, solid: usize) -> Option<Point> {
-        self.0.get(&solid).copied()
+    /// The seam the island of `solid` with outer contour `outline` follows: that of the last
+    /// pass nearest the outline, the one farthest along the solid's frame where several lie as
+    /// near (to within `resolution`).
+    pub fn follow(&self, solid: usize, outline: &[Point], frame: &Frame, resolution: f64) -> Option<Point> {
+        let seams = self.last.get(&solid)?;
+        let near = |p: &Point| distance_to_loop(outline, *p);
+        let nearest = seams.iter().map(near).fold(f64::MAX, f64::min);
+        let tied: Vec<Point> = seams.iter().filter(|p| near(p) <= nearest + resolution).copied().collect();
+        Some(farthest_along(&tied, frame, resolution))
     }
 
+    /// Notes the seam of an island of `solid` on this pass.
     pub fn keep(&mut self, solid: usize, seam: Point) {
-        self.0.insert(solid, seam);
+        self.pending.entry(solid).or_default().push(seam);
     }
+
+    /// Ends the pass: its seams are the ones the next follows.
+    pub fn commit(&mut self) {
+        self.last.extend(std::mem::take(&mut self.pending));
+    }
+}
+
+/// How far `p` lies from the closed loop.
+fn distance_to_loop(loop_: &[Point], p: Point) -> f64 {
+    (0..loop_.len())
+        .map(|k| {
+            let (a, b) = (at(loop_, k), at(loop_, k + 1));
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let length2 = d[0] * d[0] + d[1] * d[1];
+            let t = if length2 > 0.0 {
+                (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / length2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            dist(p, [a[0] + t * d[0], a[1] + t * d[1]])
+        })
+        .fold(f64::MAX, f64::min)
 }
 
 fn at(loop_: &[Point], k: usize) -> Point {
@@ -62,18 +97,29 @@ fn depth(loop_: &[Point], k: usize, width: f64) -> f64 {
     ((b[0] - a[0]) * (v[1] - a[1]) - (b[1] - a[1]) * (v[0] - a[0])) / chord
 }
 
+/// The rounding of the depths' sums, in mm: depths closer than this are equal. A small round hole
+/// has all its vertices equally deep, and which of them rounding put higher must not decide.
+const ROUNDING_MM: f64 = 1e-9;
+
 /// The concave corners of a loop with material on its left, as vertex indices.
 ///
 /// A vertex is concave when the loop, within its own bead width `width` of it, strays from its
 /// chord on the material's side by more than the printer's resolution `resolution`: a corner is
 /// where the wall turns sharper than the printer can tell from a curve, a fillet tighter than
 /// about `width² / (8 resolution)` (1.7 mm on the X2D). Of consecutive concave vertices, only
-/// the tip of the corner, where the strays peak, is kept.
+/// the tips of the corner, where the strays peak, are kept; where the strays are equal, as round
+/// a small hole, all of them are.
 fn concave_corners(loop_: &[Point], width: f64, resolution: f64) -> Vec<usize> {
     let depths: Vec<f64> = (0..loop_.len()).map(|k| depth(loop_, k, width)).collect();
     let n = depths.len();
     let get = |k: usize| depths.get(k % n.max(1)).copied().unwrap_or(0.0);
-    (0..n).filter(|&k| get(k) > resolution && get(k) > get(k + n - 1) && get(k) >= get(k + 1)).collect()
+    (0..n)
+        .filter(|&k| {
+            get(k) > resolution
+                && get(k) >= get(k + n - 1) - ROUNDING_MM
+                && get(k) >= get(k + 1) - ROUNDING_MM
+        })
+        .collect()
 }
 
 /// The index of the vertex a loop with material on its left starts at, for a seam near
