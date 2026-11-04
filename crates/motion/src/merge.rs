@@ -5,9 +5,10 @@
 //! program after another, each next the one nearest where the last ended. Each program's moves
 //! expect the filament as that program left it, pulled back so far: where the piece before
 //! left it otherwise, the difference is pushed or pulled in place first. A layer is as thick as
-//! the step from the one below it, and bent where any of its pieces is: their reliefs add up,
-//! side by side on the plate, when they lie on one grid; a piece on another grid keeps its own
-//! bend out of the layer, and its beads then fail verification.
+//! the step from the one below it, and bent where any of its pieces is: their reliefs add up
+//! when they lie on the same triangles or apart on the plate; a piece whose triangles overlap
+//! another's otherwise keeps its own bend out of the layer, and its beads then fail
+//! verification.
 
 use crate::{Layer, Move, Program};
 use layercraft_geom::Relief;

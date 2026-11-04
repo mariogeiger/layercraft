@@ -268,6 +268,28 @@ fn bounds_of(sections: &Sections, lo: [f64; 2], hi: [f64; 2]) -> (f64, f64, f64)
     (thin, thick, steep)
 }
 
+/// The most a leaf linear on a triangle can lean, per unit of the bound along its edges: the
+/// secant of half its largest angle.
+fn lean_bound([a, b, c]: [[f64; 2]; 3]) -> f64 {
+    let angle = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        let (u, v) = ([q[0] - p[0], q[1] - p[1]], [r[0] - p[0], r[1] - p[1]]);
+        (u[0] * v[1] - u[1] * v[0]).abs().atan2(u[0] * v[0] + u[1] * v[1])
+    };
+    let largest = angle(a, b, c).max(angle(b, c, a)).max(angle(c, a, b));
+    1.0 / (largest / 2.0).cos()
+}
+
+/// The steepest any layer leans over its own bound, the slope times its triangle's lean bound.
+fn steepest_lean(sections: &Sections, slope: f64) -> f64 {
+    let mut worst = 0.0f64;
+    for l in &sections.layers {
+        for (corners, g) in l.warp.facets() {
+            worst = worst.max(g[0].hypot(g[1]) / (slope * lean_bound(corners)));
+        }
+    }
+    worst
+}
+
 #[test]
 fn bent_layers_follow_a_sloped_top_exactly() {
     // A wedge rising 2 mm over 10 mm, 11.3°, and a gable roof of 8.5° each way.
@@ -283,55 +305,109 @@ fn bent_layers_follow_a_sloped_top_exactly() {
         let sections = section(&mesh, &bent()).unwrap();
         assert_eq!((sections.open_chains, sections.unsplit_cells), (0, 0), "{name}");
         assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
-        // The highest layer over each point tops out on the surface itself, away from the
-        // ridge; across it, within the grid's rounding of a crease: a cell times the change of
-        // slope, over four.
+        // The highest layer over each point tops out on the surface itself, the ridge included:
+        // the leaves bend along it, but for the lattice their corners lie on, a nanometre.
         for p in [[0.7, 0.4], [2.3, 4.1], [3.9, 7.6], [6.1, 2.2], [9.6, 7.7], [4.95, 3.3], [5.0, 6.0]] {
             let (z, layer) = top_at(&sections, p).unwrap();
             let off = (z - top(p[0], p[1])).abs();
-            let near_ridge = name == "gable" && (p[0] - 5.0).abs() < 0.5 * std::f64::consts::SQRT_2;
-            let bound = if near_ridge { 0.5 * 0.3 / 4.0 } else { 1e-9 };
-            assert!(off <= bound, "{name} at {p:?}: layer {layer} tops at {z}, {off} off");
+            assert!(off <= 0.3 * GRID_MM, "{name} at {p:?}: layer {layer} tops at {z}, {off} off");
         }
-        let (thin, thick, steep) = bounds_of(&sections, [0.0, 0.0], [10.0, 8.0]);
+        let (thin, thick, _) = bounds_of(&sections, [0.0, 0.0], [10.0, 8.0]);
         assert!(thin >= 0.1 - 1e-9 && thick <= 0.3 + 1e-9, "{name}: slabs {thin} to {thick} mm");
-        // Along the grid's sides and diagonals a leaf leans at most tan 20°; across a triangle,
-        // where two of them disagree, √2 times that.
-        assert!(
-            steep <= 20f64.to_radians().tan() * std::f64::consts::SQRT_2 + 1e-9,
-            "{name}: a leaf leans {steep}"
-        );
+        // Between neighbouring corners a leaf leans at most tan 20°; across a triangle, where its
+        // edges disagree, by the secant of half its largest angle more.
+        let lean = steepest_lean(&sections, 20f64.to_radians().tan());
+        assert!(lean <= 1.0 + 1e-9, "{name}: a leaf leans {lean} times its bound");
         let v = filled(&sections, [0.0, 0.0], [10.0, 8.0], 0.05);
         assert!((v - volume).abs() < 2e-3 * volume, "{name}: the layers fill {v} mm³ of {volume}");
     }
 }
 
+/// The mesh turned by `angle` about the origin, mirrored first across the x axis when `mirror`.
+fn turned(mesh: &Mesh, angle: f64, mirror: bool) -> Mesh {
+    let (c, s) = (angle.cos(), angle.sin());
+    let mut out = mesh.clone();
+    for body in &mut out.bodies {
+        for v in &mut body.vertices {
+            let y = if mirror { -v[1] } else { v[1] };
+            *v = [c * v[0] - s * y, s * v[0] + c * y, v[2]];
+        }
+        if mirror {
+            body.triangles.iter_mut().for_each(|t| t.swap(1, 2));
+        }
+    }
+    out
+}
+
+#[test]
+fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
+    let mesh = Mesh {
+        bodies: vec![height_field("gable", [0.0, 0.0], [10.0, 8.0], 10, |x, _| 4.0 - 0.15 * (x - 5.0).abs())],
+        ..Mesh::default()
+    };
+    let sections = section(&mesh, &bent()).unwrap();
+    for (angle, mirror) in [(37f64, false), (110f64, true)] {
+        let (c, s) = (angle.to_radians().cos(), angle.to_radians().sin());
+        let map = |p: [f64; 2]| {
+            let y = if mirror { -p[1] } else { p[1] };
+            [c * p[0] - s * y, s * p[0] + c * y]
+        };
+        let other = section(&turned(&mesh, angle.to_radians(), mirror), &bent()).unwrap();
+        assert_eq!(other.layers.len(), sections.layers.len());
+        assert_eq!(other.unsplit_cells, 0);
+        // Every leaf, at every point, a micrometre's rounding apart at most.
+        let mut worst = 0.0f64;
+        let mut at_worst = (0, [0.0; 2], 0.0, 0.0);
+        for (a, b) in sections.layers.iter().zip(&other.layers) {
+            for j in 0..=32 {
+                for i in 0..=40 {
+                    let p = [-1.0 + 12.0 * i as f64 / 40.0, -1.0 + 10.0 * j as f64 / 32.0];
+                    let d = (a.warp.at(p) - b.warp.at(map(p))).abs();
+                    if d > worst {
+                        worst = d;
+                        at_worst = (a.index, p, a.warp.at(p), b.warp.at(map(p)));
+                    }
+                }
+            }
+            let area = |l: &Layer| layercraft_geom::area(&l.region);
+            assert!((area(a) - area(b)).abs() < 1e-3 * area(a).max(1.0), "layer {}", a.index);
+        }
+        assert!(
+            worst < 1e-5,
+            "turned {angle}°, mirrored {mirror}: the leaves differ by {worst} mm at {at_worst:?}"
+        );
+    }
+}
+
 /// How far, at worst, the leaf below stands above the nozzle's flat face, of radius `face`,
-/// printing each layer: over the face's disc about points of the rectangle, every vertex of the
-/// leaves' grid and a point inside each of its cells.
+/// printing each layer: over the face's disc about points of the rectangle, every corner of the
+/// leaves' triangles and a point inside each.
 fn face_contact(sections: &Sections, lo: [f64; 2], hi: [f64; 2], face: f64) -> f64 {
-    let grid = sections.layers.iter().find(|l| !l.warp.is_zero()).unwrap().warp.grid;
-    let [i0, j0] = grid.coords(lo).map(|c| c.floor() as i64);
-    let [i1, j1] = grid.coords(hi).map(|c| c.ceil() as i64);
     let mut worst = f64::NEG_INFINITY;
+    let inside = |p: [f64; 2]| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
     for pair in sections.layers.windows(2) {
         let (below, layer) = (&pair[0], &pair[1]);
         if below.warp.is_zero() && layer.warp.is_zero() {
             continue;
         }
-        for j in j0..=j1 {
-            for i in i0..=i1 {
-                for [a, b] in [[0.0, 0.0], [0.62, 0.29]] {
-                    let v = grid.vertex(i, j);
-                    let x = [v[0] + a * grid.cell, v[1] + b * grid.cell];
-                    let tip = layer.top + layer.warp.at(x);
-                    for r in [face, face / 2.0] {
-                        for k in 0..64 {
-                            let phi = k as f64 * std::f64::consts::TAU / 64.0;
-                            let y = [x[0] + r * phi.cos(), x[1] + r * phi.sin()];
-                            worst = worst.max(below.top + below.warp.at(y) - tip);
-                        }
-                    }
+        let mut samples: Vec<[f64; 2]> = Vec::new();
+        for warp in [&below.warp, &layer.warp] {
+            for (c, _) in warp.facets() {
+                samples.extend(c);
+                let w = [0.62, 0.29, 0.09];
+                samples.push([
+                    w[0] * c[0][0] + w[1] * c[1][0] + w[2] * c[2][0],
+                    w[0] * c[0][1] + w[1] * c[1][1] + w[2] * c[2][1],
+                ]);
+            }
+        }
+        for x in samples.into_iter().filter(|&p| inside(p)) {
+            let tip = layer.top + layer.warp.at(x);
+            for r in [face, face / 2.0] {
+                for k in 0..64 {
+                    let phi = k as f64 * std::f64::consts::TAU / 64.0;
+                    let y = [x[0] + r * phi.cos(), x[1] + r * phi.sin()];
+                    worst = worst.max(below.top + below.warp.at(y) - tip);
                 }
             }
         }
@@ -372,45 +448,120 @@ fn a_leaf_leans_no_more_than_the_ironing_allows() {
         layering.foliation.as_mut().unwrap().ironing = ironing;
         section(&mesh, &layering).unwrap().layers.iter().any(|l| !l.warp.is_zero())
     };
+    // The face's reach as equilateral triangles a cell wide resolve it, at the least.
     let f = bent().foliation.unwrap();
-    let steepest = 0.1 / crate::face::lean(f.cell, f.face_reach);
+    let spread = f.cell * f.cell / 3.0;
+    let steepest = 0.1 / crate::face::reach(f.face_reach, spread, spread);
     assert!(steepest < 0.2 && steepest > 0.1, "{steepest}");
     assert!(bends(0.3) && !bends(0.1));
 }
 
 #[test]
+fn neighbouring_corners_are_bound_by_the_ironing_where_it_binds_tighter_than_the_slope() {
+    // Two triangles of a unit square, a leaf pinned 1 mm down at one corner: it comes back
+    // towards flat along the edge to the next corner by the slope per mm, or by the ironing's
+    // depth over the face's reach there where that is less. A slab thick enough that nothing
+    // binds across the leaves.
+    use crate::envelope::{Bounds, Graph};
+    use crate::face::{Corners, Laps};
+    let points = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let triangles = [[0, 1, 2], [0, 2, 3]];
+    let corners = Corners::new(&points, &triangles, 0.7);
+    let reach = corners.reach(0, 1);
+    for (slope, ironing) in [(0.2, 0.3), (0.36, 0.1)] {
+        let graph = Graph::new(&points, &triangles, &corners, slope, Some(ironing));
+        let laps =
+            Laps { down: 1.0, thin: 0.1, reach: corners.coarsest(), farthest: corners.farthest(), slope };
+        let bounds = Bounds { graph: &graph, corners: &corners, laps, up: 1.0, count: 2 };
+        let leaves = bounds.leaves(points.len(), &[(1, 0, -1.0)]).unwrap();
+        let rise = leaves[1].as_ref().unwrap()[1] + 1.0;
+        let bound = slope.min(ironing / reach);
+        assert!((rise - bound).abs() < 1e-12, "slope {slope}, ironing {ironing}: {rise} for {bound}");
+    }
+    assert!(0.3 / reach > 0.2 && 0.1 / reach < 0.36, "{reach}");
+}
+
+#[test]
 fn under_a_steep_top_the_slab_thickens_only_as_the_face_needs() {
-    // A gable of 16.7° each way: parallel slabs under it must be `0.3 · R` thick, `R` the face's
-    // reach as the grid resolves it, more than a layer; the top still meets the surface.
+    // A gable of 16.7° each way: a slab parallel under it must be thick enough that the bead
+    // below, its reach uphill, stands no higher than the face, `0.3 ρ`, more than a layer; and,
+    // as the triangles resolve the face, as thick as its pairs of corners ask, the same under
+    // every point. The top still meets the surface.
     let layering = bent();
     let f = layering.foliation.as_ref().unwrap();
-    let laps = crate::face::laps(f.cell, f.face_reach, 20f64.to_radians().tan(), 0.1, f.min_layer_height);
-    let need = 0.3 * laps.reach;
-    assert!(need > 0.2 && need < 0.3, "{need}");
+    let least = 0.3 * f.face_reach;
+    assert!(least > 0.2 && least < 0.3, "{least}");
     let top = |x: f64, _: f64| 4.0 - 0.3 * (x - 5.0).abs();
     let mesh =
         Mesh { bodies: vec![height_field("gable", [0.0, 0.0], [10.0, 8.0], 10, top)], ..Mesh::default() };
     let sections = section(&mesh, &layering).unwrap();
+    let mut slabs = Vec::new();
     for p in [[2.3, 4.1], [3.1, 2.6], [6.9, 5.2], [7.7, 3.3]] {
         let (z, layer) = top_at(&sections, p).unwrap();
-        assert!((z - top(p[0], p[1])).abs() <= 1e-9, "at {p:?}: layer {layer} tops at {z}");
+        assert!((z - top(p[0], p[1])).abs() <= 0.3 * GRID_MM, "at {p:?}: layer {layer} tops at {z}");
         let below = &sections.layers[layer - 1];
-        let slab = z - (below.top + below.warp.at(p));
-        assert!((slab - need).abs() <= 1e-9, "at {p:?}: the slab under the top is {slab} mm, not {need}");
+        slabs.push(z - (below.top + below.warp.at(p)));
+    }
+    for slab in &slabs {
+        assert!(*slab >= least - 1e-9 && *slab <= 0.3 + 1e-9, "the slab under the top is {slab} mm");
+        assert!((slab - slabs[0]).abs() <= 1e-9, "the slabs under the top differ: {slabs:?}");
     }
 }
 
 #[test]
 fn refining_keeps_the_mesh_closed_and_its_volume() {
+    // A tilted wedge under triangles half a millimetre wide over a turned square, a few large
+    // ones round it out past the mesh, every edge of the mesh crossing theirs at a slant.
     let mesh = Mesh {
         bodies: vec![height_field("wedge", [0.0, 0.0], [10.0, 8.0], 7, |x, y| 3.0 + 0.2 * x - 0.05 * y)],
         ..Mesh::default()
     };
-    let grid = layercraft_geom::Grid { origin: [-0.37, 0.21], cell: 0.5 };
-    let lines = layercraft_geom::Lines { levels: [[-2, 30], [-5, 25], [-40, 40]] };
-    let (refined, failed) = refine(&mesh, &grid, &lines, [-1.0, 10.0]);
-    assert_eq!(failed, 0);
-    assert!(refined.bodies[0].triangles.len() > 10 * mesh.bodies[0].triangles.len());
-    assert!(closed(&refined.bodies[0]));
-    assert!((refined.volume() - mesh.volume()).abs() < 1e-9 * mesh.volume());
+    let (c, s) = (0.3f64.cos(), 0.3f64.sin());
+    let square: Vec<[f64; 2]> = [[-3.0, -3.0], [3.0, -3.0], [3.0, 3.0], [-3.0, 3.0]]
+        .iter()
+        .map(|p| [5.0 + c * p[0] - s * p[1], 4.0 + s * p[0] + c * p[1]])
+        .collect();
+    let inner = layercraft_geom::union_contours(&[square]).unwrap();
+    let cover =
+        layercraft_geom::union_contours(&[vec![[-2.0, -2.0], [12.0, -2.0], [12.0, 10.0], [-2.0, 10.0]]])
+            .unwrap();
+    let outer = difference(&cover, &inner).unwrap();
+    let t = layercraft_geom::triangulate_evenly(&[(inner, true), (outer, false)], 0.5).unwrap();
+    let split = t.cells.iter().take_while(|&&c| c == 0).count();
+    let net = crate::trace::Net::new(&t.points, &t.triangles, split).unwrap();
+    let refined = crate::refine::refine(&mesh, &net, [[0.0, 0.0], [10.0, 8.0]], [-1.0, 10.0]);
+    assert_eq!(refined.unsplit, 0);
+    let body = &refined.mesh.bodies[0];
+    assert!(body.triangles.len() > 10 * mesh.bodies[0].triangles.len());
+    assert!(closed(body));
+    assert!((refined.mesh.volume() - mesh.volume()).abs() < 1e-9 * mesh.volume());
+    // Each new triangle lies over one of the triangles: its corners' places name its corners.
+    let own: std::collections::HashSet<[u32; 3]> = t
+        .triangles
+        .iter()
+        .map(|&tri| {
+            let mut s = tri;
+            s.sort_unstable();
+            s
+        })
+        .collect();
+    let flat = |v: u32| [body.vertices[v as usize][0], body.vertices[v as usize][1]];
+    for tri in &body.triangles {
+        // A steep triangle's shadow is a segment, its centre on it but for rounding: a leaf cuts
+        // it along that segment however it bends there.
+        let [a, b, c] = [flat(tri[0]), flat(tri[1]), flat(tri[2])];
+        let twice = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        if twice.abs() <= 1e-12 {
+            continue;
+        }
+        let mut corners: Vec<u32> = tri.iter().flat_map(|&v| refined.places[0][v as usize].named()).collect();
+        corners.sort_unstable();
+        corners.dedup();
+        let fits = match corners.as_slice() {
+            [a, b, c] => own.contains(&[*a, *b, *c]),
+            [a, b] => own.iter().any(|t| t.contains(a) && t.contains(b)),
+            _ => corners.len() < 3,
+        };
+        assert!(fits, "a triangle over corners {corners:?}");
+    }
 }

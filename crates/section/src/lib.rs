@@ -3,27 +3,34 @@
 //! A layer is the slab between two leaves (`foliate`): flat planes, unless the layering bends
 //! them to follow the solid's gently sloped top surfaces. Each layer is cut at its middle, the
 //! surface halfway between its bottom and top. A plane `z = h` cuts a triangle along a segment
-//! whose ends lie on two of its edges; a bent leaf does too once the mesh is cut along the grid
-//! its leaves bend on (`refine`). A vertex exactly on the surface counts as above it (symbolic
-//! perturbation), so every crossing edge is cut exactly once and the two triangles sharing it
-//! meet at the same point: segments stitch into closed loops with no tolerance. Oriented by the
-//! outward normals, the loops wind once around the solid's inside; the layer region is the set
-//! of positive winding number, which also merges overlapping bodies and absorbs non-manifold
-//! edges. With several materials, each one's bodies are cut alone as well; where they overlap,
-//! the material listed later is printed, so the materials' sections partition the layer's.
+//! whose ends lie on two of its edges; a bent leaf does too once the mesh is cut along the
+//! triangles its leaves are linear on (`refine`). A vertex exactly on the surface counts as
+//! above it (symbolic perturbation), so every crossing edge is cut exactly once and the two
+//! triangles sharing it meet at the same point: segments stitch into closed loops with no
+//! tolerance. Oriented by the outward normals, the loops wind once around the solid's inside;
+//! the layer region is the set of positive winding number, which also merges overlapping bodies
+//! and absorbs non-manifold edges. With several materials, each one's bodies are cut alone as
+//! well; where they overlap, the material listed later is printed, so the materials' sections
+//! partition the layer's.
 
 mod cut;
+mod envelope;
 mod face;
 mod foliate;
 mod patches;
 mod refine;
+mod trace;
+mod triangulation;
 
 pub use cut::{Cut, section_loops};
 pub use foliate::Foliation;
-pub use refine::refine;
 
-use layercraft_geom::{GeomError, Region, Relief, difference, union, winding_region};
-use layercraft_mesh::Mesh;
+use crate::cut::section_over;
+use crate::foliate::Leaves;
+use crate::refine::refine;
+use crate::trace::Net;
+use layercraft_geom::{Carrier, GeomError, Region, Relief, difference, union, winding_region};
+use layercraft_mesh::{Body, Mesh};
 use serde::{Deserialize, Serialize};
 
 /// The largest number of layers a print may have.
@@ -76,7 +83,8 @@ pub struct Sections {
     /// The widest crack a section was closed across, in mm.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub widest_crack: f64,
-    /// Cells of the mesh its grid could not split (`refine`).
+    /// Triangles of the mesh the leaves' triangles could not cut, fanned whole instead
+    /// (`refine`).
     #[serde(default)]
     pub unsplit_cells: usize,
 }
@@ -119,66 +127,91 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
     let [lo, hi] = mesh.bounds().ok_or(SectionError::EmptyMesh)?;
     let slabs = layer_slabs(layering, hi[2] - lo[2].min(0.0))?;
     let tops: Vec<f64> = slabs.iter().map(|s| s.0).collect();
-    let warps = match &layering.foliation {
+    let leaves = match &layering.foliation {
         Some(f) => foliate::foliate(mesh, &tops, layering.layer_height, f)?,
-        None => Vec::new(),
+        None => Leaves::default(),
     };
-    // Each layer's middle: halfway between the layer below's top, or the bed, and its own.
-    let mut middles: Vec<Relief> = Vec::with_capacity(slabs.len());
-    for (k, warp) in warps.iter().enumerate() {
-        middles.push(match k.checked_sub(1).and_then(|b| warps.get(b)) {
-            Some(below) => Relief::combine(below, warp, |a, b| (a + b) / 2.0)?,
-            None => Relief::combine(warp, warp, |a, _| a / 2.0)?,
-        });
-    }
-    // The mesh cut once along the lines every bent middle bends on, over the heights they reach.
-    let mut lines = None;
-    let mut reach = [f64::INFINITY, f64::NEG_INFINITY];
-    for ((top, height), middle) in slabs.iter().zip(&middles) {
-        let Some(l) = middle.lines() else { continue };
-        let [dlo, dhi] = middle.range();
-        reach = [reach[0].min(top - height / 2.0 + dlo), reach[1].max(top - height / 2.0 + dhi)];
-        lines = Some(lines.map_or(l, |m: layercraft_geom::Lines| m.union(l)));
-    }
-    let (refined, unsplit_cells) = match (lines, middles.first()) {
-        (Some(lines), Some(m)) => {
-            let (refined, failed) = refine(mesh, &m.grid, &lines, reach);
-            (Some(refined), failed)
+    let t = &leaves.triangulation;
+    let inner = t.triangles.get(..t.inner).unwrap_or(&[]);
+    // Each layer's top, a relief on the bent triangles, which every bent leaf shares and comes
+    // back to flat along the edge of.
+    let carrier = Carrier::new(t.points.clone(), inner.to_vec())?;
+    let warps = leaves
+        .values
+        .into_iter()
+        .map(|leaf| leaf.map_or(Ok(Relief::zero()), |values| carrier.relief(values)))
+        .collect::<Result<Vec<Relief>, GeomError>>()?;
+    // Each layer's middle at their corners, where bent: halfway between the top of the layer
+    // below, or the bed, and its own.
+    let middle = |k: usize| -> Option<Vec<f64>> {
+        let (below, own) = (k.checked_sub(1).and_then(|j| warps.get(j)), warps.get(k));
+        if below.is_none_or(Relief::is_zero) && own.is_none_or(Relief::is_zero) {
+            return None;
         }
-        _ => (None, 0),
+        let value = |r: Option<&Relief>, i: usize| r.and_then(|r| r.values().get(i)).copied().unwrap_or(0.0);
+        let m: Vec<f64> = (0..t.points.len()).map(|i| (value(below, i) + value(own, i)) / 2.0).collect();
+        m.iter().any(|&v| v != 0.0).then_some(m)
     };
-    // Each material's bodies, alone, when there are several.
-    let materials = mesh.materials.len();
-    let alone = |mesh: &Mesh, k: usize| Mesh {
-        bodies: mesh.bodies.iter().filter(|b| b.material == k).cloned().collect(),
-        materials: Vec::new(),
-    };
-    let apart: Vec<(Mesh, Option<Mesh>)> = if materials > 1 {
-        (0..materials).map(|k| (alone(mesh, k), refined.as_ref().map(|r| alone(r, k)))).collect()
+    // The mesh cut once along the bent triangles, over the heights the bent middles reach.
+    let mut heights = [f64::INFINITY, f64::NEG_INFINITY];
+    for (k, &(top, height)) in slabs.iter().enumerate() {
+        let Some(m) = middle(k) else { continue };
+        let [dlo, dhi] = m.iter().fold([0.0f64; 2], |[lo, hi], &v| [lo.min(v), hi.max(v)]);
+        let h = top - height / 2.0;
+        heights = [heights[0].min(h + dlo), heights[1].max(h + dhi)];
+    }
+    let refined = if heights[0] <= heights[1] {
+        let net = Net::new(&t.points, &t.triangles, t.inner)?;
+        let mut area = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
+        for p in inner.iter().flatten().filter_map(|&i| t.points.get(i as usize)) {
+            area =
+                [[area[0][0].min(p[0]), area[0][1].min(p[1])], [area[1][0].max(p[0]), area[1][1].max(p[1])]];
+        }
+        Some(refine(mesh, &net, area, heights))
     } else {
-        Vec::new()
+        None
     };
-    let mut layers = Vec::new();
+    let materials = mesh.materials.len();
+    let mut layers = Vec::with_capacity(slabs.len());
     let (mut open_chains, mut widest_crack) = (0, 0.0_f64);
     for (index, (top, height)) in slabs.into_iter().enumerate() {
         let h = top - height / 2.0;
-        let middle = middles.get(index).filter(|m| !m.is_zero());
-        let cut = |mesh: &Mesh, refined: Option<&Mesh>| match (middle, refined) {
-            (Some(m), Some(refined)) => section_loops(refined, |v| h + m.at([v[0], v[1]])),
-            _ => section_loops(mesh, |_| h),
+        // Each body's vertices' heights over the layer's middle.
+        let (bodies, over): (&[Body], Vec<Vec<f64>>) = match (middle(index), &refined) {
+            (Some(m), Some(r)) => (
+                &r.mesh.bodies,
+                r.mesh
+                    .bodies
+                    .iter()
+                    .zip(&r.places)
+                    .map(|(b, p)| {
+                        b.vertices.iter().zip(p).map(|(v, place)| v[2] - h - place.value(&m)).collect()
+                    })
+                    .collect(),
+            ),
+            _ => (
+                &mesh.bodies,
+                mesh.bodies.iter().map(|b| b.vertices.iter().map(|v| v[2] - h).collect()).collect(),
+            ),
         };
-        let whole = cut(mesh, refined.as_ref());
+        let cut = |material: Option<usize>| {
+            let chosen = bodies.iter().zip(&over).filter(|(b, _)| material.is_none_or(|k| b.material == k));
+            section_over(chosen.map(|(b, o)| (b, o.as_slice())))
+        };
+        let whole = cut(None);
         open_chains += whole.open;
         widest_crack = widest_crack.max(whole.widest_gap);
         // Later materials win where bodies overlap: each keeps what no later one covers.
-        let mut parts: Vec<Region> = Vec::with_capacity(apart.len());
-        let mut later: Region = Vec::new();
-        for (mesh, refined) in apart.iter().rev() {
-            let own = winding_region(&cut(mesh, refined.as_ref()).loops)?;
-            parts.push(difference(&own, &later)?);
-            later = union(&later, &own)?;
+        let mut parts: Vec<Region> = Vec::new();
+        if materials > 1 {
+            let mut later: Region = Vec::new();
+            for k in (0..materials).rev() {
+                let own = winding_region(&cut(Some(k)).loops)?;
+                parts.push(difference(&own, &later)?);
+                later = union(&later, &own)?;
+            }
+            parts.reverse();
         }
-        parts.reverse();
         let warp = warps.get(index).cloned().unwrap_or_default();
         layers.push(Layer {
             index,
@@ -189,6 +222,7 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
             materials: parts,
         });
     }
+    let unsplit_cells = refined.map_or(0, |r| r.unsplit);
     Ok(Sections { layers, open_chains, widest_crack, unsplit_cells })
 }
 

@@ -55,9 +55,6 @@ const ALWAYS_CROSS: f64 = 1e12;
 /// The mean slope under which a piece counts as flat: a degree.
 const FLAT_SLOPE: f64 = 0.017_455_064_928_217_585;
 
-/// The samples of a piece's slope along each side of its box.
-const SLOPE_SAMPLES: usize = 24;
-
 /// The family of curves a cell's beads follow.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Family {
@@ -483,29 +480,36 @@ fn families(cells: &[Cell], host: &[usize], components: &[Component]) -> Vec<Vec
 }
 
 /// The direction of the fall line of `warp` over `piece`, in degrees, when its mean slope there is
-/// past `FLAT_SLOPE`. Slopes are averaged as axes, each gradient `g` at angle `φ` adding
-/// `|g|²·(cos 2φ, sin 2φ)`, so that the two sides of a ridge agree on their line.
+/// past `FLAT_SLOPE`. Slopes are averaged as axes over the relief's triangles whose centre lies
+/// in the piece, each weighed by its area, its gradient `g` at angle `φ` adding
+/// `|g|²·(cos 2φ, sin 2φ)`, so that the two sides of a ridge agree on their line; a piece
+/// holding no triangle's centre takes the gradient at its own.
 pub(crate) fn fall_line(piece: &Region, warp: &Relief) -> Option<f64> {
     if warp.is_zero() {
         return None;
     }
     let [lo, hi] = bounds(piece)?;
     let edges: Vec<(Point, Point)> = piece.iter().flatten().flat_map(|c| edges(c)).collect();
-    let (mut axis, mut slope, mut n) = ([0.0f64; 2], 0.0, 0usize);
-    for j in 0..SLOPE_SAMPLES {
-        for i in 0..SLOPE_SAMPLES {
-            let f = |k: usize| (k as f64 + 0.5) / SLOPE_SAMPLES as f64;
-            let p = [lo[0] + (hi[0] - lo[0]) * f(i), lo[1] + (hi[1] - lo[1]) * f(j)];
-            if !encloses(edges.iter().copied(), p) {
-                continue;
-            }
-            let g = warp.gradient(p);
-            axis = [axis[0] + g[0] * g[0] - g[1] * g[1], axis[1] + 2.0 * g[0] * g[1]];
-            slope += g[0].hypot(g[1]);
-            n += 1;
-        }
+    let mut samples: Vec<([f64; 2], f64)> = warp
+        .facets_over(lo, hi)
+        .filter(|([a, b, c], _)| {
+            encloses(edges.iter().copied(), [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0])
+        })
+        .map(|([a, b, c], g)| {
+            (g, ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0)
+        })
+        .collect();
+    if samples.is_empty() {
+        let centre = Moments::of(piece.iter().map(|s| (s.as_slice(), 1.0)))?.centroid;
+        samples.push((warp.gradient(centre), 1.0));
     }
-    (n > 0 && slope / n as f64 > FLAT_SLOPE).then(|| axis[1].atan2(axis[0]).to_degrees() / 2.0)
+    let (mut axis, mut slope, mut weight) = ([0.0f64; 2], 0.0, 0.0);
+    for (g, w) in samples {
+        axis = [axis[0] + w * (g[0] * g[0] - g[1] * g[1]), axis[1] + w * 2.0 * g[0] * g[1]];
+        slope += w * g[0].hypot(g[1]);
+        weight += w;
+    }
+    (weight > 0.0 && slope / weight > FLAT_SLOPE).then(|| axis[1].atan2(axis[0]).to_degrees() / 2.0)
 }
 
 /// An inset of an area `d` deep: the region past its bead, `d + w/2` deep, and the region it

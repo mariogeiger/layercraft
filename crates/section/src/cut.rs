@@ -2,8 +2,8 @@
 //!
 //! Each vertex lies above the surface or not by the sign of its height over it, `z − level`, a
 //! number of the vertex alone. Where that height is linear over a triangle, as for a plane or
-//! for a leaf over a mesh refined along its grid (`refine`), the surface cuts the triangle along
-//! the segment between the points where it crosses two of its edges. A mesh with cracks, where
+//! for a leaf over a mesh refined along the leaves' triangles (`refine`), the surface cuts the
+//! triangle along the segment between the points where it crosses two of its edges. A mesh with cracks, where
 //! the two faces along a seam are cut into different edges, leaves chains that stop at the crack;
 //! they are joined end to start across it, the shortest gaps first.
 
@@ -88,11 +88,17 @@ fn crossing(body: &Body, over: &[f64], a: u32, b: u32) -> Option<Point> {
 
 /// Where the surface `z = level(vertex)` cuts the mesh.
 pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> Cut {
+    let over: Vec<Vec<f64>> =
+        mesh.bodies.iter().map(|b| b.vertices.iter().map(|&v| v[2] - level(v)).collect()).collect();
+    section_over(mesh.bodies.iter().zip(over.iter().map(Vec::as_slice)))
+}
+
+/// Where a surface cuts the bodies, each given with its vertices' heights over it.
+pub(crate) fn section_over<'a>(bodies: impl IntoIterator<Item = (&'a Body, &'a [f64])>) -> Cut {
     // For each crossing edge: the point, and the segments leaving it.
     let mut points: HashMap<EdgeKey, Point> = HashMap::new();
     let mut next: HashMap<EdgeKey, Vec<EdgeKey>> = HashMap::new();
-    for (bi, body) in mesh.bodies.iter().enumerate() {
-        let over: Vec<f64> = body.vertices.iter().map(|&v| v[2] - level(v)).collect();
+    for (bi, (body, over)) in bodies.into_iter().enumerate() {
         for tri in &body.triangles {
             let Some(g) = tri.iter().map(|&i| over.get(i as usize).copied()).collect::<Option<Vec<f64>>>()
             else {
@@ -115,7 +121,7 @@ pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> Cut {
                 }
                 let (Some(&a), Some(&b)) = (tri.get(i), tri.get(j)) else { continue };
                 let key = (bi, a.min(b), a.max(b));
-                if let Some(p) = crossing(body, &over, a, b) {
+                if let Some(p) = crossing(body, over, a, b) {
                     points.insert(key, p);
                 }
                 if uj { enter = Some(key) } else { leave = Some(key) }

@@ -218,10 +218,17 @@ fn a_segment_lies_in_a_region_along_its_edge_but_not_across_its_hole() {
     assert!(bands.holds([3.0, 7.0], [5.0, 7.0]), "touching the hole's corner");
 }
 
-/// A field from a function sampled at every vertex of a block.
+/// The vertex `(i, j)` of the grid the sampled fields lie on.
+fn vertex(i: i64, j: i64) -> Point {
+    [0.3 + 0.5 * i as f64, -0.7 + 0.5 * j as f64]
+}
+
+/// A field from a function sampled at every vertex of a block of a regular grid, each square
+/// split by its diagonal, as stage files from before reliefs had triangles of their own held it.
 fn sampled(f: impl Fn(Point) -> f64) -> Relief {
-    let grid = Grid { origin: [0.3, -0.7], cell: 0.5 };
-    Relief::from_fn(grid, [-4, -3], [9, 8], |i, j| f(grid.vertex(i, j)))
+    let values: Vec<f64> =
+        (-3..5).flat_map(|j| (-4..5).map(move |i| (i, j))).map(|(i, j)| f(vertex(i, j))).collect();
+    Relief::from_grid([0.3, -0.7], 0.5, [-4, -3], [9, 8], &values).unwrap()
 }
 
 #[test]
@@ -233,12 +240,12 @@ fn a_field_is_linear_on_each_triangle_and_continuous() {
         let g = plane.gradient(p);
         assert!(close(g[0], 0.2) && close(g[1], -0.1), "{g:?}");
     }
-    // A bump: values at vertices, zero far away, continuous across every kind of line.
+    // A bump: values at vertices, zero far away, continuous across every kind of edge.
     let bump = sampled(|p| (1.0 - p[0].hypot(p[1]) / 2.0).max(0.0));
-    let v = bump.grid.vertex(1, 1);
+    let v = vertex(1, 1);
     assert!(close(bump.at(v), (1.0 - v[0].hypot(v[1]) / 2.0).max(0.0)));
     assert_eq!(bump.at([40.0, 40.0]), 0.0);
-    let c = bump.grid.vertex(0, 0);
+    let c = vertex(0, 0);
     for d in [[0.2, 0.0], [0.0, 0.2], [0.13, 0.13], [0.2, 0.2]] {
         let p = [c[0] + d[0], c[1] + d[1]];
         let eps = [1e-9, -1e-9];
@@ -247,23 +254,71 @@ fn a_field_is_linear_on_each_triangle_and_continuous() {
     }
 }
 
+/// Triangles of no regular grid, moved `shift` mm along x: a fan about `(1, 1)` inside a ring
+/// of triangles out to the corners from the sixth on.
+fn fan(shift: f64) -> (Vec<Point>, Vec<[u32; 3]>) {
+    let points = [
+        [1.0, 1.0],
+        [2.4, 0.9],
+        [1.6, 2.3],
+        [-0.1, 1.4],
+        [0.6, -0.4],
+        [3.9, -0.9],
+        [4.4, 2.6],
+        [2.2, 3.9],
+        [-1.3, 2.9],
+        [-1.6, -0.2],
+        [0.9, -1.9],
+    ];
+    let triangles = vec![
+        [0, 1, 2],
+        [0, 2, 3],
+        [0, 3, 4],
+        [0, 4, 1],
+        [1, 5, 6],
+        [1, 6, 2],
+        [2, 6, 7],
+        [2, 7, 8],
+        [2, 8, 3],
+        [3, 8, 9],
+        [3, 9, 4],
+        [4, 9, 10],
+        [4, 10, 5],
+        [4, 5, 1],
+    ];
+    (points.into_iter().map(|p: Point| [p[0] + shift, p[1]]).collect(), triangles)
+}
+
+/// A relief on the fan moved `shift` mm along x, zero on its outer corners.
+fn irregular(shift: f64) -> Relief {
+    let (points, triangles) = fan(shift);
+    let mut values = vec![0.7, 0.3, -0.2, 0.1, 0.25];
+    values.resize(points.len(), 0.0);
+    Relief::new(points, triangles, values).unwrap()
+}
+
 #[test]
 fn a_field_is_linear_between_its_breaks() {
     let bump = sampled(|p| (1.0 - p[0].hypot(p[1]) / 2.0).max(0.0) * 0.7);
-    let (a, b) = ([-3.0, -2.2], [2.7, 1.9]);
-    let at = |t: f64| bump.at([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
-    let mut ts = vec![0.0];
-    ts.extend(bump.breaks(a, b));
-    ts.push(1.0);
-    assert!(ts.len() > 10, "{ts:?}");
-    for w in ts.windows(2) {
-        assert!(w[0] < w[1]);
-        let (m, e) = ((w[0] + w[1]) / 2.0, (at(w[0]) + at(w[1])) / 2.0);
-        assert!((at(m) - e).abs() < 1e-12, "bent inside [{}, {}]", w[0], w[1]);
+    for field in [bump, irregular(0.0)] {
+        for (a, b) in [([-3.0, -2.2], [2.7, 1.9]), ([-1.0, 1.0], [4.0, 1.0]), ([2.2, 2.9], [0.9, -1.6])] {
+            let at = |t: f64| field.at([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
+            let mut ts = vec![0.0];
+            ts.extend(field.breaks(a, b));
+            ts.push(1.0);
+            assert!(ts.len() > 3, "{ts:?}");
+            for w in ts.windows(2) {
+                assert!(w[0] < w[1]);
+                for f in [0.25, 0.5, 0.75] {
+                    let (m, e) = (w[0] + f * (w[1] - w[0]), at(w[0]) + f * (at(w[1]) - at(w[0])));
+                    assert!((at(m) - e).abs() < 1e-12, "bent inside [{}, {}]", w[0], w[1]);
+                }
+            }
+            assert!(close(field.max_along(a, b), ts.iter().map(|&t| at(t)).fold(f64::MIN, f64::max)));
+        }
+        // Far from its triangles the field is flat: no break.
+        assert!(field.breaks([30.0, 30.0], [40.0, 31.0]).is_empty());
     }
-    assert!(close(bump.max_along(a, b), ts.iter().map(|&t| at(t)).fold(f64::MIN, f64::max)));
-    // Far from the block the field is flat: no break.
-    assert!(bump.breaks([30.0, 30.0], [40.0, 31.0]).is_empty());
 }
 
 #[test]
@@ -274,17 +329,121 @@ fn fields_combine_trim_and_check() {
     for p in [[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [0.4, 0.2]] {
         assert!(close(mean.at(p), (one.at(p) + other.at(p)) / 2.0), "{p:?}");
     }
-    let zero = Relief::zero(one.grid);
+    let zero = Relief::zero();
     assert_eq!(Relief::combine(&zero, &zero, |a, b| a + b).unwrap(), zero);
     assert_eq!(Relief::combine(&one, &zero, |a, b| a + b).unwrap(), one);
-    assert!(one.size[0] < 9, "trimmed to its non-zero columns: {:?}", one.size);
-    assert!(one.check().is_ok());
-    let bad = Relief { values: vec![f64::NAN; 4], size: [2, 2], ..one.clone() };
-    assert!(bad.check().is_err());
-    let short = Relief { values: vec![0.0; 3], size: [2, 2], ..one };
-    assert!(short.check().is_err());
+    // Stored, it keeps the triangles where it is not zero: those of the 11 × 10 vertices
+    // widened by a ring of zeros, but for the columns left of x = 0.
+    let kept = serde_json::to_value(&one).unwrap()["points"].as_array().map_or(0, Vec::len);
+    assert!(kept > 0 && kept < 11 * 10, "{kept}");
+    // Reliefs apart on the plate, each on triangles of its own, add up side by side; reliefs on
+    // triangles of their own that overlap do not.
+    let both = Relief::combine(&irregular(0.0), &irregular(20.0), |a, b| a + b).unwrap();
+    for p in [[1.0, 1.0], [21.0, 1.0], [2.0, 0.5], [22.0, 0.5], [11.0, 1.0]] {
+        assert!(close(both.at(p), irregular(0.0).at(p) + irregular(20.0).at(p)), "{p:?}");
+    }
+    assert!(Relief::combine(&irregular(0.0), &irregular(0.5), |a, b| a + b).is_err());
+    // Corners, values and triangles are checked.
+    let square = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let halves = vec![[0, 1, 2], [0, 2, 3]];
+    assert!(Relief::new(square.clone(), halves.clone(), vec![f64::NAN, 0.0, 0.0, 0.0]).is_err());
+    assert!(Relief::new(square.clone(), halves.clone(), vec![0.0; 3]).is_err());
+    assert!(Relief::new(square.clone(), vec![[0, 1, 4]], vec![0.0; 4]).is_err());
+    assert!(Relief::new(square, halves, vec![0.1, 0.0, 0.0, 0.0]).is_err(), "not zero on its outer edge");
     let plane = sampled(|p| 0.25 * p[0]);
     assert!((plane.steepest() - 0.25).abs() < 1e-9 || plane.steepest() > 0.25, "{}", plane.steepest());
+}
+
+#[test]
+fn reliefs_on_one_carrier_behave_as_their_own_triangles_alone() {
+    // The fan carries two reliefs, one not zero on the six triangles about its corner
+    // (1.6, 2.3) alone, one on the six about (0.6, −0.4). Each answers, and is stored, as those
+    // triangles alone: read back on a carrier of its own it is the same, even along the edges
+    // it shares with triangles where it is zero, which bend it nowhere.
+    let (points, triangles) = fan(0.0);
+    let carrier = Carrier::new(points, triangles).unwrap();
+    let peak = |corner: usize, value: f64| {
+        let mut values = vec![0.0; 11];
+        values[corner] = value;
+        carrier.relief(values).unwrap()
+    };
+    let (top, low) = (peak(2, -0.2), peak(4, 0.25));
+    assert_eq!((top.range(), low.range()), ([-0.2, 0.0], [0.0, 0.25]));
+    let alone = |r: &Relief| -> Relief { serde_json::from_str(&serde_json::to_string(r).unwrap()).unwrap() };
+    for relief in [&top, &low] {
+        let own = alone(relief);
+        assert_eq!(&own, relief);
+        assert_eq!((relief.facets().count(), own.facets().count()), (6, 6));
+        // On the edge from (1, 1) to (2.4, 0.9), and inside triangles about it.
+        for p in [[1.7, 0.95], [1.6, 1.3], [1.4, 0.6], [0.2, 2.0], [3.0, 1.0]] {
+            assert_eq!(own.at(p), relief.at(p), "{p:?}");
+            assert_eq!(own.gradient(p), relief.gradient(p), "{p:?}");
+        }
+        for (a, b) in [([-1.0, 1.0], [4.0, 1.0]), ([2.2, 2.9], [0.9, -1.6])] {
+            assert_eq!(own.breaks(a, b), relief.breaks(a, b));
+        }
+        for (lo, hi) in [([-1.0, 0.5], [2.0, 1.5]), ([0.0, -1.0], [3.0, 3.0])] {
+            assert_eq!(own.range_over(lo, hi), relief.range_over(lo, hi));
+        }
+        assert_eq!(own.steepest(), relief.steepest());
+    }
+    assert_ne!(top.gradient([1.7, 0.95]), [0.0, 0.0], "the edge's side where it is not zero");
+    // In across the outer edge from (−1.6, −0.2) to (0.9, −1.9), `top` is zero and flat.
+    let (a, b) = ([-1.5, -0.5], [0.8, -1.7]);
+    assert!(top.breaks(a, b).is_empty() && !low.breaks(a, b).is_empty());
+    // Added on their carrier, or each on its own, they are the same relief.
+    let sum = Relief::combine(&top, &low, |a, b| a + b).unwrap();
+    let apart = Relief::combine(&alone(&top), &alone(&low), |a, b| a + b).unwrap();
+    for p in [[1.0, 1.0], [1.7, 0.95], [0.6, -0.4], [1.6, 2.3], [0.4, 0.9]] {
+        assert!(close(sum.at(p), top.at(p) + low.at(p)) && close(apart.at(p), sum.at(p)), "{p:?}");
+    }
+    // Its values are checked: one at each corner, zero on the rim and off the triangles.
+    assert!(carrier.relief(vec![0.0; 10]).is_err());
+    let mut rim = vec![0.0; 11];
+    rim[5] = 0.1;
+    assert!(carrier.relief(rim).is_err(), "not zero on the rim");
+    let (mut points, triangles) = fan(0.0);
+    points.push([9.0, 9.0]);
+    let spare = Carrier::new(points, triangles).unwrap();
+    let mut off = vec![0.0; 12];
+    assert!(spare.relief(off.clone()).unwrap().is_zero());
+    off[11] = 0.1;
+    assert!(spare.relief(off).is_err(), "not zero off the triangles");
+}
+
+#[test]
+fn a_relief_from_an_older_stage_file_is_its_grid_split_by_diagonals() {
+    let old = r#"{"grid":{"origin":[0.3,-0.7],"cell":0.5},"start":[-1,0],"size":[3,2],"values":[0.1,0.2,0.0,-0.05,0.4,0.3]}"#;
+    let read: Relief = serde_json::from_str(old).unwrap();
+    // The value the older files' grid gave a point: in its square `(i, j)`, on the lower
+    // triangle when `u − i ≥ v − j`.
+    let value = |i: i64, j: i64| -> f64 {
+        let (di, dj) = (i + 1, j);
+        if !(0..3).contains(&di) || !(0..2).contains(&dj) {
+            return 0.0;
+        }
+        [0.1, 0.2, 0.0, -0.05, 0.4, 0.3][(dj * 3 + di) as usize]
+    };
+    let grid_at = |p: Point| {
+        let (u, v) = ((p[0] - 0.3) / 0.5, (p[1] + 0.7) / 0.5);
+        let (i, j) = (u.floor() as i64, v.floor() as i64);
+        let (fu, fv) = (u - i as f64, v - j as f64);
+        let (f00, f11) = (value(i, j), value(i + 1, j + 1));
+        if fu >= fv {
+            let f10 = value(i + 1, j);
+            f00 + fu * (f10 - f00) + fv * (f11 - f10)
+        } else {
+            let f01 = value(i, j + 1);
+            f00 + fv * (f01 - f00) + fu * (f11 - f01)
+        }
+    };
+    for k in 0..200 {
+        let p = [-1.5 + 0.0173 * k as f64, -1.3 + 0.0139 * k as f64];
+        assert!((read.at(p) - grid_at(p)).abs() < 1e-12, "{p:?}: {} vs {}", read.at(p), grid_at(p));
+    }
+    // Written back, it keeps its triangles.
+    let again: Relief = serde_json::from_str(&serde_json::to_string(&read).unwrap()).unwrap();
+    assert_eq!(again, read);
 }
 
 #[test]
@@ -313,6 +472,32 @@ fn a_fields_range_over_a_box_is_exact() {
         assert!(hi >= max - 1e-12 && hi - max <= stray, "{a:?}–{b:?}: {hi} over {max}");
     }
     assert!(close(bump.range_over([-0.11, -1.37], [0.93, -0.02])[1], 1.0));
+}
+
+#[test]
+fn a_point_is_on_one_side_of_a_line_whoever_asks() {
+    // Points within a few units in the last place of the line through two others, where the
+    // plain determinant may give three points named in another order another sign: the exact
+    // one gives them all one side, and zero only on the line.
+    let (a, b) = ([0.5, 0.5], [12.0, 12.0]);
+    let mut seen = [0usize; 3];
+    for k in 0..64 {
+        let x = 0.5 + 0.1 * k as f64;
+        for d in -4i64..=4 {
+            let c = [x, f64::from_bits((x.to_bits() as i64 + d) as u64)];
+            let sign = orientation(a, b, c);
+            assert_eq!(orientation(b, c, a), sign, "{c:?}");
+            assert_eq!(orientation(c, a, b), sign, "{c:?}");
+            assert_eq!(orientation(b, a, c), sign.reverse(), "{c:?}");
+            if d == 0 {
+                assert_eq!(sign, std::cmp::Ordering::Equal, "{c:?} lies on the line y = x");
+            } else {
+                assert_eq!(sign, if d > 0 { std::cmp::Ordering::Greater } else { std::cmp::Ordering::Less });
+            }
+            seen[(sign as i8 + 1) as usize] += 1;
+        }
+    }
+    assert!(seen.iter().all(|&n| n > 0), "{seen:?}");
 }
 
 #[test]
@@ -571,5 +756,61 @@ fn a_bridge_across_a_turned_slab_goes_across_the_turned_slab() {
         let angle = bridge_angle(&region, 0.4, preferred, phase, |_| false).unwrap();
         let across = (turn + 90.0).rem_euclid(180.0);
         assert!((angle - across).abs() < 1e-4, "{turn}°: {angle}° for {across}°");
+    }
+}
+
+#[test]
+fn cells_sharing_edges_are_cut_into_even_triangles_that_meet() {
+    // A 4 × 3 rectangle and a 3 × 2 one against the middle of its right side: the smaller
+    // one's corners lie on the larger one's side, which must pass through them.
+    let cells = |g: &dyn Fn(Point) -> Point, mirror: bool| -> Vec<(Region, bool)> {
+        [rect(0.0, 0.0, 4.0, 3.0), rect(4.0, 0.5, 7.0, 2.5)]
+            .into_iter()
+            .map(|r| {
+                let mut c: Vec<Point> = r.into_iter().map(g).collect();
+                if mirror {
+                    c.reverse();
+                }
+                (union_contours(&[c]).unwrap(), true)
+            })
+            .collect()
+    };
+    let spacing = 0.25;
+    let mesh = triangulate_evenly(&cells(&|p| p, false), spacing).unwrap();
+    let corner = |i: u32| mesh.points[i as usize];
+    let mut uses: std::collections::HashMap<(u32, u32), usize> = Default::default();
+    let (mut total, mut longest) = (0.0, 0.0f64);
+    for t in &mesh.triangles {
+        let [a, b, c] = t.map(corner);
+        let twice = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+        assert!(twice > 0.0, "a triangle turns clockwise: {a:?} {b:?} {c:?}");
+        total += twice / 2.0;
+        for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *uses.entry((p.min(q), p.max(q))).or_default() += 1;
+            longest = longest.max((corner(p)[0] - corner(q)[0]).hypot(corner(p)[1] - corner(q)[1]));
+        }
+    }
+    assert!(close(total, 12.0 + 6.0), "{total}");
+    assert!(uses.values().all(|&n| n <= 2), "an edge with three triangles");
+    // The edges used once run around the two cells together, 4 + 3 + 4 + 3 + 3 + 2 + 3 + … mm.
+    let outline: f64 = uses
+        .iter()
+        .filter(|(_, n)| **n == 1)
+        .map(|(&(p, q), _)| (corner(p)[0] - corner(q)[0]).hypot(corner(p)[1] - corner(q)[1]))
+        .sum();
+    assert!(close(outline, 2.0 * (4.0 + 3.0) + 2.0 * 3.0), "{outline}");
+    assert!(longest <= std::f64::consts::SQRT_2 * spacing + 1e-6, "{longest}");
+    // Turned or mirrored, the cells are cut at the turned or mirrored points.
+    for (angle, mirror) in [(37.0, false), (110.0, true)] {
+        let g = isometry(angle, mirror, [3.0, -5.0]);
+        let there = triangulate_evenly(&cells(&g, mirror), spacing).unwrap();
+        assert_eq!(there.points.len(), mesh.points.len(), "{angle}°");
+        let moved: Vec<Point> = mesh.points.iter().map(|&p| g(p)).collect();
+        let far = there
+            .points
+            .iter()
+            .map(|p| moved.iter().map(|q| (p[0] - q[0]).hypot(p[1] - q[1])).fold(f64::MAX, f64::min))
+            .fold(0.0, f64::max);
+        assert!(far < 1e-4, "{angle}°: a corner {far} mm from where it turned to");
     }
 }

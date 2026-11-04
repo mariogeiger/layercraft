@@ -1,396 +1,529 @@
-//! The mesh cut along the vertical planes through a set of grid lines, so that every field
-//! bending only on those lines is linear on each triangle of the result: a leaf then cuts each
-//! one along a straight segment, as a plane does, and the planar cut applies unchanged.
+//! The mesh cut along the leaves' triangles, so that every leaf is linear on each triangle of
+//! the result: a leaf then cuts each one along a straight segment, as a plane does, and the
+//! planar cut applies unchanged.
 //!
-//! Only triangles that a box of the plate and a band of heights touch are cut. A triangle's
-//! edge is cut where it crosses each line, a point computed once from its lower-numbered end and
-//! shared by every triangle on that edge, so the result stays closed. Inside, the triangle is
-//! split by one line after another into convex cells; a new corner there is where a line meets
-//! a cut made before, a vertex of the grid. Each point lies on a line's upper side when its level
-//! is at least the line's: a triangle's corner by its coordinates, a point on its edge by its
-//! place along that edge, a grid vertex by its exact indices, so every decision is the same
-//! wherever it is taken. A cell is then fanned from its centre into triangles. A cell the rule
-//! cannot split, its corners crossing a line more than twice, which only rounding at a grid
-//! vertex lying on a mesh edge can cause, is left whole and counted.
+//! Only triangles of the mesh over the leaves' bent triangles and within the heights the bent
+//! leaves reach are cut. Each of their edges is walked over the leaves' triangles exactly
+//! (`trace`) and cut where it passes a corner or crosses an edge, each point made once, from the
+//! edge's lower-numbered end, for every triangle sharing it, so the result stays closed. A
+//! triangle of the mesh, its edges so cut, is the union of its parts over the leaves'
+//! triangles: over one, the runs of its boundary that lie in it, joined counterclockwise along
+//! that triangle's edges through its corners between, or the whole triangle when it lies inside;
+//! the triangles inside are found from those its boundary passes through, neighbour to
+//! neighbour. Each part is fanned from its centre. A steep triangle, whose shadow is a segment,
+//! and one whose parts do not add up, which only a gap in the leaves' triangles can cause and
+//! which is counted, are fanned from their centre through the points of their edges, as are
+//! the triangles beside them that share a cut edge. Each vertex keeps its place on the leaves'
+//! triangles, so that a leaf's value there is the sum of its values at their corners.
 
-use layercraft_geom::{Crossing, Grid, Lines, levels};
+use crate::trace::{Event, Net, Piece, Spot, Trace};
+use layercraft_geom::{GRID_MM, Point, orientation};
 use layercraft_mesh::{Body, Mesh, Vertex};
-use std::collections::HashMap;
+use std::cmp::Ordering::{Equal, Greater, Less};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Where a point of a triangle being split lies.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
-    Corner,
-    /// On the triangle's edge `edge`, the `rank`-th point along it from its lower-numbered end,
-    /// where it crosses `crossing`'s line.
-    Edge {
-        edge: usize,
-        rank: usize,
-        family: usize,
-        level: i64,
-    },
-    /// The grid vertex `(i, j)`.
-    Node(i64, i64),
+/// Where a vertex lies on the leaves' triangles: a leaf's value there is the sum of its values
+/// at `corners` by `weights`; nowhere, all weights zero, the leaves are flat.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Place {
+    corners: [u32; 3],
+    weights: [f64; 3],
 }
 
-/// What an edge of a cell runs along: an edge of the triangle, or a grid line.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Support {
-    Edge,
-    Line(usize, i64),
+impl Place {
+    fn at(corner: u32) -> Place {
+        Place { corners: [corner; 3], weights: [1.0, 0.0, 0.0] }
+    }
+
+    fn between(u: u32, v: u32, s: f64) -> Place {
+        let s = if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.5 };
+        Place { corners: [u, v, v], weights: [1.0 - s, s, 0.0] }
+    }
+
+    fn inside(corners: [u32; 3], l: [f64; 3]) -> Place {
+        let l = l.map(|x| if x.is_finite() { x.max(0.0) } else { 0.0 });
+        let sum = l[0] + l[1] + l[2];
+        if sum > 0.0 { Place { corners, weights: l.map(|x| x / sum) } } else { Place::at(corners[0]) }
+    }
+
+    /// The corners the place is weighed from.
+    #[cfg(test)]
+    pub fn named(&self) -> impl Iterator<Item = u32> + '_ {
+        self.corners.iter().zip(self.weights).filter(|&(_, w)| w != 0.0).map(|(&c, _)| c)
+    }
+
+    /// The value here of a field linear on the triangles, from its values at their corners.
+    pub fn value(&self, values: &[f64]) -> f64 {
+        self.corners
+            .iter()
+            .zip(self.weights)
+            .filter(|&(_, w)| w != 0.0)
+            .map(|(&c, w)| w * values.get(c as usize).copied().unwrap_or(0.0))
+            .sum()
+    }
 }
 
-/// A point of the triangle being split: its vertex in the body, place and kind.
-#[derive(Debug, Clone, Copy)]
-struct Point3 {
-    id: u32,
-    pos: Vertex,
-    grid: [f64; 2],
-    kind: Kind,
-}
-
-/// A cell: its points, as indices into the triangle's points, and what each edge runs along,
-/// from that point to the next.
+/// The refined mesh: its bodies, in the mesh's order, each vertex's place, and how many of the
+/// mesh's triangles were fanned whole where they should have been cut.
 #[derive(Debug, Clone, Default)]
-struct Cell {
-    points: Vec<usize>,
-    supports: Vec<Support>,
+pub(crate) struct Refined {
+    pub mesh: Mesh,
+    pub places: Vec<Vec<Place>>,
+    pub unsplit: usize,
 }
 
-/// One edge of the triangle being split: its ends' corners, lower-numbered first, and the
-/// crossings along it from there.
-struct Side<'a> {
-    from: usize,
-    to: usize,
-    crossings: &'a [(Crossing, u32)],
+/// A vertex of a part: one of the body's, or a corner of the leaves' triangles strictly inside
+/// the mesh's triangle, made for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Node {
+    Mesh(u32),
+    Inner(u32),
 }
 
-/// The side of a line a point lies on: 1 above, 0 on, -1 below.
-type Class = i8;
+/// An edge's walk, and the vertex made at each of its events.
+#[derive(Debug, Clone)]
+struct Cut {
+    trace: Trace,
+    ids: Vec<u32>,
+}
+
+fn flat(v: Vertex) -> Point {
+    [v[0], v[1]]
+}
 
 fn lerp(a: Vertex, b: Vertex, t: f64) -> Vertex {
     [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]
 }
 
-/// The grid vertex where two lines of different families meet.
-fn node(a: (usize, i64), b: (usize, i64)) -> Option<(i64, i64)> {
-    let (a, b) = if a.0 < b.0 { (a, b) } else { (b, a) };
-    match (a.0, b.0) {
-        (0, 1) => Some((a.1, b.1)),
-        (0, 2) => Some((a.1, a.1 - b.1)),
-        (1, 2) => Some((a.1 + b.1, a.1)),
-        _ => None,
+/// How far along from `a` to `b` the point of their line nearest `p` lies, from 0 to 1.
+fn along(a: Point, b: Point, p: Point) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// How far along each segment two crossing segments cross, from 0 to 1.
+fn crossing(a: Point, b: Point, u: Point, v: Point) -> (f64, f64) {
+    let (d, e, w) = ([b[0] - a[0], b[1] - a[1]], [v[0] - u[0], v[1] - u[1]], [u[0] - a[0], u[1] - a[1]]);
+    let det = d[0] * e[1] - d[1] * e[0];
+    let (t, s) = ((w[0] * e[1] - w[1] * e[0]) / det, (w[0] * d[1] - w[1] * d[0]) / det);
+    if t.is_finite() && s.is_finite() { (t.clamp(0.0, 1.0), s.clamp(0.0, 1.0)) } else { (0.5, 0.5) }
+}
+
+/// The barycentric coordinates of `p` in the triangle, when it has an area.
+fn barycentric([a, b, c]: [Point; 3], p: Point) -> Option<[f64; 3]> {
+    let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    let l1 = ((p[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (p[1] - a[1])) / det;
+    let l2 = ((b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])) / det;
+    (l1.is_finite() && l2.is_finite()).then_some([1.0 - l1 - l2, l1, l2])
+}
+
+/// The place of the point `p`, lying at `spot`.
+fn place(net: &Net, spot: Spot, p: Point) -> Place {
+    match spot {
+        Spot::Corner(w) => Place::at(w),
+        Spot::Edge(u, v) => match (net.point(u), net.point(v)) {
+            (Some(pu), Some(pv)) => Place::between(u, v, along(pu, pv, p)),
+            _ => Place::default(),
+        },
+        Spot::Inside(t) => match net.triangle(t) {
+            Some((c, at)) => barycentric(at, p).map_or(Place::at(c[0]), |l| Place::inside(c, l)),
+            None => Place::default(),
+        },
+        Spot::Outside => Place::default(),
     }
 }
 
-/// The vertices of the refined body: the mesh's, then the new ones.
-struct Out {
-    vertices: Vec<Vertex>,
+/// Whether the triangle's box meets `area` on the plate and `heights` up.
+fn meets([a, b, c]: [Vertex; 3], area: [Point; 2], heights: [f64; 2]) -> bool {
+    let lo = [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1]), a[2].min(b[2]).min(c[2])];
+    let hi = [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1]), a[2].max(b[2]).max(c[2])];
+    let [[x0, y0], [x1, y1]] = area;
+    hi[2] >= heights[0] && lo[2] <= heights[1] && hi[0] >= x0 && lo[0] <= x1 && hi[1] >= y0 && lo[1] <= y1
 }
 
-impl Out {
-    /// A new vertex at `pos`, while indices last.
-    fn add(&mut self, pos: Vertex) -> Option<u32> {
+/// The mesh with its triangles over `area`, a box of the plate, and within `heights` cut along
+/// the triangles of `net`.
+pub(crate) fn refine(mesh: &Mesh, net: &Net, area: [Point; 2], heights: [f64; 2]) -> Refined {
+    let mut refined = Refined {
+        mesh: Mesh { bodies: Vec::new(), materials: mesh.materials.clone() },
+        ..Refined::default()
+    };
+    for body in &mesh.bodies {
+        let mut cutter = Cutter::new(body, net);
+        let (body, places) = cutter.run(body, area, heights);
+        refined.mesh.bodies.push(body);
+        refined.places.push(places);
+        refined.unsplit += cutter.unsplit;
+    }
+    refined
+}
+
+/// The cutting of one body: its vertices so far, with their places, and its edges' cuts.
+struct Cutter<'a> {
+    net: &'a Net<'a>,
+    vertices: Vec<Vertex>,
+    places: Vec<Place>,
+    /// Where each of the body's own vertices lies, for the corners of the triangles cut.
+    spots: Vec<Spot>,
+    edges: HashMap<(u32, u32), Option<Cut>>,
+    triangles: Vec<[u32; 3]>,
+    unsplit: usize,
+}
+
+impl<'a> Cutter<'a> {
+    fn new(body: &Body, net: &'a Net<'a>) -> Cutter<'a> {
+        Cutter {
+            net,
+            vertices: body.vertices.clone(),
+            places: vec![Place::default(); body.vertices.len()],
+            spots: vec![Spot::Outside; body.vertices.len()],
+            edges: HashMap::new(),
+            triangles: Vec::with_capacity(body.triangles.len()),
+            unsplit: 0,
+        }
+    }
+
+    fn run(&mut self, body: &Body, area: [Point; 2], heights: [f64; 2]) -> (Body, Vec<Place>) {
+        let chosen: Vec<bool> =
+            body.triangles.iter().map(|t| body.corners(t).is_some_and(|c| meets(c, area, heights))).collect();
+        let mut located = vec![false; body.vertices.len()];
+        for (tri, _) in body.triangles.iter().zip(&chosen).filter(|(_, c)| **c) {
+            for &i in tri {
+                let Some(seen @ false) = located.get_mut(i as usize) else { continue };
+                *seen = true;
+                let Some(p) = body.vertices.get(i as usize).map(|&v| flat(v)) else { continue };
+                let spot = self.net.locate(p);
+                if let (Some(s), Some(pl)) = (self.spots.get_mut(i as usize), self.places.get_mut(i as usize))
+                {
+                    (*s, *pl) = (spot, place(self.net, spot, p));
+                }
+            }
+            for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
+                let key = (a.min(b), a.max(b));
+                if !self.edges.contains_key(&key) {
+                    let cut = self.cut(key.0, key.1);
+                    self.edges.insert(key, cut);
+                }
+            }
+        }
+        for (tri, &chosen) in body.triangles.iter().zip(&chosen) {
+            if chosen && !matches!(self.turn(*tri), Some(Equal) | None) {
+                if self.split(*tri) {
+                    continue;
+                }
+                self.unsplit += 1;
+            }
+            self.fan(*tri);
+        }
+        let out = Body {
+            name: body.name.clone(),
+            vertices: std::mem::take(&mut self.vertices),
+            triangles: std::mem::take(&mut self.triangles),
+            material: body.material,
+        };
+        (out, std::mem::take(&mut self.places))
+    }
+
+    fn add(&mut self, at: Vertex, place: Place) -> Option<u32> {
         let id = u32::try_from(self.vertices.len()).ok().filter(|&id| id < u32::MAX)?;
-        self.vertices.push(pos);
+        self.vertices.push(at);
+        self.places.push(place);
         Some(id)
     }
 
-    fn get(&self, id: u32) -> Option<Vertex> {
+    fn vertex(&self, id: u32) -> Option<Vertex> {
         self.vertices.get(id as usize).copied()
     }
-}
 
-/// The splitting of one triangle.
-struct Split<'a> {
-    points: Vec<Point3>,
-    sides: [Side<'a>; 3],
-    nodes: HashMap<(i64, i64), usize>,
-}
-
-impl Split<'_> {
-    fn class(&self, at: usize, family: usize, level: i64) -> Class {
-        let sign = |v: f64| if v >= level as f64 { 1 } else { -1 };
-        let Some(p) = self.points.get(at) else { return 0 };
-        match p.kind {
-            Kind::Corner => levels(p.grid).get(family).map_or(0, |&v| sign(v)),
-            Kind::Node(i, j) => {
-                let v = [i, j, i - j].get(family).copied().unwrap_or(0);
-                (v.cmp(&level)) as i8
-            }
-            Kind::Edge { edge, rank, family: f, level: l } => {
-                if f == family {
-                    return l.cmp(&level) as i8;
-                }
-                let Some(side) = self.sides.get(edge) else { return 0 };
-                let corner = |k: usize| self.class(k, family, level);
-                match side.crossings.iter().position(|(c, _)| c.family == family && c.level == level) {
-                    Some(r) if rank < r => corner(side.from),
-                    Some(_) => corner(side.to),
-                    None => corner(side.from),
-                }
-            }
+    /// The side the triangle's shadow turns: counterclockwise, clockwise, or none, steep: its
+    /// shadow no wider than the lattice's step, a segment as far as the regions can tell.
+    fn turn(&self, [a, b, c]: [u32; 3]) -> Option<std::cmp::Ordering> {
+        let (p, q, r) = (flat(self.vertex(a)?), flat(self.vertex(b)?), flat(self.vertex(c)?));
+        let twice = (q[0] - p[0]) * (r[1] - p[1]) - (r[0] - p[0]) * (q[1] - p[1]);
+        let longest = [(p, q), (q, r), (r, p)]
+            .iter()
+            .map(|(u, v)| (u[0] - v[0]).hypot(u[1] - v[1]))
+            .fold(0.0, f64::max);
+        if twice.abs() <= GRID_MM * longest {
+            return Some(Equal);
         }
+        Some(orientation(p, q, r))
     }
 
-    /// The point where the cell's edge from `a` to `b`, along a grid line, meets the line
-    /// `(family, level)`: a grid vertex, made once.
-    fn meet(
-        &mut self,
-        a: usize,
-        b: usize,
-        along: Support,
-        family: usize,
-        level: i64,
-        out: &mut Out,
-    ) -> Option<usize> {
-        let Support::Line(f, l) = along else { return None };
-        let (i, j) = node((f, l), (family, level))?;
-        if let Some(&k) = self.nodes.get(&(i, j)) {
-            return Some(k);
+    /// The edge from `a` to `b`, `a` the lower, walked and cut; `None` when steep, or when the
+    /// walk leaves the leaves' triangles.
+    fn cut(&mut self, a: u32, b: u32) -> Option<Cut> {
+        let (va, vb) = (self.vertex(a)?, self.vertex(b)?);
+        let (pa, pb) = (flat(va), flat(vb));
+        let trace = self.net.trace(pa, pb)?;
+        let mut ids = Vec::with_capacity(trace.events.len());
+        for event in &trace.events {
+            let (at, place) = match *event {
+                Event::Corner(w) => {
+                    let pw = self.net.point(w)?;
+                    let s = along(pa, pb, pw);
+                    ([pw[0], pw[1], va[2] + s * (vb[2] - va[2])], Place::at(w))
+                }
+                Event::Crossing(u, v) => {
+                    let (t, s) = crossing(pa, pb, self.net.point(u)?, self.net.point(v)?);
+                    (lerp(va, vb, t), Place::between(u, v, s))
+                }
+            };
+            ids.push(self.add(at, place)?);
         }
-        let (pa, pb) = (self.points.get(a)?, self.points.get(b)?);
-        let (la, lb) = (levels(pa.grid).get(family).copied()?, levels(pb.grid).get(family).copied()?);
-        let t = if lb != la { ((level as f64 - la) / (lb - la)).clamp(0.0, 1.0) } else { 0.5 };
-        let pos = lerp(pa.pos, pb.pos, t);
-        let id = out.add(pos)?;
-        self.points.push(Point3 { id, pos, grid: [i as f64, j as f64], kind: Kind::Node(i, j) });
-        let k = self.points.len() - 1;
-        self.nodes.insert((i, j), k);
-        Some(k)
+        Some(Cut { trace, ids })
     }
 
-    /// The cell split by the line `(family, level)` into its parts above and below; `None` when
-    /// the rule cannot split it.
-    #[allow(clippy::type_complexity)]
-    fn split(
-        &mut self,
-        cell: &Cell,
-        family: usize,
-        level: i64,
-        out: &mut Out,
-    ) -> Option<(Option<Cell>, Option<Cell>)> {
-        let m = cell.points.len();
-        let classes: Vec<Class> = cell.points.iter().map(|&p| self.class(p, family, level)).collect();
-        if !classes.contains(&-1) {
-            return Some((Some(cell.clone()), None));
+    /// The cut points of the edge from `c` to `d` in that direction, with their events.
+    fn points(&self, c: u32, d: u32) -> Vec<(u32, Event)> {
+        let Some(Some(cut)) = self.edges.get(&(c.min(d), c.max(d))) else { return Vec::new() };
+        let mut out: Vec<(u32, Event)> =
+            cut.ids.iter().copied().zip(cut.trace.events.iter().copied()).collect();
+        if c > d {
+            out.reverse();
         }
-        if !classes.contains(&1) {
-            return Some((None, Some(cell.clone())));
+        out
+    }
+
+    /// The triangle fanned from its centre through the cut points of its edges, or kept whole
+    /// when it has none.
+    fn fan(&mut self, tri: [u32; 3]) {
+        let [a, b, c] = tri;
+        let mut ring = Vec::with_capacity(3);
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            ring.push(p);
+            ring.extend(self.points(p, q).into_iter().map(|(id, _)| id));
         }
-        // Rotated to start above the line: the run above, a crossing, the run below, a crossing.
-        let shift = classes.iter().position(|&c| c == 1)?;
-        let at = |k: usize| (k + shift) % m;
-        let class = |k: usize| classes.get(at(k)).copied().unwrap_or(0);
-        let first_below = (0..m).find(|&k| class(k) == -1)?;
-        let last_below = (0..m).rev().find(|&k| class(k) == -1)?;
-        if (first_below..=last_below).any(|k| class(k) == 1) {
-            return None;
+        if ring.len() == 3 {
+            self.triangles.push(tri);
+            return;
         }
-        let last_above = (0..first_below).rev().find(|&k| class(k) == 1)?;
-        let next_above = (last_below + 1..m).find(|&k| class(k) == 1).unwrap_or(m);
-        let point = |k: usize| cell.points.get(at(k)).copied();
-        let support = |k: usize| cell.supports.get(at(k)).copied();
-        // A crossing is a point on the line between the runs, or a new one on the edge between.
-        let mut cut = |from: usize, to: usize, this: &mut Self| -> Option<usize> {
-            match to - from {
-                1 => {
-                    let along = support(from)?;
-                    if along == Support::Edge {
-                        return None;
-                    }
-                    this.meet(point(from)?, point(to % m)?, along, family, level, out)
-                }
-                2 => point(from + 1),
-                _ => None,
-            }
+        let at: Vec<Vertex> = ring.iter().filter_map(|&id| self.vertex(id)).collect();
+        let n = at.len() as f64;
+        let centre = at.iter().fold([0.0; 3], |s, v| [s[0] + v[0] / n, s[1] + v[1] / n, s[2] + v[2] / n]);
+        let spot = self.net.locate(flat(centre));
+        let Some(id) = self.add(centre, place(self.net, spot, flat(centre))) else {
+            self.triangles.push(tri);
+            return;
         };
-        let down = cut(last_above, first_below, self)?;
-        let up = cut(last_below, next_above, self)?;
-        let line = Support::Line(family, level);
-        let mut above = Cell::default();
-        above.points.push(up);
-        above.supports.push(support(next_above - 1)?);
-        for k in next_above..m + last_above + 1 {
-            above.points.push(point(k % m)?);
-            above.supports.push(support(k % m)?);
+        for (k, &p) in ring.iter().enumerate() {
+            let q = ring.get(k + 1).or(ring.first()).copied().unwrap_or(p);
+            self.triangles.push([id, p, q]);
         }
-        if let Some(s) = above.supports.last_mut() {
-            *s = support(last_above)?;
-        }
-        above.points.push(down);
-        above.supports.push(line);
-        let mut below = Cell::default();
-        below.points.push(down);
-        below.supports.push(support(first_below - 1)?);
-        for k in first_below..=last_below {
-            below.points.push(point(k)?);
-            below.supports.push(support(k)?);
-        }
-        below.points.push(up);
-        below.supports.push(line);
-        Some((Some(above), Some(below)))
     }
-}
 
-/// The mesh with every triangle whose box meets the lines' box and whose heights meet
-/// `heights` cut along the lines, and the number of cells left whole.
-pub fn refine(mesh: &Mesh, grid: &Grid, lines: &Lines, heights: [f64; 2]) -> (Mesh, usize) {
-    let mut failed = 0;
-    let bodies = mesh.bodies.iter().map(|b| refine_body(b, grid, lines, heights, &mut failed)).collect();
-    (Mesh { bodies, materials: mesh.materials.clone() }, failed)
-}
-
-fn refine_body(body: &Body, grid: &Grid, lines: &Lines, heights: [f64; 2], failed: &mut usize) -> Body {
-    let coords: Vec<[f64; 2]> = body.vertices.iter().map(|v| grid.coords([v[0], v[1]])).collect();
-    let [lu, lv, _] = lines.levels;
-    let touched = |tri: &[u32; 3]| -> bool {
-        let (Some(c), Some(v)) =
-            (tri.iter().map(|&i| coords.get(i as usize)).collect::<Option<Vec<_>>>(), body.corners(tri))
-        else {
+    /// The triangle cut into its parts over the leaves' triangles; whether its parts add up.
+    fn split(&mut self, tri: [u32; 3]) -> bool {
+        let [a, b, c] = tri;
+        let (m, reversed) = match self.turn(tri) {
+            Some(Greater) => ([a, b, c], false),
+            Some(Less) => ([a, c, b], true),
+            _ => return false,
+        };
+        let Some(parts) = self.parts(m) else { return false };
+        let saved = (self.vertices.len(), self.triangles.len());
+        if self.lay(m, parts, reversed).is_none() {
+            self.vertices.truncate(saved.0);
+            self.places.truncate(saved.0);
+            self.triangles.truncate(saved.1);
             return false;
-        };
-        let range = |f: &dyn Fn(usize) -> f64| {
-            (0..3).fold((f64::MAX, f64::MIN), |(lo, hi), k| (lo.min(f(k)), hi.max(f(k))))
-        };
-        let (u0, u1) = range(&|k| c.get(k).map_or(0.0, |p| p[0]));
-        let (v0, v1) = range(&|k| c.get(k).map_or(0.0, |p| p[1]));
-        let (z0, z1) = range(&|k| v.get(k).map_or(0.0, |p| p[2]));
-        u1 >= lu[0] as f64
-            && u0 <= lu[1] as f64
-            && v1 >= lv[0] as f64
-            && v0 <= lv[1] as f64
-            && z1 >= heights[0]
-            && z0 <= heights[1]
-    };
-    let cut: Vec<bool> = body.triangles.iter().map(touched).collect();
-    let mut out = Out { vertices: body.vertices.clone() };
-    // Each cut edge's crossings, from its lower-numbered end, with their vertices.
-    let mut edges: HashMap<(u32, u32), Vec<(Crossing, u32)>> = HashMap::new();
-    for (tri, _) in body.triangles.iter().zip(&cut).filter(|(_, c)| **c) {
-        for k in 0..3 {
-            let (Some(&a), Some(&b)) = (tri.get(k), tri.get((k + 1) % 3)) else { continue };
-            let key = (a.min(b), a.max(b));
-            if edges.contains_key(&key) {
-                continue;
-            }
-            let (Some(&ca), Some(&cb), Some(&pa), Some(&pb)) = (
-                coords.get(key.0 as usize),
-                coords.get(key.1 as usize),
-                body.vertices.get(key.0 as usize),
-                body.vertices.get(key.1 as usize),
-            ) else {
-                continue;
-            };
-            let mut list = Vec::new();
-            for c in lines.crossings(ca, cb) {
-                let Some(id) = out.add(lerp(pa, pb, c.t)) else { break };
-                list.push((c, id));
-            }
-            edges.insert(key, list);
         }
+        true
     }
-    let mut triangles = Vec::with_capacity(body.triangles.len() * 2);
-    for (tri, &inside) in body.triangles.iter().zip(&cut) {
-        let key = |k: usize| -> Option<(u32, u32)> {
-            let (a, b) = (*tri.get(k)?, *tri.get((k + 1) % 3)?);
-            Some((a.min(b), a.max(b)))
-        };
-        let split_edges =
-            (0..3).any(|k| key(k).is_some_and(|e| edges.get(&e).is_some_and(|l| !l.is_empty())));
-        if !inside && !split_edges {
-            triangles.push(*tri);
-            continue;
-        }
-        let Some(corners) = body.corners(tri) else { continue };
-        let empty: &[(Crossing, u32)] = &[];
-        let side = |k: usize| -> Side<'_> {
-            let (a, b) = (tri.get(k).copied().unwrap_or(0), tri.get((k + 1) % 3).copied().unwrap_or(0));
-            let crossings = key(k).and_then(|e| edges.get(&e)).map_or(empty, |l| l.as_slice());
-            if a <= b {
-                Side { from: k, to: (k + 1) % 3, crossings }
-            } else {
-                Side { from: (k + 1) % 3, to: k, crossings }
+
+    /// The parts of the counterclockwise triangle `m` over the leaves' triangles, each with
+    /// the triangle it lies over and its vertices counterclockwise; `None` when they do not add
+    /// up.
+    fn parts(&self, m: [u32; 3]) -> Option<Vec<(u32, Vec<Node>)>> {
+        let net = self.net;
+        let [m0, m1, m2] = m;
+        let corners = [flat(self.vertex(m0)?), flat(self.vertex(m1)?), flat(self.vertex(m2)?)];
+        // The boundary counterclockwise: each point, where it lies, and the triangle holding
+        // the piece from it to the next.
+        let (mut nodes, mut spots, mut holders) = (Vec::new(), Vec::new(), Vec::new());
+        for (c, d) in [(m0, m1), (m1, m2), (m2, m0)] {
+            let Some(Some(cut)) = self.edges.get(&(c.min(d), c.max(d))) else { return None };
+            let n = cut.trace.events.len();
+            if cut.trace.pieces.len() != n + 1 || cut.ids.len() != n {
+                return None;
             }
-        };
-        let mut split =
-            Split { points: Vec::new(), sides: [side(0), side(1), side(2)], nodes: HashMap::new() };
-        for (&id, pos) in tri.iter().zip(corners) {
-            let grid = coords.get(id as usize).copied().unwrap_or([0.0; 2]);
-            split.points.push(Point3 { id, pos, grid, kind: Kind::Corner });
-        }
-        // The boundary: each corner, then the crossings of the edge it starts, in its direction.
-        let mut boundary = Cell::default();
-        for k in 0..3 {
-            boundary.points.push(k);
-            boundary.supports.push(Support::Edge);
-            let Some(s) = split.sides.get(k) else { continue };
-            let ranks: Vec<usize> = if s.from == k {
-                (0..s.crossings.len()).collect()
-            } else {
-                (0..s.crossings.len()).rev().collect()
-            };
-            for rank in ranks {
-                let Some(&(c, id)) = s.crossings.get(rank) else { continue };
-                let pos = out.get(id).unwrap_or([0.0; 3]);
-                let grid = grid.coords([pos[0], pos[1]]);
-                split.points.push(Point3 {
-                    id,
-                    pos,
-                    grid,
-                    kind: Kind::Edge { edge: k, rank, family: c.family, level: c.level },
+            nodes.push(c);
+            spots.push(*self.spots.get(c as usize)?);
+            for j in 0..=n {
+                let piece = if c < d { cut.trace.pieces.get(j)? } else { cut.trace.pieces.get(n - j)? };
+                holders.push(match *piece {
+                    Piece::Inside(t) => t,
+                    Piece::Along(u, v) if c < d => net.left_of(u, v)?,
+                    Piece::Along(u, v) => net.left_of(v, u)?,
                 });
-                boundary.points.push(split.points.len() - 1);
-                boundary.supports.push(Support::Edge);
+                if j < n {
+                    let k = if c < d { j } else { n - 1 - j };
+                    nodes.push(*cut.ids.get(k)?);
+                    spots.push(match *cut.trace.events.get(k)? {
+                        Event::Corner(w) => Spot::Corner(w),
+                        Event::Crossing(u, v) => Spot::Edge(u, v),
+                    });
+                }
             }
         }
-        let mut cells = vec![boundary];
-        if inside {
-            for (family, range) in lines.levels.iter().enumerate() {
-                let corner_levels: Vec<f64> =
-                    split.points.iter().take(3).filter_map(|p| levels(p.grid).get(family).copied()).collect();
-                let lo = corner_levels.iter().copied().fold(f64::MAX, f64::min);
-                let hi = corner_levels.iter().copied().fold(f64::MIN, f64::max);
-                let first = (lo.floor() as i64).saturating_add(1).max(range[0]);
-                let last = (hi.floor() as i64).min(range[1]);
-                if last.saturating_sub(first) > 1 << 16 {
+        let count = nodes.len();
+        let Some(start) = (0..count).find(|&i| holders.get(i) != holders.get((i + count - 1) % count)) else {
+            // The whole boundary over one triangle: the triangle of the mesh lies inside it.
+            return Some(vec![(*holders.first()?, nodes.into_iter().map(Node::Mesh).collect())]);
+        };
+        // The runs of boundary over each triangle, `(first piece, pieces)`, counterclockwise.
+        let mut runs: Vec<(u32, Vec<(usize, usize)>)> = Vec::new();
+        let mut index: HashMap<u32, usize> = HashMap::new();
+        let mut j = 0;
+        while j < count {
+            let first = (start + j) % count;
+            let t = *holders.get(first)?;
+            let mut len = 1;
+            while j + len < count && holders.get((first + len) % count) == Some(&t) {
+                len += 1;
+            }
+            let k = *index.entry(t).or_insert_with(|| {
+                runs.push((t, Vec::new()));
+                runs.len() - 1
+            });
+            runs.get_mut(k)?.1.push((first, len));
+            j += len;
+        }
+        // The corners of the leaves' triangles on the boundary, and the side of each edge of
+        // `m` the others lie on.
+        let on_boundary: HashMap<u32, u32> = nodes
+            .iter()
+            .zip(&spots)
+            .filter_map(|(&id, s)| if let Spot::Corner(w) = s { Some((*w, id)) } else { None })
+            .collect();
+        let [p0, p1, p2] = corners;
+        let sides = |w: u32| -> Option<[std::cmp::Ordering; 3]> {
+            let p = net.point(w)?;
+            Some([orientation(p0, p1, p), orientation(p1, p2, p), orientation(p2, p0, p)])
+        };
+        let node = |w: u32| -> Option<Node> {
+            if let Some(&id) = on_boundary.get(&w) {
+                return Some(Node::Mesh(id));
+            }
+            (sides(w)? == [Greater; 3]).then_some(Node::Inner(w))
+        };
+        let mut parts = Vec::with_capacity(runs.len());
+        for (t, list) in &runs {
+            let (tc, _) = net.triangle(*t)?;
+            // Where a point of the boundary lies round `t`: corner `k` at `2k`, inside the edge
+            // from corner `k` at `2k + 1`.
+            let round = |spot: Spot| -> Option<usize> {
+                let [a, b, c] = tc;
+                match spot {
+                    Spot::Corner(w) => [a, b, c].iter().position(|&x| x == w).map(|k| 2 * k),
+                    Spot::Edge(u, v) => [(a, b), (b, c), (c, a)]
+                        .iter()
+                        .position(|&(x, y)| (x, y) == (u, v) || (y, x) == (u, v))
+                        .map(|k| 2 * k + 1),
+                    _ => None,
+                }
+            };
+            let mut part = Vec::new();
+            for (r, &(first, len)) in list.iter().enumerate() {
+                for i in 0..=len {
+                    part.push(Node::Mesh(*nodes.get((first + i) % count)?));
+                }
+                let next = list.get((r + 1) % list.len())?.0;
+                let (from, to) = (round(*spots.get((first + len) % count)?)?, round(*spots.get(next)?)?);
+                // Round `t` counterclockwise from where the boundary leaves it to where it
+                // comes back, through the corners between.
+                if from != to {
+                    let mut p = (from + 1) % 6;
+                    while p != to {
+                        if p % 2 == 0 {
+                            part.push(node(*tc.get(p / 2)?)?);
+                        }
+                        p = (p + 1) % 6;
+                    }
+                }
+            }
+            part.dedup();
+            if part.len() > 1 && part.first() == part.last() {
+                part.pop();
+            }
+            parts.push((*t, part));
+        }
+        // The triangles inside, from the boundary's in, neighbour to neighbour.
+        let mut seen: HashSet<u32> = runs.iter().map(|(t, _)| *t).collect();
+        let mut queue: VecDeque<u32> = runs.iter().map(|(t, _)| *t).collect();
+        while let Some(t) = queue.pop_front() {
+            for next in net.neighbours(t).into_iter().flatten() {
+                if !seen.insert(next) {
                     continue;
                 }
-                for level in first..=last {
-                    let mut next = Vec::with_capacity(cells.len() + 1);
-                    for cell in cells {
-                        match split.split(&cell, family, level, &mut out) {
-                            Some((above, below)) => next.extend(above.into_iter().chain(below)),
-                            None => {
-                                *failed += 1;
-                                next.push(cell);
-                            }
-                        }
-                    }
-                    cells = next;
+                let (tc, _) = net.triangle(next)?;
+                let mut inside = true;
+                for &w in &tc {
+                    inside &= !sides(w)?.contains(&Less);
+                }
+                if inside {
+                    parts.push((next, tc.iter().map(|&w| node(w)).collect::<Option<Vec<Node>>>()?));
+                    queue.push_back(next);
                 }
             }
         }
-        for cell in cells {
-            let ids: Vec<u32> =
-                cell.points.iter().filter_map(|&k| split.points.get(k).map(|p| p.id)).collect();
+        Some(parts)
+    }
+
+    /// The parts of the counterclockwise triangle `m` laid as triangles, each fanned from its
+    /// centre, turned back clockwise when `m` was.
+    fn lay(&mut self, m: [u32; 3], parts: Vec<(u32, Vec<Node>)>, reversed: bool) -> Option<()> {
+        let at = [self.vertex(m[0])?, self.vertex(m[1])?, self.vertex(m[2])?];
+        let shadow = at.map(flat);
+        let mut inner: HashMap<u32, u32> = HashMap::new();
+        let push = |this: &mut Self, [p, q, r]: [u32; 3]| {
+            this.triangles.push(if reversed { [p, r, q] } else { [p, q, r] });
+        };
+        for (t, part) in parts {
+            let mut ids = Vec::with_capacity(part.len());
+            for node in part {
+                ids.push(match node {
+                    Node::Mesh(id) => id,
+                    Node::Inner(w) => match inner.get(&w) {
+                        Some(&id) => id,
+                        None => {
+                            let pw = self.net.point(w)?;
+                            let l = barycentric(shadow, pw)?.map(|x| x.clamp(0.0, 1.0));
+                            let sum = l[0] + l[1] + l[2];
+                            let z = (l[0] * at[0][2] + l[1] * at[1][2] + l[2] * at[2][2]) / sum;
+                            let id = self.add(
+                                [pw[0], pw[1], if z.is_finite() { z } else { at[0][2] }],
+                                Place::at(w),
+                            )?;
+                            inner.insert(w, id);
+                            id
+                        }
+                    },
+                });
+            }
             match ids.as_slice() {
-                [a, b, c] => triangles.push([*a, *b, *c]),
+                [p, q, r] => push(self, [*p, *q, *r]),
                 _ if ids.len() > 3 => {
-                    let n = cell.points.len() as f64;
-                    let centre =
-                        cell.points.iter().filter_map(|&k| split.points.get(k)).fold([0.0; 3], |c, p| {
-                            [c[0] + p.pos[0] / n, c[1] + p.pos[1] / n, c[2] + p.pos[2] / n]
-                        });
-                    let Some(id) = out.add(centre) else { continue };
-                    for (k, &a) in ids.iter().enumerate() {
-                        let b = ids.get((k + 1) % ids.len()).copied().unwrap_or(a);
-                        triangles.push([id, a, b]);
+                    let points: Vec<Vertex> = ids.iter().map(|&id| self.vertex(id)).collect::<Option<_>>()?;
+                    let n = points.len() as f64;
+                    let centre = points
+                        .iter()
+                        .fold([0.0; 3], |s, v| [s[0] + v[0] / n, s[1] + v[1] / n, s[2] + v[2] / n]);
+                    let place = match self.net.triangle(t) {
+                        Some((c, corners)) => barycentric(corners, flat(centre))
+                            .map_or(Place::at(c[0]), |l| Place::inside(c, l)),
+                        None => return None,
+                    };
+                    let id = self.add(centre, place)?;
+                    for (k, &p) in ids.iter().enumerate() {
+                        let q = ids.get(k + 1).or(ids.first()).copied()?;
+                        push(self, [id, p, q]);
                     }
                 }
                 _ => {}
             }
         }
+        Some(())
     }
-    Body { name: body.name.clone(), vertices: out.vertices, triangles, material: body.material }
 }

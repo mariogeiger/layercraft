@@ -2,6 +2,58 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.15.0
+
+### Changed
+
+- Bent layers bend on triangles of the part's own, not on a grid laid on the plate. One
+  triangulation per print holds the edges and corners of every top facet a leaf may follow and
+  reaches as far past them as a leaf may bend; between them it is cut evenly, a cell (0.25 mm on
+  the X2D) wide, from an equilateral lattice along each piece's own axes. Every leaf is linear on
+  it, so a followed top is met exactly, its creases and ridges too, which the grid's triangles
+  cut across: a wedge and a gable lie within a nanometre of their leaves. A part turned, moved or
+  mirrored on the plate has its triangles, and its leaves, turned, moved or mirrored with it, to
+  0.01 µm: runs of outline points along one line are merged, and ties between equally good
+  triangles are broken by the shape itself, corners on one circle fanned from their centre,
+  not by the order of the points.
+- The mesh is cut along the leaves' triangles by an exact walk: each of its edges is traced
+  through them with exact orientation tests, and each of its triangles cut into its parts over
+  theirs from those traces alone, so the cut mesh is closed by construction. A triangle seen
+  edge-on, its shadow a nanometre wide, is fanned through the points of its edges.
+- The face's bounds between two leaves come from the triangles themselves. To a corner `l` off,
+  the leaf below may fall `h − t + t·l²/R²` from the one above, `t` the thinnest slab and
+  `R² = ρ² + S_v + S_w` the face's reach `ρ` widened by the spreads of the triangles at both
+  corners, as the exact mean of the squared distances between two triangles' corners gives it;
+  the bound was piecewise linear in `l`, its reach found by bisection on the grid (0.80 mm).
+  Under a steep followed top the slabs thicken only as much as these pairs ask. The ironing
+  holds a leaf to its depth over `R` per mm between any two corners under the face, and its
+  slope to its depth over the coarsest triangles' `R`; it held the slope to its depth over the
+  longest path along the grid within the face's reach.
+- A top surface on a bent layer is hatched along the fall line of the triangles under it, each
+  weighed by its area, where the slope was sampled at points.
+- A layer's `warp` in the stage files holds `points`, `triangles` and `values`: the triangles
+  where it is not zero, their corners and its value at each. Older files' blocks on a grid read
+  as those squares split by their diagonals. Each bent layer holding its own triangles, the files
+  grow: the ramps' section stage takes 30 MB instead of 6.8.
+- The section stage takes about as long as before, 1.8 s against 1.9 on the ramps, run side by
+  side, and 22 s against 25 on a wavy plate 100 mm square, where it holds 289 MB against 169.
+
+### Added
+
+- `layercraft_geom::Carrier`: triangles over the plate that any number of reliefs share
+  (`Carrier::new`, `Carrier::relief`), each relief holding only its value at every corner.
+  `Relief::new` and `Relief::from_grid` make a relief on a carrier of its own; `facets` and
+  `facets_over` give its triangles and their slopes, `values` its values at its carrier's
+  corners.
+- `layercraft_geom::triangulate_evenly` (`Triangles`): cells of the plate, sharing edges, cut
+  into even triangles that meet; `Buckets`, which find the triangles near a point or along a
+  segment; and `orientation`, the exact side of a line a point lies on.
+
+### Removed
+
+- `layercraft_geom::Grid`, `Lines`, `Crossing`, `MAX_VALUES` and `levels`: reliefs are on
+  triangles of their own.
+
 ## 0.14.2
 
 ### Fixed

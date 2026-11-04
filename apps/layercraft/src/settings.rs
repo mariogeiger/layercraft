@@ -153,22 +153,25 @@ fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, Mach
     Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)?, flow: 1.0 })
 }
 
-/// The steepest top surface the layers bend to follow, in degrees: across a grid triangle a
-/// layer then leans at most `√2 · tan 20°`, 27°, under the X2D nozzle's flank of 50° (`printers/`).
+/// The steepest top surface the layers bend to follow, in degrees, and so the most a layer leans
+/// between neighbouring corners of the triangles it bends on: across one it may lean the secant
+/// of half the triangle's largest angle more, but over any length rises no faster than along
+/// their edges, about 20°, far under the X2D nozzle's flank of 50° (`printers/`).
 const MAX_SLOPE: f64 = 20.0;
 
 /// How deep the nozzle's face may iron the beads of the layer it prints, in mm: on a bent layer
 /// it passes over those it laid just before, up the slope. The layers lean no more than keeps it
-/// so, about 0.78 mm times their slope with the X2D's face and beads: here 20.9°.
+/// so, about 0.77 mm times their slope with the X2D's face and beads: here 21.4°.
 const IRONING: f64 = 0.3;
 
 /// How much thinner and thicker than the layer height a bent slab may be: a half, as the bead
 /// then stays between half and three quarters of the nozzle's width high.
 const SLAB_SPREAD: f64 = 0.5;
 
-/// The side of the grid layers bend on, in nozzle diameters: fine enough that a bent layer meets
-/// a smooth top surface within a micrometre and that the grid's triangles cost the nozzle's face
-/// little of its reach (`face`), coarse enough that a bead crosses few lines.
+/// How wide the triangles layers bend on are, about, in nozzle diameters: fine enough that they
+/// cost the nozzle's face little of its reach (`face`), which grows with their spread, coarse
+/// enough that a bead crosses few of their edges. A layer meets a top surface's flat faces
+/// exactly, whatever their size.
 const BEND_CELL: f64 = 0.625;
 
 /// Convection rolls for sparse infill: 30° off square to the walls, which braces them against

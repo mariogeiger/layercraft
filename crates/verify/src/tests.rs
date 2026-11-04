@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Grid, Relief};
+use layercraft_geom::Relief;
 use layercraft_motion::{Arc, Bead, Layer};
 use layercraft_path::Role;
 
@@ -169,9 +169,8 @@ fn an_arc_turns_inside_the_plate_from_a_known_place_and_ends_on_its_circle() {
 /// Over a flat first layer's bead, a second layer bent up a ramp 0.02 mm per mm from x = 0
 /// to 20, its beads at `z(x)`: up the ramp along y = 10, then back down beside it.
 fn ramped(z: impl Fn(f64) -> f64) -> Program {
-    let warp = Relief::from_fn(Grid { origin: [0.0, 0.0], cell: 1.0 }, [0, 0], [41, 21], |i, _| {
-        0.02 * i.min(20) as f64
-    });
+    let values: Vec<f64> = (0..41 * 21).map(|k| 0.02 * (k % 41).min(20) as f64).collect();
+    let warp = Relief::from_grid([0.0, 0.0], 1.0, [0, 0], [41, 21], &values).unwrap();
     let mut moves = vec![mv([10.0, 10.0, 1.2], 0.0, 500.0), mv([10.0, 10.0, z(10.0)], 0.0, 20.0)];
     moves.extend((11..=20).map(|x| mv([x as f64, 10.0, z(x as f64)], 0.03, 50.0)));
     moves.push(mv([20.0, 10.4, z(20.0)], 0.0, 20.0));

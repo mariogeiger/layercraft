@@ -1,307 +1,406 @@
-//! Reliefs: piecewise linear heights over the plate, all on one regular triangulated grid.
+//! Reliefs: piecewise linear heights over the plate, on triangles that any number of them share.
 //!
-//! The grid's vertices lie at `origin + cell·(i, j)`. In grid coordinates `(u, v)`, one cell a
-//! unit, three families of lines cut the plane: `u = n`, `v = n` and `u − v = n` for every
-//! integer `n`, the last splitting each square by its diagonal from `(i, j)` to `(i + 1, j + 1)`.
-//! A relief is linear on each of the triangles they leave. It holds its values on a block of
-//! vertices and is zero past it, which it reaches across one cell, so it bends only on the lines
-//! through the block widened by a cell (`Lines`). Along a segment a relief is linear between the
-//! points where the segment crosses those lines: cut there (`Relief::breaks`), the segment
-//! carries it exactly, as straight pieces.
+//! A carrier holds triangles and their corners; a relief on it, its value at each corner. The
+//! relief is linear on each triangle, zero past them and zero along their outer edges, so it is
+//! continuous. A triangle where it is zero at every corner takes no part: every query passes it
+//! by and the relief is stored without it, so a relief behaves as the triangles where it is not
+//! zero alone, whatever else its carrier holds. Along a segment it is linear between the points
+//! where the segment crosses those triangles' edges: cut there (`Relief::breaks`), the segment
+//! carries it exactly, as straight pieces. Its extremes over a box lie at the box's corners,
+//! where the box's sides cross those edges, or at corners inside it.
+//!
+//! Stage files from before reliefs had triangles of their own hold a block of values on a
+//! regular grid, each square split by its diagonal from `(i, j)` to `(i + 1, j + 1)` and the
+//! values zero a square past the block: read, they become those very triangles.
 
-use crate::{GeomError, LIMIT_MM, Point, check_value};
+use crate::locate::Buckets;
+use crate::orient::orientation;
+use crate::{GRID_MM, GeomError, LIMIT_MM, Point, check_value};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-/// The most values a relief holds: a plate 400 mm square at a 0.1 mm cell.
-pub const MAX_VALUES: usize = 1 << 24;
+/// The most corners a relief holds: a plate 400 mm square, a corner every 0.1 mm.
+pub const MAX_POINTS: usize = 1 << 24;
+/// How far outside a triangle, as a fraction of it, a point still counts as on it: rounding.
+const ON_TRIANGLE: f64 = 1e-9;
+/// Breaks closer than this along a segment, in mm, are one: a tenth of the lattice step.
+const SAME_BREAK_MM: f64 = GRID_MM / 10.0;
 
-/// The regular triangulated grid reliefs live on.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Grid {
-    /// The vertex `(0, 0)`, in mm.
-    pub origin: Point,
-    /// The side of a square, in mm.
-    pub cell: f64,
+/// Triangles over the plate with their corners, shared by every relief on them.
+#[derive(Debug, Clone, Default)]
+pub struct Carrier(Arc<Tiling>);
+
+/// A carrier's triangles, as index triples into its corners, with the buckets that find them.
+#[derive(Debug, Default)]
+struct Tiling {
+    points: Vec<Point>,
+    triangles: Vec<[u32; 3]>,
+    buckets: Buckets,
+    /// The corners on no triangle's inside: along an outer edge, or on no triangle at all.
+    rim: Vec<u32>,
 }
 
-impl Grid {
-    /// The grid coordinates of a point of the plate.
-    pub fn coords(&self, p: Point) -> [f64; 2] {
-        [(p[0] - self.origin[0]) / self.cell, (p[1] - self.origin[1]) / self.cell]
-    }
-
-    /// The vertex `(i, j)` on the plate.
-    pub fn vertex(&self, i: i64, j: i64) -> Point {
-        [self.origin[0] + i as f64 * self.cell, self.origin[1] + j as f64 * self.cell]
-    }
-
-    /// Whether the grid is usable: finite, inside `LIMIT_MM`, its cell at least a micrometre.
-    pub fn check(&self) -> Result<(), GeomError> {
-        check_value(self.origin[0])?;
-        check_value(self.origin[1])?;
-        if check_value(self.cell)? < 1e-3 {
-            return Err(GeomError::OutOfRange(self.cell));
-        }
-        Ok(())
-    }
-}
-
-/// The level of each family of grid lines at grid coordinates `c`: `u`, `v` and `u − v`.
-pub fn levels(c: [f64; 2]) -> [f64; 3] {
-    [c[0], c[1], c[0] - c[1]]
-}
-
-/// Where a segment crosses a grid line: the fraction `t` of the way along it, and the line, by
-/// its family (0: `u`, 1: `v`, 2: `u − v`) and level.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Crossing {
-    pub t: f64,
-    pub family: usize,
-    pub level: i64,
-}
-
-/// A set of grid lines: in each family, the levels from the first bound to the second.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Lines {
-    pub levels: [[i64; 2]; 3],
-}
-
-impl Lines {
-    /// The lines of both sets, and those between.
-    pub fn union(self, other: Lines) -> Lines {
-        let mut levels = self.levels;
-        for (l, o) in levels.iter_mut().zip(other.levels) {
-            *l = [l[0].min(o[0]), l[1].max(o[1])];
-        }
-        Lines { levels }
-    }
-
-    /// Where the segment from `a` to `b` (grid coordinates) crosses the lines, in order along
-    /// it; crossings at one fraction come by family, then level. A point lies on a line's upper
-    /// side when its level is at least the line's, so the segment crosses the lines its ends lie
-    /// on different sides of, one end possibly on the line. The result depends only on the two
-    /// ends, in that order.
-    pub fn crossings(&self, a: [f64; 2], b: [f64; 2]) -> Vec<Crossing> {
-        let (la, lb) = (levels(a), levels(b));
-        let mut out = Vec::new();
-        for (family, ((&from, &to), range)) in la.iter().zip(&lb).zip(&self.levels).enumerate() {
-            if !(from.is_finite() && to.is_finite()) || from == to {
-                continue;
-            }
-            // The levels above the lower end, up to the upper one, within the set.
-            let (lo, hi) = (from.min(to), from.max(to));
-            let first = (lo.floor() as i64).saturating_add(1).max(range[0]);
-            let last = (hi.floor() as i64).min(range[1]);
-            // A segment crosses at most a plate's width of lines.
-            if last.saturating_sub(first) > 1 << 20 {
-                continue;
-            }
-            for level in first..=last {
-                let t = ((level as f64 - from) / (to - from)).clamp(0.0, 1.0);
-                out.push(Crossing { t, family, level });
-            }
-        }
-        out.sort_by(|x, y| x.t.total_cmp(&y.t).then(x.family.cmp(&y.family)).then(x.level.cmp(&y.level)));
-        out
-    }
-}
-
-/// A piecewise linear height on a grid: its values on a block of vertices, zero past it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A piecewise linear height over the plate.
+#[derive(Debug, Clone, Default)]
 pub struct Relief {
-    pub grid: Grid,
-    /// The block's first vertex `(i, j)`.
-    pub start: [i64; 2],
-    /// The block's columns and rows of vertices.
-    pub size: [usize; 2],
-    /// The values at the block's vertices, row after row.
-    pub values: Vec<f64>,
+    carrier: Carrier,
+    /// The value at each of the carrier's corners.
+    values: Arc<[f64]>,
+    /// The lowest and highest values, zero included.
+    range: [f64; 2],
 }
 
-impl Default for Relief {
-    /// Zero, on a grid of millimetre squares from the origin.
-    fn default() -> Relief {
-        Relief::zero(Grid { origin: [0.0, 0.0], cell: 1.0 })
+impl PartialEq for Relief {
+    /// Equal when they hold the same triangles, corners and values where they are not zero.
+    fn eq(&self, other: &Relief) -> bool {
+        if Arc::ptr_eq(&self.carrier.0, &other.carrier.0) {
+            return self.values == other.values;
+        }
+        self.trimmed() == other.trimmed()
+    }
+}
+
+/// A triangle of a relief holding a point: its corners, the relief's values there and the
+/// point's barycentric coordinates in it.
+struct Located {
+    corners: [Point; 3],
+    values: [f64; 3],
+    weights: [f64; 3],
+}
+
+/// A relief as stage files hold it: its triangles where it is not zero, their corners and its
+/// values there.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+struct Stored {
+    points: Vec<Point>,
+    triangles: Vec<[u32; 3]>,
+    values: Vec<f64>,
+}
+
+/// What stage files hold for a relief: its triangles, or, from older files, a block on a grid.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Read {
+    Triangles(Stored),
+    Grid { grid: OldGrid, start: [i64; 2], size: [usize; 2], values: Vec<f64> },
+}
+
+/// The regular grid older stage files put reliefs on: vertex `(i, j)` at `origin + cell·(i, j)`.
+#[derive(Deserialize)]
+struct OldGrid {
+    origin: Point,
+    cell: f64,
+}
+
+impl Serialize for Relief {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.trimmed().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Relief {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Relief, D::Error> {
+        let made = match Read::deserialize(d)? {
+            Read::Triangles(Stored { points, triangles, values }) => Relief::new(points, triangles, values),
+            Read::Grid { grid, start, size, values } => {
+                Relief::from_grid(grid.origin, grid.cell, start, size, &values)
+            }
+        };
+        made.map_err(serde::de::Error::custom)
+    }
+}
+
+/// The sides of a triangle, each from a corner to the next.
+fn sides<T: Copy>([p, q, r]: [T; 3]) -> [(T, T); 3] {
+    [(p, q), (q, r), (r, p)]
+}
+
+/// The corners of the triangle `[i, j, k]` of `points`, when they are there.
+fn corners_of(points: &[Point], &[i, j, k]: &[u32; 3]) -> Option<[Point; 3]> {
+    Some([*points.get(i as usize)?, *points.get(j as usize)?, *points.get(k as usize)?])
+}
+
+/// The box from the lowest to the highest coordinates of the corners.
+fn bounds(c: [Point; 3]) -> (Point, Point) {
+    (
+        [c[0][0].min(c[1][0]).min(c[2][0]), c[0][1].min(c[1][1]).min(c[2][1])],
+        [c[0][0].max(c[1][0]).max(c[2][0]), c[0][1].max(c[1][1]).max(c[2][1])],
+    )
+}
+
+/// The barycentric coordinates of `p` in the triangle, when it has an area.
+fn barycentric([a, b, c]: [Point; 3], p: Point) -> Option<[f64; 3]> {
+    let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
+    if !(det.is_finite() && det.abs() > f64::MIN_POSITIVE) {
+        return None;
+    }
+    let l1 = ((p[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (p[1] - a[1])) / det;
+    let l2 = ((b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])) / det;
+    Some([1.0 - l1 - l2, l1, l2])
+}
+
+/// The gradient of the linear function taking `v` at the corners, when they span an area.
+fn gradient_of([a, b, c]: [Point; 3], v: [f64; 3]) -> Option<[f64; 2]> {
+    let (e1, e2) = ([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]);
+    let det = e1[0] * e2[1] - e1[1] * e2[0];
+    if !(det.is_finite() && det.abs() > f64::MIN_POSITIVE) {
+        return None;
+    }
+    let (d1, d2) = (v[1] - v[0], v[2] - v[0]);
+    Some([(d1 * e2[1] - d2 * e1[1]) / det, (e1[0] * d2 - e2[0] * d1) / det])
+}
+
+/// Where the segment from `a` to `b` crosses the edge from `u` to `v`: the fraction of the way
+/// along the segment, when they cross at a single point.
+fn crossing(a: Point, b: Point, u: Point, v: Point) -> Option<f64> {
+    let (d, e) = ([b[0] - a[0], b[1] - a[1]], [v[0] - u[0], v[1] - u[1]]);
+    let det = d[0] * e[1] - d[1] * e[0];
+    if !(det.is_finite() && det.abs() > f64::MIN_POSITIVE) {
+        return None;
+    }
+    let w = [u[0] - a[0], u[1] - a[1]];
+    let (t, s) = ((w[0] * e[1] - w[1] * e[0]) / det, (w[0] * d[1] - w[1] * d[0]) / det);
+    ((0.0..=1.0).contains(&s) && t > 0.0 && t < 1.0).then_some(t)
+}
+
+/// Whether two triangles' insides meet: no side of either has the other wholly on its outer
+/// side, or on it, decided exactly.
+fn overlap(p: [Point; 3], q: [Point; 3]) -> bool {
+    let separates = |s: [Point; 3], o: [Point; 3]| {
+        let turn = orientation(s[0], s[1], s[2]);
+        sides(s).into_iter().any(|(a, b)| o.iter().all(|&c| orientation(a, b, c) != turn))
+    };
+    !(separates(p, q) || separates(q, p))
+}
+
+impl Carrier {
+    /// The carrier of `triangles`, index triples into `points`. It refuses coordinates that are
+    /// not finite or lie past `LIMIT_MM`, more than `MAX_POINTS` corners, and triangles naming a
+    /// corner that is not there.
+    pub fn new(points: Vec<Point>, triangles: Vec<[u32; 3]>) -> Result<Carrier, GeomError> {
+        if points.len() > MAX_POINTS || triangles.len() > 2 * MAX_POINTS {
+            return Err(GeomError::Engine(format!(
+                "a relief of {} corners and {} triangles is too large",
+                points.len(),
+                triangles.len()
+            )));
+        }
+        for p in &points {
+            check_value(p[0])?;
+            check_value(p[1])?;
+        }
+        if triangles.iter().flatten().any(|&i| i as usize >= points.len()) {
+            return Err(GeomError::Engine("a relief names a corner it does not hold".into()));
+        }
+        // Inside: the corners of a triangle, but for those along an edge one triangle alone has.
+        let mut inside = vec![false; points.len()];
+        for &i in triangles.iter().flatten() {
+            if let Some(slot) = inside.get_mut(i as usize) {
+                *slot = true;
+            }
+        }
+        let mut edges: Vec<(u32, u32)> =
+            triangles.iter().flat_map(|&t| sides(t)).map(|(a, b)| (a.min(b), a.max(b))).collect();
+        edges.sort_unstable();
+        for run in edges.chunk_by(|e, f| e == f) {
+            if let [(a, b)] = run {
+                for i in [a, b] {
+                    if let Some(slot) = inside.get_mut(*i as usize) {
+                        *slot = false;
+                    }
+                }
+            }
+        }
+        let rim = (0..points.len() as u32).filter(|&i| inside.get(i as usize) != Some(&true)).collect();
+        let buckets = Buckets::over(triangles.len(), |t| corners_of(&points, triangles.get(t)?));
+        Ok(Carrier(Arc::new(Tiling { points, triangles, buckets, rim })))
+    }
+
+    /// The relief taking `values` at the corners. It refuses one value more or fewer than the
+    /// corners, values that are not finite or lie past `LIMIT_MM`, and values other than zero
+    /// along the triangles' outer edges or at corners of none.
+    pub fn relief(&self, values: Vec<f64>) -> Result<Relief, GeomError> {
+        let count = self.0.points.len();
+        if values.len() != count {
+            return Err(GeomError::Engine(format!(
+                "a relief of {count} corners holds {} values",
+                values.len()
+            )));
+        }
+        let mut range = [0.0f64; 2];
+        for &v in &values {
+            check_value(v)?;
+            range = [range[0].min(v), range[1].max(v)];
+        }
+        if self.0.rim.iter().any(|&i| values.get(i as usize).is_some_and(|&v| v != 0.0)) {
+            return Err(GeomError::Engine("a relief is not zero along its triangles' outer edges".into()));
+        }
+        Ok(Relief { carrier: self.clone(), values: values.into(), range })
     }
 }
 
 impl Relief {
     /// The relief that is zero everywhere.
-    pub fn zero(grid: Grid) -> Relief {
-        Relief { grid, start: [0, 0], size: [0, 0], values: Vec::new() }
+    pub fn zero() -> Relief {
+        Relief::default()
     }
 
-    /// The relief with `value(i, j)` on the block from `start`, `size` vertices, trimmed of its
-    /// zero rows and columns.
-    pub fn from_fn(grid: Grid, start: [i64; 2], size: [usize; 2], value: impl Fn(i64, i64) -> f64) -> Relief {
-        let mut values = Vec::with_capacity(size[0].saturating_mul(size[1]).min(MAX_VALUES));
-        for j in 0..size[1] as i64 {
-            for i in 0..size[0] as i64 {
-                values.push(value(start[0] + i, start[1] + j));
+    /// The relief taking `values` at `points` and linear on `triangles`, index triples into
+    /// them, on a carrier of its own: as `Carrier::new` and `Carrier::relief` check them.
+    pub fn new(points: Vec<Point>, triangles: Vec<[u32; 3]>, values: Vec<f64>) -> Result<Relief, GeomError> {
+        Carrier::new(points, triangles)?.relief(values)
+    }
+
+    /// The relief with `values`, row after row, on the block of `size` vertices from `start` of
+    /// the grid whose vertex `(i, j)` lies at `origin + cell·(i, j)`, zero a square past the
+    /// block, each square split by its diagonal from `(i, j)` to `(i + 1, j + 1)`.
+    pub fn from_grid(
+        origin: Point,
+        cell: f64,
+        start: [i64; 2],
+        size: [usize; 2],
+        values: &[f64],
+    ) -> Result<Relief, GeomError> {
+        check_value(origin[0])?;
+        check_value(origin[1])?;
+        if check_value(cell)? < 1e-3 {
+            return Err(GeomError::OutOfRange(cell));
+        }
+        let count = size[0].checked_mul(size[1]).filter(|&n| n <= MAX_POINTS);
+        if count != Some(values.len()) {
+            return Err(GeomError::Engine(format!("a relief of {size:?} vertices holds {}", values.len())));
+        }
+        let reach = (LIMIT_MM / cell) as i64;
+        if start.iter().any(|s| s.abs() > reach) {
+            return Err(GeomError::OutOfRange(start[0] as f64 * cell));
+        }
+        if values.is_empty() {
+            return Ok(Relief::zero());
+        }
+        // The block widened by a ring of zeros.
+        let (w, h) = (size[0] + 2, size[1] + 2);
+        let value = |i: usize, j: usize| -> f64 {
+            if i == 0 || j == 0 || i > size[0] || j > size[1] {
+                return 0.0;
+            }
+            values.get((j - 1) * size[0] + (i - 1)).copied().unwrap_or(0.0)
+        };
+        let mut points = Vec::with_capacity(w * h);
+        let mut at = Vec::with_capacity(w * h);
+        for j in 0..h {
+            for i in 0..w {
+                let (gi, gj) = (start[0] - 1 + i as i64, start[1] - 1 + j as i64);
+                points.push([origin[0] + gi as f64 * cell, origin[1] + gj as f64 * cell]);
+                at.push(value(i, j));
             }
         }
-        Relief { grid, start, size, values }.trimmed()
-    }
-
-    /// The same relief on the smallest block holding its non-zero values.
-    pub fn trimmed(self) -> Relief {
-        let [w, _] = self.size;
-        let mut lo = [usize::MAX; 2];
-        let mut hi = [0usize; 2];
-        for (k, v) in self.values.iter().enumerate() {
-            if *v != 0.0 && w > 0 {
-                let (i, j) = (k % w, k / w);
-                lo = [lo[0].min(i), lo[1].min(j)];
-                hi = [hi[0].max(i), hi[1].max(j)];
+        let mut triangles = Vec::with_capacity(2 * (w - 1) * (h - 1));
+        let id = |i: usize, j: usize| (j * w + i) as u32;
+        for j in 0..h - 1 {
+            for i in 0..w - 1 {
+                triangles.push([id(i, j), id(i + 1, j), id(i + 1, j + 1)]);
+                triangles.push([id(i, j), id(i + 1, j + 1), id(i, j + 1)]);
             }
         }
-        if lo[0] > hi[0] {
-            return Relief::zero(self.grid);
-        }
-        let size = [hi[0] - lo[0] + 1, hi[1] - lo[1] + 1];
-        let mut values = Vec::with_capacity(size[0] * size[1]);
-        for j in lo[1]..=hi[1] {
-            values.extend(self.values.get(j * w + lo[0]..=j * w + hi[0]).into_iter().flatten());
-        }
-        Relief {
-            grid: self.grid,
-            start: [self.start[0] + lo[0] as i64, self.start[1] + lo[1] as i64],
-            size,
-            values,
-        }
+        Relief::new(points, triangles, at)
     }
 
-    /// Whether the values are sound: the grid usable, as many values as the block has vertices,
-    /// no more than `MAX_VALUES`, each finite and inside `LIMIT_MM`, the block on the plate.
-    pub fn check(&self) -> Result<(), GeomError> {
-        self.grid.check()?;
-        let count = self.size[0].checked_mul(self.size[1]).filter(|&n| n <= MAX_VALUES);
-        if count != Some(self.values.len()) {
-            return Err(GeomError::Engine(format!(
-                "a relief of {:?} vertices holds {}",
-                self.size,
-                self.values.len()
-            )));
-        }
-        let reach = (LIMIT_MM / self.grid.cell) as i64;
-        if self.start.iter().any(|s| s.abs() > reach) {
-            return Err(GeomError::OutOfRange(self.start[0] as f64 * self.grid.cell));
-        }
-        self.values.iter().try_for_each(|&v| check_value(v).map(|_| ()))
+    /// The value at each of its carrier's corners.
+    pub fn values(&self) -> &[f64] {
+        &self.values
     }
 
     /// Whether the relief is zero everywhere.
     pub fn is_zero(&self) -> bool {
-        self.values.iter().all(|&v| v == 0.0)
+        self.range == [0.0, 0.0]
     }
 
-    /// The value at vertex `(i, j)`.
-    pub fn value(&self, i: i64, j: i64) -> f64 {
-        let (Some(di), Some(dj)) = (i.checked_sub(self.start[0]), j.checked_sub(self.start[1])) else {
-            return 0.0;
-        };
-        let (Ok(di), Ok(dj)) = (usize::try_from(di), usize::try_from(dj)) else { return 0.0 };
-        if di >= self.size[0] || dj >= self.size[1] {
-            return 0.0;
+    fn tiling(&self) -> &Tiling {
+        &self.carrier.0
+    }
+
+    /// The corners of triangle `t` and the values there, when the relief is not zero at all of
+    /// them.
+    fn nonzero_triangle(&self, t: u32) -> Option<([Point; 3], [f64; 3])> {
+        let tri = self.tiling().triangles.get(t as usize)?;
+        let value = |i: u32| self.values.get(i as usize).copied();
+        let v = [value(tri[0])?, value(tri[1])?, value(tri[2])?];
+        if v.iter().all(|&x| x == 0.0) {
+            return None;
         }
-        self.values.get(dj * self.size[0] + di).copied().unwrap_or(0.0)
+        Some((corners_of(&self.tiling().points, tri)?, v))
     }
 
-    /// The triangle holding grid coordinates `c`, by its square `(i, j)` and whether it is the
-    /// lower one (`u − i ≥ v − j`), with the place in its square.
-    fn locate(c: [f64; 2]) -> (i64, i64, bool, f64, f64) {
-        let (i, j) = (c[0].floor(), c[1].floor());
-        let (fu, fv) = (c[0] - i, c[1] - j);
-        (i as i64, j as i64, fu >= fv, fu, fv)
+    /// The triangle holding `p`: of the relief's triangles whose box may hold it, the one it
+    /// lies deepest inside, if no further outside than rounding.
+    fn locate(&self, p: Point) -> Option<Located> {
+        let mut best: Option<(Located, f64)> = None;
+        for &t in self.tiling().buckets.near(p) {
+            let Some((corners, values)) = self.nonzero_triangle(t) else { continue };
+            let Some(weights) = barycentric(corners, p) else { continue };
+            let depth = weights[0].min(weights[1]).min(weights[2]);
+            if depth >= -ON_TRIANGLE && best.as_ref().is_none_or(|(_, d)| depth > *d) {
+                best = Some((Located { corners, values, weights }, depth));
+            }
+        }
+        best.map(|(found, _)| found)
     }
 
     /// The value at a point of the plate.
     pub fn at(&self, p: Point) -> f64 {
-        if self.values.is_empty() {
-            return 0.0;
-        }
-        let (i, j, lower, fu, fv) = Relief::locate(self.grid.coords(p));
-        let f00 = self.value(i, j);
-        let f11 = self.value(i + 1, j + 1);
-        if lower {
-            let f10 = self.value(i + 1, j);
-            f00 + fu * (f10 - f00) + fv * (f11 - f10)
-        } else {
-            let f01 = self.value(i, j + 1);
-            f00 + fv * (f01 - f00) + fu * (f11 - f01)
-        }
+        let Some(Located { values: v, weights: l, .. }) = self.locate(p) else { return 0.0 };
+        l[0] * v[0] + l[1] * v[1] + l[2] * v[2]
     }
 
     /// The gradient at a point of the plate, in mm per mm: that of the triangle holding it.
     pub fn gradient(&self, p: Point) -> [f64; 2] {
-        if self.values.is_empty() {
-            return [0.0, 0.0];
-        }
-        let (i, j, lower, _, _) = Relief::locate(self.grid.coords(p));
-        self.triangle_gradient(i, j, lower)
+        self.locate(p).and_then(|t| gradient_of(t.corners, t.values)).unwrap_or([0.0, 0.0])
     }
 
-    fn triangle_gradient(&self, i: i64, j: i64, lower: bool) -> [f64; 2] {
-        let s = self.grid.cell;
-        let (f00, f11) = (self.value(i, j), self.value(i + 1, j + 1));
-        if lower {
-            let f10 = self.value(i + 1, j);
-            [(f10 - f00) / s, (f11 - f10) / s]
-        } else {
-            let f01 = self.value(i, j + 1);
-            [(f11 - f01) / s, (f01 - f00) / s]
-        }
+    fn facet(&self, t: u32) -> Option<([Point; 3], [f64; 2])> {
+        let (c, v) = self.nonzero_triangle(t)?;
+        Some((c, gradient_of(c, v)?))
     }
 
-    /// The lines along which the relief may bend: those through its block widened by a cell;
-    /// none when it is zero.
-    pub fn lines(&self) -> Option<Lines> {
-        if self.is_zero() {
-            return None;
-        }
-        let [[i0, j0], [i1, j1]] = self.block()?;
-        let (lo, hi) = (|v: i64| v.saturating_sub(1), |v: i64| v.saturating_add(1));
-        Some(Lines {
-            levels: [
-                [lo(i0), hi(i1)],
-                [lo(j0), hi(j1)],
-                [lo(i0.saturating_sub(j1)), hi(i1.saturating_sub(j0))],
-            ],
-        })
+    /// Each of its triangles' corners and gradient.
+    pub fn facets(&self) -> impl Iterator<Item = ([Point; 3], [f64; 2])> + '_ {
+        (0..self.tiling().triangles.len() as u32).filter_map(|t| self.facet(t))
+    }
+
+    /// The corners and gradient of each of its triangles whose box may meet the box from `lo`
+    /// to `hi`.
+    pub fn facets_over(&self, lo: Point, hi: Point) -> impl Iterator<Item = ([Point; 3], [f64; 2])> + '_ {
+        self.tiling().buckets.within(lo, hi).into_iter().filter_map(|t| self.facet(t))
     }
 
     /// The fractions of the way from `a` to `b` where the relief may bend, in order, strictly
     /// between the ends: between them it is linear.
     pub fn breaks(&self, a: Point, b: Point) -> Vec<f64> {
-        let Some(lines) = self.lines() else { return Vec::new() };
-        let (ca, cb) = (self.grid.coords(a), self.grid.coords(b));
-        // Past the box of the `u` and `v` lines the relief is zero: only the part inside bends.
-        let (mut t0, mut t1) = (0.0f64, 1.0f64);
-        for ((&from, &to), range) in ca.iter().zip(&cb).zip(&lines.levels) {
-            let (lo, hi) = (range[0] as f64, range[1] as f64);
-            if from == to {
-                if from < lo || from > hi {
-                    return Vec::new();
-                }
-                continue;
-            }
-            let (s, e) = ((lo - from) / (to - from), (hi - from) / (to - from));
-            t0 = t0.max(s.min(e));
-            t1 = t1.min(s.max(e));
+        let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if self.is_zero() || length.is_nan() || length <= 0.0 {
+            return Vec::new();
         }
-        let mut ts: Vec<f64> = lines
-            .crossings(ca, cb)
-            .into_iter()
-            .map(|c| c.t)
-            .filter(|&t| t >= t0 && t <= t1 && t > 0.0 && t < 1.0)
-            .collect();
-        ts.dedup();
-        ts
+        let mut ts: Vec<f64> = Vec::new();
+        for t in self.tiling().buckets.along(a, b) {
+            let Some((c, _)) = self.nonzero_triangle(t) else { continue };
+            for (u, v) in sides(c) {
+                ts.extend(crossing(a, b, u, v));
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        let mut out: Vec<f64> = Vec::with_capacity(ts.len());
+        for t in ts {
+            if out.last().is_none_or(|&last| (t - last) * length > SAME_BREAK_MM) {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// The lowest and highest values over the plate, zero included.
     pub fn range(&self) -> [f64; 2] {
-        self.values.iter().fold([0.0f64, 0.0f64], |[lo, hi], &v| [lo.min(v), hi.max(v)])
+        self.range
     }
 
     /// The highest value along the segment from `a` to `b`.
@@ -310,18 +409,19 @@ impl Relief {
         self.breaks(a, b).into_iter().map(along).fold(self.at(a).max(self.at(b)), f64::max)
     }
 
-    /// The lowest and highest values within `radius` of `p`.
+    /// The lowest and highest values within `radius` of `p`, or over the square about it.
     pub fn range_within(&self, p: Point, radius: f64) -> [f64; 2] {
         self.range_over([p[0] - radius, p[1] - radius], [p[0] + radius, p[1] + radius])
     }
 
     /// The lowest and highest values over the box from `lo` to `hi`, exactly: a linear function
-    /// on each triangle, the relief reaches them at the box's corners, where its edges cross the
-    /// grid's lines, or at the grid's vertices inside it.
+    /// on each triangle, zero past them, the relief reaches them at the box's corners, where its
+    /// sides cross the triangles' edges, or at corners inside it.
     pub fn range_over(&self, lo: Point, hi: Point) -> [f64; 2] {
-        let Some([[i0, j0], [i1, j1]]) = self.block().filter(|_| !self.is_zero()) else { return [0.0, 0.0] };
-        let (a, b) = (self.grid.coords(lo), self.grid.coords(hi));
-        if !(a.iter().chain(&b).all(|v| v.is_finite())) || (b[0] - a[0]) * (b[1] - a[1]) > MAX_VALUES as f64 {
+        if self.is_zero() {
+            return [0.0, 0.0];
+        }
+        if !(lo.iter().chain(&hi).all(|v| v.is_finite())) {
             return self.range();
         }
         let corners = [lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]];
@@ -334,57 +434,91 @@ impl Relief {
                 take(self.at([c[0] + t * (d[0] - c[0]), c[1] + t * (d[1] - c[1])]));
             }
         }
-        // Inside, past the block widened by a cell the relief is zero: its vertices there count
-        // only through the edges' crossings.
-        let (u0, u1) = ((a[0].ceil() as i64).max(i0 - 1), (b[0].floor() as i64).min(i1 + 1));
-        let (v0, v1) = ((a[1].ceil() as i64).max(j0 - 1), (b[1].floor() as i64).min(j1 + 1));
-        for j in v0..=v1 {
-            for i in u0..=u1 {
-                take(self.value(i, j));
+        let inside = |p: &Point| p[0] >= lo[0] && p[0] <= hi[0] && p[1] >= lo[1] && p[1] <= hi[1];
+        for t in self.tiling().buckets.within(lo, hi) {
+            let Some((c, v)) = self.nonzero_triangle(t) else { continue };
+            for (p, value) in c.iter().zip(v) {
+                if inside(p) {
+                    take(value);
+                }
             }
         }
         range
     }
 
-    /// The steepest slope of the relief, in mm per mm, over every triangle it bends on.
+    /// The steepest slope of the relief, in mm per mm, over its triangles.
     pub fn steepest(&self) -> f64 {
-        let Some([[i0, j0], [i1, j1]]) = self.block().filter(|_| !self.is_zero()) else { return 0.0 };
-        let mut most = 0.0f64;
-        for j in j0.saturating_sub(1)..=j1 {
-            for i in i0.saturating_sub(1)..=i1 {
-                for lower in [true, false] {
-                    let g = self.triangle_gradient(i, j, lower);
-                    most = most.max(g[0].hypot(g[1]));
+        self.facets().map(|(_, g)| g[0].hypot(g[1])).fold(0.0, f64::max)
+    }
+
+    /// The relief as stage files hold it: its triangles where it is not zero, in order, and their
+    /// corners and its values there, in the order the triangles first name them.
+    fn trimmed(&self) -> Stored {
+        let tiling = self.tiling();
+        let mut renumber = vec![u32::MAX; tiling.points.len()];
+        let mut out = Stored { points: Vec::new(), triangles: Vec::new(), values: Vec::new() };
+        for (t, tri) in tiling.triangles.iter().enumerate() {
+            let Some((corners, values)) = self.nonzero_triangle(t as u32) else { continue };
+            let mut ids = [0u32; 3];
+            for (((slot, &i), p), v) in ids.iter_mut().zip(tri).zip(corners).zip(values) {
+                let Some(r) = renumber.get_mut(i as usize) else { continue };
+                if *r == u32::MAX {
+                    *r = out.points.len() as u32;
+                    out.points.push(p);
+                    out.values.push(v);
                 }
+                *slot = *r;
             }
+            out.triangles.push(ids);
         }
-        most
+        out
     }
 
-    /// The block's first and last vertices, when it holds any.
-    fn block(&self) -> Option<[[i64; 2]; 2]> {
-        let last = |start: i64, size: usize| start.checked_add(i64::try_from(size).ok()? - 1);
-        (self.size[0] > 0 && self.size[1] > 0).then_some(())?;
-        Some([self.start, [last(self.start[0], self.size[0])?, last(self.start[1], self.size[1])?]])
-    }
-
-    /// The relief `f(a, b)` of two reliefs on one grid, vertex by vertex, where `f(0, 0) = 0`.
+    /// The relief `f(a, b)` of two reliefs, corner by corner, where `f(0, 0) = 0`: on their
+    /// carrier when they share one, else on their triangles together, where those of each are
+    /// either the other's own or lie apart from them; reliefs whose triangles overlap otherwise
+    /// are refused.
     pub fn combine(a: &Relief, b: &Relief, f: impl Fn(f64, f64) -> f64) -> Result<Relief, GeomError> {
-        if a.grid != b.grid {
-            return Err(GeomError::Engine("reliefs on different grids".into()));
+        if Arc::ptr_eq(&a.carrier.0, &b.carrier.0) {
+            return a.carrier.relief(a.values.iter().zip(b.values.iter()).map(|(&x, &y)| f(x, y)).collect());
         }
-        let [lo, hi] = match (a.block(), b.block()) {
-            (Some([la, ha]), Some([lb, hb])) => {
-                [[la[0].min(lb[0]), la[1].min(lb[1])], [ha[0].max(hb[0]), ha[1].max(hb[1])]]
-            }
-            (Some(x), None) | (None, Some(x)) => x,
-            (None, None) => return Ok(Relief::zero(a.grid)),
+        let key = |p: &Point| (p[0].to_bits(), p[1].to_bits());
+        let Stored { mut points, mut triangles, values: own } = a.trimmed();
+        let mut index: HashMap<(u64, u64), u32> =
+            points.iter().enumerate().map(|(i, p)| (key(p), i as u32)).collect();
+        let sorted = |t: [u32; 3]| {
+            let mut s = t;
+            s.sort_unstable();
+            s
         };
-        let side = |lo: i64, hi: i64| usize::try_from(hi - lo + 1).unwrap_or(0);
-        let size = [side(lo[0], hi[0]), side(lo[1], hi[1])];
-        if size[0].saturating_mul(size[1]) > MAX_VALUES {
-            return Err(GeomError::Engine(format!("a relief of {size:?} vertices is too large")));
+        let shared: HashSet<[u32; 3]> = triangles.iter().map(|&t| sorted(t)).collect();
+        for t in 0..b.tiling().triangles.len() as u32 {
+            let Some((corners, _)) = b.nonzero_triangle(t) else { continue };
+            if let [Some(x), Some(y), Some(z)] = corners.map(|p| index.get(&key(&p)).copied())
+                && shared.contains(&sorted([x, y, z]))
+            {
+                continue;
+            }
+            let (lo, hi) = bounds(corners);
+            let meets = |s: u32| a.nonzero_triangle(s).is_some_and(|(c, _)| overlap(c, corners));
+            if a.tiling().buckets.within(lo, hi).into_iter().any(meets) {
+                return Err(GeomError::Engine("reliefs on overlapping triangles of their own".into()));
+            }
+            let mut ids = [0u32; 3];
+            for (slot, p) in ids.iter_mut().zip(corners) {
+                *slot = *index.entry(key(&p)).or_insert_with(|| {
+                    points.push(p);
+                    (points.len() - 1) as u32
+                });
+            }
+            triangles.push(ids);
         }
-        Ok(Relief::from_fn(a.grid, lo, size, |i, j| f(a.value(i, j), b.value(i, j))))
+        // Each relief's value at every corner, the first's as it holds it at its own.
+        let values: Vec<f64> = points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| f(own.get(i).copied().unwrap_or_else(|| a.at(*p)), b.at(*p)))
+            .collect();
+        Relief::new(points, triangles, values)
     }
 }

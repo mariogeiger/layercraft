@@ -1,27 +1,42 @@
-//! The top surfaces a leaf may follow, and their heights at the grid's vertices.
+//! The top surfaces a leaf may follow, and their flat faces.
 //!
 //! A patch is a connected set of the mesh's up-facing triangles no steeper than the leaves may
-//! be, joined across shared edges: one surface `S` over its shadow on the plate. Each vertex of
-//! the grid under a patch triangle takes the triangle's height there, a height the leaf must
-//! meet exactly (`exact`). The vertices around the shadow, of grid triangles it partly covers,
-//! take the height of the nearest patch triangle's plane carried past its edge: there the leaf
-//! is linear across the shadow's edge, so it meets `S` up to that edge too, if nothing else
-//! claims those vertices.
+//! be, joined across shared edges: one surface `S` over its shadow on the plate. Its triangles
+//! that share an edge and a plane make one facet, a flat polygon whose height is that plane;
+//! where two facets meet, `S` has a crease. A leaf that follows the patch is linear on each
+//! facet and bends along the creases, so that it meets `S` exactly once the triangles the leaves
+//! bend on have every facet's edges among theirs (`triangulation`).
 
-use layercraft_geom::{Grid, Point, segment_distance};
+use layercraft_geom::{GRID_MM, GeomError, Point, Region, winding_region};
 use layercraft_mesh::{Mesh, Vertex};
 use std::collections::HashMap;
 
-/// A vertex of the grid with the height a patch asks the leaf to take there.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pin {
-    pub vertex: [i64; 2],
-    pub height: f64,
-    /// Under a patch triangle; otherwise beside the shadow, on a triangle's plane carried past
-    /// its edge.
-    pub exact: bool,
-    /// How steeply that triangle leans: the tangent of its angle to the plate.
-    pub slope: f64,
+/// How far off a triangle's plane its neighbour's far corner may lie and the two still share
+/// it, in mm: a thousandth of the lattice step, far above rounding, far below any crease.
+const COPLANAR_MM: f64 = GRID_MM / 1000.0;
+
+/// A flat face of a patch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Facet {
+    /// Its shadow on the plate.
+    pub region: Region,
+    /// A corner of it, and how its height grows across the plate, in mm per mm.
+    pub anchor: Vertex,
+    pub gradient: [f64; 2],
+}
+
+impl Facet {
+    /// The height of the facet's plane over `p`.
+    pub fn height(&self, p: Point) -> f64 {
+        self.anchor[2]
+            + self.gradient[0] * (p[0] - self.anchor[0])
+            + self.gradient[1] * (p[1] - self.anchor[1])
+    }
+
+    /// How steeply it leans: the tangent of its angle to the plate.
+    pub fn slope(&self) -> f64 {
+        self.gradient[0].hypot(self.gradient[1])
+    }
 }
 
 /// One top surface a leaf may follow.
@@ -29,13 +44,19 @@ pub struct Pin {
 pub struct Patch {
     /// The area of its shadow on the plate, in mm².
     pub area: f64,
-    pub pins: Vec<Pin>,
+    pub facets: Vec<Facet>,
 }
 
 /// The outward normal of a triangle, not normalised.
 fn normal([a, b, c]: [Vertex; 3]) -> Vertex {
     let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
     [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+}
+
+/// How the height of the triangle's plane grows across the plate, when it is not vertical.
+fn gradient(t: [Vertex; 3]) -> Option<[f64; 2]> {
+    let n = normal(t);
+    (n[2] > 0.0 && n[2].is_finite()).then(|| [-n[0] / n[2], -n[1] / n[2]])
 }
 
 fn find(parent: &mut [usize], mut i: usize) -> usize {
@@ -52,121 +73,109 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
     i
 }
 
-/// The up-facing triangles no steeper than `max_slope` (radians), grouped into patches.
-fn groups(mesh: &Mesh, max_slope: f64) -> Vec<Vec<[Vertex; 3]>> {
-    let cos = max_slope.cos();
-    let mut triangles: Vec<[Vertex; 3]> = Vec::new();
-    let mut parent: Vec<usize> = Vec::new();
-    for body in &mesh.bodies {
-        let mut first: HashMap<(u32, u32), usize> = HashMap::new();
-        for tri in &body.triangles {
-            let Some(corners) = body.corners(tri) else { continue };
-            let n = normal(corners);
-            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-            if !(len > 0.0 && n[2] > 0.0 && n[2] >= cos * len) {
-                continue;
-            }
-            let id = triangles.len();
-            triangles.push(corners);
-            parent.push(id);
-            for k in 0..3 {
-                let (Some(&a), Some(&b)) = (tri.get(k), tri.get((k + 1) % 3)) else { continue };
-                match first.get(&(a.min(b), a.max(b))) {
-                    Some(&other) => {
-                        let (ra, rb) = (find(&mut parent, id), find(&mut parent, other));
-                        if let Some(slot) = parent.get_mut(ra) {
-                            *slot = rb;
-                        }
-                    }
-                    None => {
-                        first.insert((a.min(b), a.max(b)), id);
-                    }
-                }
-            }
-        }
+fn join(parent: &mut [usize], a: usize, b: usize) {
+    let (ra, rb) = (find(parent, a), find(parent, b));
+    if let Some(slot) = parent.get_mut(ra) {
+        *slot = rb;
     }
-    // Patches numbered by their first triangle, so the order is the mesh's.
+}
+
+/// The groups `parent` makes of `0..n`, numbered by their first member, members in order.
+fn classes(parent: &mut [usize]) -> Vec<Vec<usize>> {
     let mut number: HashMap<usize, usize> = HashMap::new();
-    let mut out: Vec<Vec<[Vertex; 3]>> = Vec::new();
-    for (id, corners) in triangles.into_iter().enumerate() {
-        let root = find(&mut parent, id);
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for id in 0..parent.len() {
+        let root = find(parent, id);
         let k = *number.entry(root).or_insert(out.len());
         if k == out.len() {
             out.push(Vec::new());
         }
-        if let Some(patch) = out.get_mut(k) {
-            patch.push(corners);
+        if let Some(group) = out.get_mut(k) {
+            group.push(id);
         }
     }
     out
 }
 
-/// The barycentric coordinates of `q` in the shadow of the triangle, when it has an area.
-fn barycentric([a, b, c]: &[Vertex; 3], q: Point) -> Option<[f64; 3]> {
-    let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-    if det.abs() <= f64::MIN_POSITIVE || !det.is_finite() {
-        return None;
-    }
-    let l1 = ((q[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (q[1] - a[1])) / det;
-    let l2 = ((b[0] - a[0]) * (q[1] - a[1]) - (q[0] - a[0]) * (b[1] - a[1])) / det;
-    Some([1.0 - l1 - l2, l1, l2])
-}
-
-/// The patches of the mesh no steeper than `max_slope` (radians), each with its pins on `grid`,
-/// largest first.
-pub fn patches(mesh: &Mesh, grid: &Grid, max_slope: f64) -> Vec<Patch> {
-    let s = grid.cell;
-    // Vertices of the grid triangles a shadow partly covers lie within a square's diagonal.
-    let reach = s * std::f64::consts::SQRT_2 * (1.0 + 1e-9);
-    let mut out = Vec::new();
-    for triangles in groups(mesh, max_slope) {
-        let mut area = 0.0;
-        // Each vertex's height, how far from the triangle that gave it, and how steep that is.
-        let mut best: HashMap<[i64; 2], (f64, f64, f64)> = HashMap::new();
-        for t in &triangles {
-            let n = normal(*t);
-            area += n[2] / 2.0;
-            let slope = n[0].hypot(n[1]) / n[2];
-            let (lo, hi) = t.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), v| {
-                ([lo[0].min(v[0]), lo[1].min(v[1])], [hi[0].max(v[0]), hi[1].max(v[1])])
-            });
-            let (glo, ghi) =
-                (grid.coords([lo[0] - reach, lo[1] - reach]), grid.coords([hi[0] + reach, hi[1] + reach]));
-            if !(glo.iter().chain(&ghi).all(|v| v.is_finite()) && (ghi[0] - glo[0]) * (ghi[1] - glo[1]) < 1e8)
-            {
+/// The up-facing triangles no steeper than `max_slope` (tangent), grouped into patches, each
+/// split into its facets, in the mesh's order.
+fn groups(mesh: &Mesh, max_slope: f64) -> Vec<Vec<Vec<[Vertex; 3]>>> {
+    let mut triangles: Vec<[Vertex; 3]> = Vec::new();
+    // Each triangle's neighbours across its edges, with the neighbour's far corner.
+    let mut shared: Vec<(usize, usize, Vertex)> = Vec::new();
+    for body in &mesh.bodies {
+        let mut first: HashMap<(u32, u32), (usize, u32)> = HashMap::new();
+        for tri in &body.triangles {
+            let Some(corners) = body.corners(tri) else { continue };
+            if gradient(corners).is_none_or(|g| g[0].hypot(g[1]) > max_slope) {
                 continue;
             }
-            for j in glo[1].ceil() as i64..=ghi[1].floor() as i64 {
-                for i in glo[0].ceil() as i64..=ghi[0].floor() as i64 {
-                    let q = grid.vertex(i, j);
-                    let Some(l) = barycentric(t, q) else { continue };
-                    let height = l[0] * t[0][2] + l[1] * t[1][2] + l[2] * t[2][2];
-                    let off = if l.iter().all(|&x| x >= -1e-12) {
-                        0.0
-                    } else {
-                        let edge = |a: &Vertex, b: &Vertex| segment_distance(q, [a[0], a[1]], [b[0], b[1]]);
-                        edge(&t[0], &t[1]).min(edge(&t[1], &t[2])).min(edge(&t[2], &t[0]))
-                    };
-                    if off > reach || !height.is_finite() {
-                        continue;
+            let id = triangles.len();
+            triangles.push(corners);
+            for (a, b, far) in [(tri[0], tri[1], tri[2]), (tri[1], tri[2], tri[0]), (tri[2], tri[0], tri[1])]
+            {
+                match first.get(&(a.min(b), a.max(b))) {
+                    Some(&(other, other_far)) => {
+                        if let Some(&q) = body.vertices.get(other_far as usize) {
+                            shared.push((id, other, q));
+                        }
                     }
-                    let slot = best.entry([i, j]).or_insert((off, height, slope));
-                    // The nearest triangle wins; under two at once, the higher.
-                    if off < slot.0 || (off == 0.0 && slot.0 == 0.0 && height > slot.1) {
-                        *slot = (off, height, slope);
+                    None => {
+                        first.insert((a.min(b), a.max(b)), (id, far));
                     }
                 }
             }
         }
-        let mut pins: Vec<Pin> = best
-            .into_iter()
-            .map(|(vertex, (off, height, slope))| Pin { vertex, height, exact: off == 0.0, slope })
-            .collect();
-        pins.sort_by_key(|p| p.vertex);
-        if pins.iter().any(|p| p.exact) {
-            out.push(Patch { area, pins });
+    }
+    let mut patch = (0..triangles.len()).collect::<Vec<_>>();
+    let mut facet = patch.clone();
+    for &(a, b, far) in &shared {
+        join(&mut patch, a, b);
+        // The same facet when the neighbour's far corner lies on this triangle's plane.
+        let Some(t) = triangles.get(a).copied() else { continue };
+        let Some(g) = gradient(t) else { continue };
+        let on = t[0][2] + g[0] * (far[0] - t[0][0]) + g[1] * (far[1] - t[0][1]);
+        if (far[2] - on).abs() <= COPLANAR_MM {
+            join(&mut facet, a, b);
+        }
+    }
+    let facets = classes(&mut facet);
+    let mut by_patch: HashMap<usize, Vec<Vec<[Vertex; 3]>>> = HashMap::new();
+    let mut order: Vec<usize> = Vec::new();
+    for members in facets {
+        let Some(&head) = members.first() else { continue };
+        let root = find(&mut patch, head);
+        if !by_patch.contains_key(&root) {
+            order.push(root);
+        }
+        by_patch
+            .entry(root)
+            .or_default()
+            .push(members.iter().filter_map(|&m| triangles.get(m).copied()).collect());
+    }
+    order.into_iter().filter_map(|root| by_patch.remove(&root)).collect()
+}
+
+/// The patches of the mesh no steeper than `max_slope` (tangent), largest first.
+pub fn patches(mesh: &Mesh, max_slope: f64) -> Result<Vec<Patch>, GeomError> {
+    let mut out = Vec::new();
+    for facets in groups(mesh, max_slope) {
+        let mut patch = Patch { area: 0.0, facets: Vec::with_capacity(facets.len()) };
+        for triangles in facets {
+            let Some(&first) = triangles.first() else { continue };
+            let Some(g) = gradient(first) else { continue };
+            let shadows: Vec<Vec<Point>> =
+                triangles.iter().map(|t| t.iter().map(|v| [v[0], v[1]]).collect()).collect();
+            let region = winding_region(&shadows)?;
+            patch.area += layercraft_geom::area(&region);
+            if !region.is_empty() {
+                patch.facets.push(Facet { region, anchor: first[0], gradient: g });
+            }
+        }
+        if !patch.facets.is_empty() {
+            out.push(patch);
         }
     }
     out.sort_by(|a, b| b.area.total_cmp(&a.area));
-    out
+    Ok(out)
 }

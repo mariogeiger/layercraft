@@ -1,208 +1,280 @@
-//! The nozzle's flat face as the grid resolves it: how far `d` may fall from a leaf to the one
-//! below, to each offset, so that no bead below stands above the face printing over it.
+//! The nozzle's flat face over the leaves' triangles: which corners bind each other, and by how
+//! much, so that no bead below stands above the face printing over it, nor the face irons a
+//! leaf deeper than allowed.
 //!
 //! A bead's flat top stands as high as its middle, on its leaf, so the face asks
-//! `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ ρ`, its reach: its radius and half the widest bead.
-//! The leaves are linear on the grid's triangles, and for such fields the bounds
-//! `d_{k−1}(u + δ) − d_k(u) ≤ W(δ)` at the vertices give `d_{k−1}(y) − d_k(x) ≤ W̃(y − x)`
-//! everywhere, `W̃` the linear interpolation of `W` on the same triangles, and nothing more: over
-//! two triangles and a triangle of offsets the difference less `W̃` is affine, and the polytope
-//! they bound has only pairs of vertices for corners, the sides lying along three directions any
-//! two of which span the lattice. The face holds exactly when `W̃ ≤ h` over its disc.
-//! `W(δ) = h − t + fall(|δ|)`, `t` the thinnest slab, keeps every pair of parallel planes leaning
-//! up to `s` with slabs `t ≥ max(t_min, s·R)` between them, a face reaching `R`:
-//! `fall(ℓ) = min(s·ℓ, max(t·ℓ/R, t + s·(ℓ − R)))`. At `R = ρ` its interpolation overshoots on the
-//! disc, the function bending between vertices; `R` is the least reach that does not, found by
-//! bisection, the test exact: an affine function is greatest over a triangle and a disc at a
-//! corner inside the disc, where a side crosses the circle, or where the circle meets its
-//! gradient. Offsets whose weight a nearer one and the slope imply are dropped.
+//! `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ ρ`, its reach, `h` the layer height. The leaves are
+//! linear on the triangles: for `x` in one with corners `v_i` and weights `α_i` and `y` in one
+//! with `w_j` and `β_j`, `d_{k−1}(y) − d_k(x) = Σ α_i β_j (d_{k−1}(w_j) − d_k(v_i))`, and the
+//! squared distances between their corners average exactly to
+//! `Σ α_i β_j |v_i − w_j|² = |x − y|² + S(x) + S(y)`, each `S` the corners' spread about the
+//! point, `Σ α_i |v_i − x|²`, no more than its triangle's (`variance`). So with every pair of
+//! corners that can meet within the face bound by `down + t r²/R²`, `R² = ρ² + S_v + S_w` from
+//! the largest spreads at the two corners, `t` the thinnest slab and `down` how far `d` may fall
+//! straight down, the sum is at most `down + t = h`. Their mean distance is at most the root of
+//! that mean square, `R`, so with every such pair on one leaf bound by `(i/R)|w − v|` no leaf
+//! rises more than `i` within the face's reach: the face irons no deeper than `i`.
 
-use std::collections::HashMap;
-use std::f64::consts::SQRT_2;
+use layercraft_geom::Point;
 
-/// Room for rounding when weights are compared, in mm.
-const SLACK: f64 = 1e-9;
-/// Halvings of the bisection on the face's reach: far below a nanometre.
-const BISECTIONS: usize = 48;
+/// The root mean square distance between the corners of two triangles holding points at most
+/// `rho` apart, at most, when their spreads are at most `v` and `w` (`variance`).
+pub(crate) fn reach(rho: f64, v: f64, w: f64) -> f64 {
+    (rho * rho + v.max(0.0) + w.max(0.0)).sqrt()
+}
 
-/// The edges from a leaf to the one below.
-#[derive(Debug, Clone)]
+/// The most `Σ α_i |v_i − x|²` reaches over a triangle: its circumradius squared, or, when it is
+/// right or obtuse and its circumcentre outside it, half its longest side squared.
+pub(crate) fn variance([a, b, c]: [Point; 3]) -> f64 {
+    let d2 = |p: Point, q: Point| (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2);
+    let mut sides = [d2(b, c), d2(c, a), d2(a, b)];
+    sides.sort_by(f64::total_cmp);
+    let [s0, s1, s2] = sides;
+    if s2 >= s0 + s1 {
+        return s2 / 4.0;
+    }
+    // R² = a²b²c² / (16 · area²), 16 area² = 2(a²b² + b²c² + c²a²) − (a⁴ + b⁴ + c⁴).
+    let sixteen_area2 = 2.0 * (s0 * s1 + s1 * s2 + s2 * s0) - (s0 * s0 + s1 * s1 + s2 * s2);
+    if sixteen_area2 > 0.0 { s0 * s1 * s2 / sixteen_area2 } else { s2 / 4.0 }
+}
+
+/// Buckets per side of the square holding a corner's pairs at most: a quarter of the farthest
+/// pair, so that a search looks at little more than the disc it needs.
+const BUCKETS_PER_REACH: f64 = 4.0;
+
+/// The corners of the triangles, filed in square buckets for the search of those that can meet
+/// within the face.
+pub(crate) struct Corners<'a> {
+    points: &'a [Point],
+    /// The longest edge at each corner; 0 at points of no triangle.
+    longest: Vec<f64>,
+    /// The largest spread of the triangles at each corner (`variance`).
+    spread: Vec<f64>,
+    rho: f64,
+    widest: f64,
+    origin: Point,
+    size: f64,
+    columns: usize,
+    rows: usize,
+    /// Bucket `k` holds `items[starts[k]..starts[k + 1]]`.
+    starts: Vec<usize>,
+    items: Vec<u32>,
+}
+
+impl<'a> Corners<'a> {
+    pub fn new(points: &'a [Point], triangles: &[[u32; 3]], rho: f64) -> Corners<'a> {
+        let (mut longest, mut spread) = (vec![0.0f64; points.len()], vec![0.0f64; points.len()]);
+        let at = |i: u32| points.get(i as usize).copied().unwrap_or([0.0; 2]);
+        for &[a, b, c] in triangles {
+            let s = variance([at(a), at(b), at(c)]);
+            for (p, q) in [(a, b), (b, c), (c, a)] {
+                let l = (at(p)[0] - at(q)[0]).hypot(at(p)[1] - at(q)[1]);
+                for v in [p, q] {
+                    if let (Some(slot), Some(wide)) =
+                        (longest.get_mut(v as usize), spread.get_mut(v as usize))
+                    {
+                        (*slot, *wide) = (slot.max(l), wide.max(s));
+                    }
+                }
+            }
+        }
+        let widest = longest.iter().copied().fold(0.0, f64::max);
+        // Only the triangles' corners: points of none bind nothing.
+        let corners: Vec<u32> =
+            (0..points.len() as u32).filter(|&v| longest.get(v as usize).is_some_and(|&l| l > 0.0)).collect();
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for p in corners.iter().map(|&v| at(v)) {
+            (lo, hi) = ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]);
+        }
+        // No more buckets than corners, about.
+        let extent = (hi[0] - lo[0]).max(0.0) * (hi[1] - lo[1]).max(0.0);
+        let fine = (rho + 2.0 * widest) / BUCKETS_PER_REACH;
+        let size = fine.max((extent / corners.len().max(1) as f64).sqrt()).max(1e-3);
+        let side = |e: f64| if e.is_finite() && e >= 0.0 { (e / size) as usize + 1 } else { 1 };
+        let (columns, rows) = (side(hi[0] - lo[0]), side(hi[1] - lo[1]));
+        let mut out = Corners {
+            points,
+            longest,
+            spread,
+            rho,
+            widest,
+            origin: if lo[0].is_finite() { lo } else { [0.0; 2] },
+            size,
+            columns,
+            rows,
+            starts: Vec::new(),
+            items: Vec::new(),
+        };
+        let cell = |out: &Corners, v: u32| {
+            let [i, j] = out.cell(at(v));
+            j * out.columns + i
+        };
+        let mut starts = vec![0usize; columns * rows + 1];
+        for &v in &corners {
+            if let Some(s) = starts.get_mut(cell(&out, v) + 1) {
+                *s += 1;
+            }
+        }
+        for k in 0..columns * rows {
+            let before = starts.get(k).copied().unwrap_or(0);
+            if let Some(s) = starts.get_mut(k + 1) {
+                *s += before;
+            }
+        }
+        let mut fill = starts.clone();
+        let mut items = vec![0u32; corners.len()];
+        for &v in &corners {
+            if let Some(slot) = fill.get_mut(cell(&out, v))
+                && let Some(item) = items.get_mut(*slot)
+            {
+                *item = v;
+                *slot += 1;
+            }
+        }
+        (out.starts, out.items) = (starts, items);
+        out
+    }
+
+    /// The bucket column and row of `p`, clamped into the grid.
+    fn cell(&self, p: Point) -> [usize; 2] {
+        let at = |v: f64, o: f64, n: usize| {
+            let k = ((v - o) / self.size).floor();
+            if k.is_nan() || k < 0.0 { 0 } else { (k as usize).min(n.saturating_sub(1)) }
+        };
+        [at(p[0], self.origin[0], self.columns), at(p[1], self.origin[1], self.rows)]
+    }
+
+    /// The longest pair of corners that can meet within the face.
+    pub fn farthest(&self) -> f64 {
+        self.rho + 2.0 * self.widest
+    }
+
+    /// The face's reach as the coarsest triangles resolve it: `R` between corners of the largest
+    /// spread.
+    pub fn coarsest(&self) -> f64 {
+        let widest = self.spread.iter().copied().fold(0.0, f64::max);
+        reach(self.rho, widest, widest)
+    }
+
+    /// The face's reach as the triangles at corners `v` and `w` resolve it, `R` for their pairs.
+    pub fn reach(&self, v: u32, w: u32) -> f64 {
+        let s = |i: u32| self.spread.get(i as usize).copied().unwrap_or(0.0);
+        reach(self.rho, s(v), s(w))
+    }
+
+    /// Each corner `w` that can meet `v` within the face, `v` itself included, with their
+    /// distance: no farther apart than `ρ` and the longest edges at both.
+    pub fn meeting(&self, v: u32, f: impl FnMut(u32, f64)) {
+        self.meeting_within(v, f64::INFINITY, f);
+    }
+
+    /// Those of `meeting` less than `limit` apart.
+    pub fn meeting_within(&self, v: u32, limit: f64, mut f: impl FnMut(u32, f64)) {
+        let (Some(&p), Some(&lv)) = (self.points.get(v as usize), self.longest.get(v as usize)) else {
+            return;
+        };
+        if lv <= 0.0 {
+            return;
+        }
+        let radius = (self.rho + lv + self.widest).min(limit);
+        let ([i0, j0], [i1, j1]) =
+            (self.cell([p[0] - radius, p[1] - radius]), self.cell([p[0] + radius, p[1] + radius]));
+        for j in j0..=j1 {
+            let (Some(&a), Some(&b)) =
+                (self.starts.get(j * self.columns + i0), self.starts.get(j * self.columns + i1 + 1))
+            else {
+                continue;
+            };
+            for &w in self.items.get(a..b).unwrap_or(&[]) {
+                let (Some(&q), Some(&lw)) = (self.points.get(w as usize), self.longest.get(w as usize))
+                else {
+                    continue;
+                };
+                let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+                if d <= self.rho + lv + lw && d < limit {
+                    f(w, d);
+                }
+            }
+        }
+    }
+}
+
+/// The bounds from a leaf to the one below under the face, and along a leaf.
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Laps {
-    /// Offsets in cells, `[0, 0]` among them, and how far `d` may fall to each, in mm.
-    pub edges: Vec<([i64; 2], f64)>,
-    /// The face's reach as the grid resolves it, `R`, in mm; 0 without a face.
+    /// How far `d` may fall straight down, in mm.
+    pub down: f64,
+    /// The thinnest slab, in mm.
+    pub thin: f64,
+    /// The face's reach as the coarsest triangles resolve it, `R`, in mm; 0 without a face.
     pub reach: f64,
-    slope: f64,
-    thin: f64,
+    /// The longest pair of corners bound, in mm.
+    pub farthest: f64,
+    /// How fast `d` may change along a leaf, in mm per mm.
+    pub slope: f64,
 }
 
 impl Laps {
-    /// How much further than straight down `d` may fall to a point `l` mm off, at least: every
-    /// edge's weight is `h − t + fall(|δ|)`.
+    /// How far `d` may fall from a corner to one `l` mm off on the leaf below, for a pair whose
+    /// triangles resolve the face's reach as `r`.
+    pub fn weight(&self, l: f64, r: f64) -> f64 {
+        if r > 0.0 { self.down + self.thin * (l / r).powi(2) } else { self.down }
+    }
+
+    /// The distance sideways past which a fall across a leaf goes on cheaper along a leaf: where
+    /// a pair's `t l²/R²` grows as fast as the slope, or the longest pair.
+    fn turn(&self) -> f64 {
+        (self.slope * self.reach * self.reach / (2.0 * self.thin)).min(self.farthest)
+    }
+
+    /// How much further than straight down `d` falls across one leaf to a point `l` mm off, at
+    /// least: along a pair of corners, `t l²/R²`, up to `turn`, and on along a leaf at the slope;
+    /// convex in `l`.
     pub fn fall(&self, l: f64) -> f64 {
-        fall(l, self.slope, self.thin, self.reach)
+        if self.reach <= 0.0 {
+            return self.slope * l;
+        }
+        let k = self.turn();
+        let pair = |l: f64| self.thin * (l / self.reach).powi(2);
+        if l <= k { pair(l) } else { pair(k) + self.slope * (l - k) }
     }
 
-    /// The least rate, in mm per mm, at which crossing to the leaf below lets `d` fall sideways.
+    /// How far sideways one leaf's crossing lets `d` fall by `drop`, at most: `fall` inverted.
+    pub fn span(&self, drop: f64) -> f64 {
+        let along = |drop: f64| if self.slope > 0.0 { drop / self.slope } else { f64::INFINITY };
+        if self.reach <= 0.0 {
+            return along(drop);
+        }
+        let k = self.turn();
+        let near = self.fall(k);
+        if drop <= near { self.reach * (drop / self.thin).sqrt() } else { k + along(drop - near) }
+    }
+
+    /// The least rate, in mm per mm, at which `d` may change sideways along any path: along a
+    /// leaf at the slope, or across leaves, each crossing `down + fall(u)` for `u` sideways, least
+    /// per mm at `u = R √(down/t)`, `2√(down t)/R`, unless the fall turns before.
     pub fn rate(&self) -> f64 {
-        if self.reach > 0.0 { self.slope.min(self.thin / self.reach) } else { self.slope }
-    }
-}
-
-fn fall(l: f64, slope: f64, thin: f64, reach: f64) -> f64 {
-    if reach <= 0.0 {
-        return slope * l;
-    }
-    (slope * l).min((thin * l / reach).max(thin + slope * (l - reach)))
-}
-
-/// The offsets of the grid within `span` mm of the origin, in cells.
-fn offsets(cell: f64, span: f64) -> Vec<[i64; 2]> {
-    let n = (span / cell).ceil() as i64;
-    (-n..=n)
-        .flat_map(|j| (-n..=n).map(move |i| [i, j]))
-        .filter(|&[i, j]| (i as f64).hypot(j as f64) * cell <= span)
-        .collect()
-}
-
-/// The length of the shortest path from the origin to an offset along the grid's sides and
-/// diagonals, in mm.
-fn octile([i, j]: [i64; 2], cell: f64) -> f64 {
-    let (a, b) = (i.abs().max(j.abs()) as f64, i.abs().min(j.abs()) as f64);
-    (a + (SQRT_2 - 1.0) * b) * cell
-}
-
-/// How much a leaf leaning a slope of 1 along the grid's sides and diagonals may rise, at most,
-/// within `reach` mm of a point, on its triangles: the greatest of the interpolated path lengths
-/// over the disc. A leaf leaning `s` rises `s` times that; 0 without a reach.
-pub(crate) fn lean(cell: f64, reach: f64) -> f64 {
-    if reach <= 0.0 {
-        return 0.0;
-    }
-    let lengths = offsets(cell, reach + SQRT_2 * cell).into_iter().map(|o| (o, octile(o, cell))).collect();
-    disc_max(&lengths, reach / cell)
-}
-
-/// The edges for a face reaching `face` mm on a grid of `cell` mm, leaves leaning up to `slope`,
-/// `d` falling by `down` straight down, the thinnest slab `thin`.
-pub(crate) fn laps(cell: f64, face: f64, slope: f64, down: f64, thin: f64) -> Laps {
-    let straight = Laps { edges: vec![([0, 0], down)], reach: 0.0, slope, thin };
-    if face <= 0.0 {
-        return straight;
-    }
-    // Every triangle that meets the disc has its corners within this of its centre.
-    let span = face + SQRT_2 * cell;
-    let offsets = offsets(cell, span);
-    let weights = |reach: f64| -> HashMap<[i64; 2], f64> {
-        offsets
-            .iter()
-            .map(|&[i, j]| ([i, j], down + fall((i as f64).hypot(j as f64) * cell, slope, thin, reach)))
-            .collect()
-    };
-    let sound = |reach: f64| disc_max(&weights(reach), face / cell) <= down + thin;
-    // Reaching this far, every weight is at most `h`, so is their interpolation.
-    let (mut lo, mut hi) = (face, span);
-    if sound(lo) {
-        hi = lo;
-    } else {
-        for _ in 0..BISECTIONS {
-            let mid = (lo + hi) / 2.0;
-            if sound(mid) { hi = mid } else { lo = mid }
+        let k = self.turn();
+        if self.reach <= 0.0 || k <= 0.0 {
+            return self.slope;
         }
+        let u = self.reach * (self.down / self.thin).sqrt();
+        let across = if u <= k {
+            2.0 * (self.down * self.thin).sqrt() / self.reach
+        } else {
+            (self.down + self.fall(k)) / k
+        };
+        across.min(self.slope)
     }
-    let all = weights(hi);
-    let mut edges: Vec<([i64; 2], f64)> = all
-        .iter()
-        .filter(|&(&o, &w)| {
-            !all.iter()
-                .any(|(&p, &v)| p != o && v + slope * octile([o[0] - p[0], o[1] - p[1]], cell) < w - SLACK)
-        })
-        .map(|(&o, &w)| (o, w))
-        .collect();
-    edges.sort_by_key(|a| a.0);
-    Laps { edges, reach: hi, slope, thin }
-}
 
-/// The greatest value, over the disc of `radius` cells about the origin, of the interpolation of
-/// `w` on the grid's triangles; infinite where a triangle meeting the disc lacks a corner.
-fn disc_max(w: &HashMap<[i64; 2], f64>, radius: f64) -> f64 {
-    let n = radius.ceil() as i64 + 1;
-    let mut best = f64::NEG_INFINITY;
-    for j in -n..n {
-        for i in -n..n {
-            for corners in [[[i, j], [i + 1, j], [i + 1, j + 1]], [[i, j], [i, j + 1], [i + 1, j + 1]]] {
-                best = best.max(triangle_max(w, corners, radius));
-            }
+    /// How much thicker than a layer slabs parallel to a surface of slope `s` must be for the
+    /// face: each pair of corners `l` apart, up to `farthest`, sees the leaf below rise by up to
+    /// `s l` and allows `down + t l²/R²`, most short at `l = s R²/(2t)`.
+    pub fn parallel(&self, s: f64) -> f64 {
+        if self.reach <= 0.0 {
+            return 0.0;
         }
+        let l = (s * self.reach * self.reach / (2.0 * self.thin)).min(self.farthest);
+        (s * l - self.thin * (l / self.reach).powi(2) - self.down).max(0.0)
     }
-    best
-}
-
-/// The greatest value of the interpolation of `w` over the triangle and the disc together, or
-/// minus infinity when they do not meet.
-fn triangle_max(w: &HashMap<[i64; 2], f64>, corners: [[i64; 2]; 3], radius: f64) -> f64 {
-    let p = corners.map(|[i, j]| [i as f64, j as f64]);
-    let [p0, p1, p2] = p;
-    let (e1, e2) = ([p1[0] - p0[0], p1[1] - p0[1]], [p2[0] - p0[0], p2[1] - p0[1]]);
-    let det = e1[0] * e2[1] - e1[1] * e2[0];
-    // Barycentric coordinates of a point: those of `p1` and `p2`, the rest `p0`'s.
-    let bary = |q: [f64; 2]| {
-        let (x, y) = (q[0] - p0[0], q[1] - p0[1]);
-        let b1 = (x * e2[1] - y * e2[0]) / det;
-        let b2 = (e1[0] * y - e1[1] * x) / det;
-        [1.0 - b1 - b2, b1, b2]
-    };
-    let mut points: Vec<[f64; 3]> = Vec::new();
-    let inside = |q: [f64; 2]| q[0].hypot(q[1]) <= radius;
-    for (k, &q) in p.iter().enumerate() {
-        if inside(q) {
-            let mut b = [0.0; 3];
-            if let Some(slot) = b.get_mut(k) {
-                *slot = 1.0;
-            }
-            points.push(b);
-        }
-    }
-    for (a, b) in [(0, 1), (1, 2), (2, 0)] {
-        let (Some(&pa), Some(&pb)) = (p.get(a), p.get(b)) else { continue };
-        let d = [pb[0] - pa[0], pb[1] - pa[1]];
-        // `|pa + τ d| = radius`
-        let (qa, qb, qc) = (
-            d[0] * d[0] + d[1] * d[1],
-            2.0 * (pa[0] * d[0] + pa[1] * d[1]),
-            pa[0] * pa[0] + pa[1] * pa[1] - radius * radius,
-        );
-        let disc = qb * qb - 4.0 * qa * qc;
-        if disc < 0.0 {
-            continue;
-        }
-        for tau in [(-qb - disc.sqrt()) / (2.0 * qa), (-qb + disc.sqrt()) / (2.0 * qa)] {
-            if (0.0..=1.0).contains(&tau) {
-                points.push(bary([pa[0] + tau * d[0], pa[1] + tau * d[1]]));
-            }
-        }
-    }
-    let at = |k: usize| corners.get(k).and_then(|c| w.get(c)).copied();
-    let value = |b: [f64; 3]| -> f64 {
-        let mut v = 0.0;
-        for (k, &bk) in b.iter().enumerate() {
-            match at(k) {
-                Some(x) => v += bk * x,
-                None => return f64::INFINITY,
-            }
-        }
-        v
-    };
-    // Where the circle meets the gradient: the affine function's greatest over the whole disc.
-    if let (Some(v0), Some(v1), Some(v2)) = (at(0), at(1), at(2)) {
-        let (d1, d2) = (v1 - v0, v2 - v0);
-        let g = [(d1 * e2[1] - d2 * e1[1]) / det, (e1[0] * d2 - e2[0] * d1) / det];
-        let norm = g[0].hypot(g[1]);
-        let q = if norm > 0.0 { [radius * g[0] / norm, radius * g[1] / norm] } else { [radius, 0.0] };
-        let b = bary(q);
-        if b.iter().all(|&x| x >= -1e-12) {
-            points.push(b);
-        }
-    }
-    points.into_iter().map(value).fold(f64::NEG_INFINITY, f64::max)
 }

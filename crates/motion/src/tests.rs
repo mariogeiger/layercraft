@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::moves::chained;
-use layercraft_geom::Grid;
 use layercraft_path::{Path, PathLayer, Paths};
 use layercraft_tune::Field;
 use std::f64::consts::{FRAC_PI_4, PI};
@@ -704,8 +703,8 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
 /// A ramp on a grid of millimetre squares: rising 0.05 mm per mm from x = 0 to x = 10, then
 /// level at 0.5 mm out to x = 20, for y from 0 to 20.
 fn ramp() -> Relief {
-    let grid = Grid { origin: [0.0, 0.0], cell: 1.0 };
-    Relief::from_fn(grid, [0, 0], [21, 21], |i, _| 0.05 * i.min(10) as f64)
+    let values: Vec<f64> = (0..21 * 21).map(|k| 0.05 * (k % 21).min(10) as f64).collect();
+    Relief::from_grid([0.0, 0.0], 1.0, [0, 0], [21, 21], &values).unwrap()
 }
 
 fn bead(points: Vec<[f64; 2]>) -> Path {

@@ -452,10 +452,13 @@ fn a_reversed_bead_keeps_each_segment_overhang() {
 #[test]
 fn a_top_on_a_bent_layer_is_hatched_along_its_fall_line() {
     use crate::families::fall_line;
-    use layercraft_geom::{Grid, Relief};
-    let grid = Grid { origin: [0.0, 0.0], cell: 0.5 };
-    let relief =
-        |f: &dyn Fn(Point) -> f64| Relief::from_fn(grid, [0, 0], [41, 41], |i, j| f(grid.vertex(i, j)));
+    use layercraft_geom::Relief;
+    // On the grid of half-millimetre squares over 20 mm.
+    let relief = |f: &dyn Fn(Point) -> f64| {
+        let values: Vec<f64> =
+            (0..41 * 41).map(|k| f([0.5 * (k % 41) as f64, 0.5 * (k / 41) as f64])).collect();
+        Relief::from_grid([0.0, 0.0], 0.5, [0, 0], [41, 41], &values).unwrap()
+    };
     let piece: Region = vec![vec![vec![[5.0, 5.0], [15.0, 5.0], [15.0, 15.0], [5.0, 15.0]]]];
     // A plane falling along 30°: hatched along 30°.
     let (s, c) = 30f64.to_radians().sin_cos();

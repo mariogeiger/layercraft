@@ -2,7 +2,7 @@
 //!
 //! A layer's top lies at `top + warp(x, y)` and its bottom at the top of the layer below, so the
 //! slab under a point is `height + warp − below` thick. Both reliefs are linear between the
-//! points where a segment crosses their grid's lines (`Relief::breaks`): cut there, a bead's
+//! points where a segment crosses their triangles' edges (`Relief::breaks`): cut there, a bead's
 //! straight pieces lie on the layer exactly, each laying the exact mean of its section.
 
 use layercraft_geom::{Point, Relief};
