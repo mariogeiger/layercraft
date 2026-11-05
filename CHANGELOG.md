@@ -2,6 +2,32 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.0
+
+### Fixed
+
+- The 3DBenchy compiles with bent layers again, as any mesh whose top facets overlap on the plate
+  or whose outlines run close together does. Since 0.15.0 such a mesh could stop with `a warp is
+  not zero along its triangles' outer edges`: the leaves' triangles left gaps up to 13 mm long and
+  a micrometre wide between neighbouring pieces, which simplified their shared edges each on its
+  own, and overlapped elsewhere. The Benchy lays 3578 mm of filament in 37.8 min of moves (3606 mm
+  and 37.6 min with `--flat`); its compile takes 8 min and 2.1 GB.
+
+### Changed
+
+- All the facets' edges now make one planar subdivision, computed in one pass, so that neighbours
+  share every corner. Each chain of edges between two junctions is walked once in its fewest
+  straight pieces, within a micrometre: Boolean operations move corners up to half of one, which
+  a tolerance of a few nanometres mistook for corners of the part.
+- Which Delaunay triangles lie on one circle follows from the in-circle determinant's own
+  gradient, not a fixed distance: on the test parts, such corners and others lie a thousand times
+  apart by this measure.
+
+### Removed
+
+- `layercraft_geom::triangulate_evenly` takes an outline, lines and what to fill, not cells, and
+  `Triangles` says how many triangles lie in filled faces and a point inside each face.
+
 ## 0.16.2
 
 ### Documentation

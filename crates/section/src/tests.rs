@@ -537,14 +537,15 @@ fn refining_keeps_the_mesh_closed_and_its_volume() {
         .iter()
         .map(|p| [5.0 + c * p[0] - s * p[1], 4.0 + s * p[0] + c * p[1]])
         .collect();
-    let inner = layercraft_geom::union_contours(&[square]).unwrap();
     let cover =
         layercraft_geom::union_contours(&[vec![[-2.0, -2.0], [12.0, -2.0], [12.0, 10.0], [-2.0, 10.0]]])
             .unwrap();
-    let outer = difference(&cover, &inner).unwrap();
-    let t = layercraft_geom::triangulate_evenly(&[(inner, true), (outer, false)], 0.5).unwrap();
-    let split = t.cells.iter().take_while(|&&c| c == 0).count();
-    let net = crate::trace::Net::new(&t.points, &t.triangles, split).unwrap();
+    let edge: Vec<[f64; 2]> = square.iter().chain(square.first()).copied().collect();
+    let filled = |p: [f64; 2]| {
+        layercraft_geom::encloses(square.iter().copied().zip(square.iter().cycle().skip(1).copied()), p)
+    };
+    let t = layercraft_geom::triangulate_evenly(&cover, &[edge], &filled, 0.5).unwrap();
+    let net = crate::trace::Net::new(&t.points, &t.triangles, t.filled).unwrap();
     let refined = crate::refine::refine(&mesh, &net, [[0.0, 0.0], [10.0, 8.0]], [-1.0, 10.0]);
     assert_eq!(refined.unsplit, 0);
     let body = &refined.mesh.bodies[0];
@@ -579,5 +580,79 @@ fn refining_keeps_the_mesh_closed_and_its_volume() {
             _ => corners.len() < 3,
         };
         assert!(fits, "a triangle over corners {corners:?}");
+    }
+}
+
+/// A cap of a sphere of radius `big` over a disc of radius `disc`, in rings and spokes, with an
+/// up-facing surface only: enough to read its patch.
+fn cap(centre: [f64; 3], disc: f64, big: f64, rings: usize, spokes: usize) -> Body {
+    let height = |r: f64| centre[2] + (big * big - r * r).sqrt() - big;
+    let mut vertices = vec![[centre[0], centre[1], height(0.0)]];
+    let mut triangles = Vec::new();
+    for i in 1..=rings {
+        let r = disc * i as f64 / rings as f64;
+        for j in 0..spokes {
+            let a = std::f64::consts::TAU * j as f64 / spokes as f64;
+            vertices.push([centre[0] + r * a.cos(), centre[1] + r * a.sin(), height(r)]);
+        }
+    }
+    let at = |i: usize, j: usize| (1 + (i - 1) * spokes + j % spokes) as u32;
+    for j in 0..spokes {
+        triangles.push([0, at(1, j), at(1, j + 1)]);
+        for i in 1..rings {
+            triangles.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+            triangles.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+        }
+    }
+    Body { name: "cap".into(), vertices, triangles, ..Body::default() }
+}
+
+#[test]
+fn facets_overlapping_on_the_plate_tile_it_whichever_way_it_lies() {
+    // Two caps one above the other, their curved outlines crossing, and a third whose outline
+    // runs along the second's for a stretch: finely cut outlines, cut differently on each side.
+    let bodies = vec![
+        cap([20.0, 20.0, 4.0], 11.0, 40.0, 14, 96),
+        cap([26.0, 21.0, 9.0], 9.0, 34.0, 12, 80),
+        cap([26.0, 21.0, 14.0], 9.0005, 34.0, 12, 110),
+    ];
+    let mesh = Mesh { bodies, ..Mesh::default() };
+    for (angle, mirror) in [(0.0f64, false), (37.0, false), (110.0, true)] {
+        let turned = turned(&mesh, angle.to_radians(), mirror);
+        let shadow: Vec<[f64; 2]> =
+            turned.bodies.iter().flat_map(|b| b.vertices.iter().map(|v| [v[0], v[1]])).collect();
+        let patches = crate::patches::patches(&turned, 20f64.to_radians().tan()).unwrap();
+        let t =
+            crate::triangulation::triangulation(&patches, 0.25, 2.0, &crate::triangulation::hull(&shadow))
+                .unwrap();
+        let inner = &t.triangles[..t.inner];
+        assert!(!inner.is_empty());
+        // The net refuses a triangle not counterclockwise, and an edge used twice the same way.
+        crate::trace::Net::new(&t.points, &t.triangles, t.inner).unwrap();
+        // Used once, an edge lies on the outline of all the triangles, whose area is the plate's:
+        // so that no gap opens between them, and no leaf is refused for bending along one.
+        let mut uses: std::collections::HashMap<(u32, u32), u32> = Default::default();
+        for &[a, b, c] in &t.triangles {
+            for (p, q) in [(a, b), (b, c), (c, a)] {
+                *uses.entry((p.min(q), p.max(q))).or_default() += 1;
+            }
+        }
+        assert!(uses.values().all(|&n| n <= 2), "{angle}°: an edge under three triangles");
+        // The edges used once make one ring, that of the plate: any other is a hole.
+        let mut next: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+        for (&(p, q), _) in uses.iter().filter(|(_, n)| **n == 1) {
+            next.entry(p).or_default().push(q);
+            next.entry(q).or_default().push(p);
+        }
+        let Some(&start) = next.keys().next() else { panic!("{angle}°: no outline") };
+        let (mut seen, mut open) = (std::collections::HashSet::from([start]), vec![start]);
+        while let Some(p) = open.pop() {
+            for &q in next.get(&p).into_iter().flatten() {
+                if seen.insert(q) {
+                    open.push(q);
+                }
+            }
+        }
+        assert_eq!(seen.len(), next.len(), "{angle}°: a hole among the triangles");
     }
 }

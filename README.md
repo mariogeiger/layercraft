@@ -267,10 +267,10 @@ filament change between.
 ## What it does not do yet
 
 One printer, the Bambu Lab X2D. Supports are straight columns of lines, with no tree supports and
-no interface under a column standing on the part. Bent layers stop with an error on some meshes,
-the Benchy among them, whose pictures here are compiled with `--flat`; and a `.ply` of the
-sections, regions or paths draws a bent layer flat, where the program's is true. layercraft is
-young: every change is checked against solids whose volumes and sections are known exactly.
+no interface under a column standing on the part. A `.ply` of the sections, regions or paths draws
+a bent layer flat, where the program's is true, so the Benchy's pictures here are compiled with
+`--flat`. layercraft is young: every change is checked against solids whose volumes and sections
+are known exactly.
 
 ## The rest
 

@@ -770,20 +770,24 @@ fn a_bridge_across_a_turned_slab_goes_across_the_turned_slab() {
 fn cells_sharing_edges_are_cut_into_even_triangles_that_meet() {
     // A 4 × 3 rectangle and a 3 × 2 one against the middle of its right side: the smaller
     // one's corners lie on the larger one's side, which must pass through them.
-    let cells = |g: &dyn Fn(Point) -> Point, mirror: bool| -> Vec<(Region, bool)> {
-        [rect(0.0, 0.0, 4.0, 3.0), rect(4.0, 0.5, 7.0, 2.5)]
+    let cells = |g: &dyn Fn(Point) -> Point, mirror: bool| -> Triangles {
+        let rings: Vec<Vec<Point>> = [rect(0.0, 0.0, 4.0, 3.0), rect(4.0, 0.5, 7.0, 2.5)]
             .into_iter()
             .map(|r| {
                 let mut c: Vec<Point> = r.into_iter().map(g).collect();
                 if mirror {
                     c.reverse();
                 }
-                (union_contours(&[c]).unwrap(), true)
+                c
             })
-            .collect()
+            .collect();
+        let outline = union_contours(&rings).unwrap();
+        let lines: Vec<Vec<Point>> =
+            rings.iter().map(|r| r.iter().chain(r.first()).copied().collect()).collect();
+        triangulate_evenly(&outline, &lines, &|_| true, 0.25).unwrap()
     };
     let spacing = 0.25;
-    let mesh = triangulate_evenly(&cells(&|p| p, false), spacing).unwrap();
+    let mesh = cells(&|p| p, false);
     let corner = |i: u32| mesh.points[i as usize];
     let mut uses: std::collections::HashMap<(u32, u32), usize> = Default::default();
     let (mut total, mut longest) = (0.0, 0.0f64);
@@ -810,7 +814,7 @@ fn cells_sharing_edges_are_cut_into_even_triangles_that_meet() {
     // Turned or mirrored, the cells are cut at the turned or mirrored points.
     for (angle, mirror) in [(37.0, false), (110.0, true)] {
         let g = isometry(angle, mirror, [3.0, -5.0]);
-        let there = triangulate_evenly(&cells(&g, mirror), spacing).unwrap();
+        let there = cells(&g, mirror);
         assert_eq!(there.points.len(), mesh.points.len(), "{angle}°");
         let moved: Vec<Point> = mesh.points.iter().map(|&p| g(p)).collect();
         let far = there
