@@ -35,7 +35,7 @@ layercraft compile --from paths=paths.json \
   --out part.gcode.3mf             # carry on
 ```
 
-The stages of one layer sit exactly on top of each other. This one boat is four files, from the
+The stages of one layer sit on top of each other, a bent layer's on its bend. This one boat is four files, from the
 bottom up: the program coloured by time, then the paths, the regions and the sections.
 
 </td>
@@ -230,7 +230,7 @@ number in every stage, and the file's header names them (`role: 0 outer wall, 1 
 so a viewer can show a legend.
 
 [SolidCraft](https://github.com/tangency-labs/solidcraft) draws all of this, live, with the
-colour and the filters on the GPU, so a slider follows the mouse even on the 1.3 million moves of
+colour and the filters on the GPU, so a slider follows the mouse even on the 2 million moves of
 a Benchy's program. This is still a proposal upstream; until it lands, it lives on the
 [`stage-viewer` branch of a fork](https://github.com/mariogeiger/solidcraft/tree/stage-viewer).
 
@@ -267,10 +267,8 @@ filament change between.
 ## What it does not do yet
 
 One printer, the Bambu Lab X2D. Supports are straight columns of lines, with no tree supports and
-no interface under a column standing on the part. A `.ply` of the sections, regions or paths draws
-a bent layer flat, where the program's is true, so the Benchy's pictures here are compiled with
-`--flat`. layercraft is young: every change is checked against solids whose volumes and sections
-are known exactly.
+no interface under a column standing on the part. layercraft is young: every change is checked
+against solids whose volumes and sections are known exactly.
 
 ## The rest
 

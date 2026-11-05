@@ -2,6 +2,26 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.1
+
+### Changed
+
+- Compiling is much faster again. The Benchy takes 29 s with `--flat` (45 s at 0.12.0, 479 s at
+  0.16.1, same machine, same 3606 mm of filament) and 103 s with bent layers (about 8 min at
+  0.17.0, same 3578 mm), and no longer spends its time offsetting. A disc offset now goes in
+  stages of 0.25 mm, whose erosions add up, so that what is thin dies early instead of its edges
+  all crossing; a curve's gentle turns keep one vertex each instead of doubling at every stage;
+  and a band's insets each go on from the one before.
+- An offset stays within a micrometre of the exact one on both sides, no longer only inside it.
+
+### Fixed
+
+- A `.ply` of the sections, regions or paths draws a bent layer on its bend, as the program's did:
+  sections and regions halfway between the layer's top and the one below, beads half their height
+  under the top. The README's pictures of the Benchy now show it with its bent layers.
+- A band of a dense area could keep a needle a nanometre thin along the area's edge, up to 27 mm
+  long, joining two bands into one and changing which beads filled them with the part's rotation.
+
 ## 0.17.0
 
 ### Fixed

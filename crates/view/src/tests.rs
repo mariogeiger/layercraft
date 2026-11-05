@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Point, union_contours};
+use layercraft_geom::{Carrier, Point, Warp, union_contours};
 use layercraft_mesh::{Body, Mesh};
 use layercraft_motion::{Arc, Bead, Layer as MoveLayer, Limits, Move, Program};
 use layercraft_path::{Path, PathLayer};
@@ -105,6 +105,115 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
     assert_eq!(roles, [[0.0; 8].as_slice(), &[2.0; 4]].concat());
     assert!(close(area(&c), 16.0));
     assert!(c.triangles.rows.iter().all(|(_, v)| v == &[3.0, 6.0]));
+}
+
+/// A pyramid of height 1 over the square `[0, 10]²`, on four triangles about its centre.
+fn pyramid() -> (Carrier, Warp, impl Fn(Point) -> f64) {
+    let points = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [5.0, 5.0]];
+    let carrier = Carrier::new(points, vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]]).unwrap();
+    let warp = Warp::new(vec![0.0, 0.0, 0.0, 0.0, 1.0]).unwrap();
+    (carrier, warp, |p: Point| 1.0 - (p[0] - 5.0).abs().max((p[1] - 5.0).abs()) / 5.0)
+}
+
+#[test]
+fn a_bent_layer_is_drawn_on_its_bend() {
+    let (carrier, warp, peak) = pyramid();
+    let layer = |index: usize, top: f64, warp: &Warp| Layer {
+        index,
+        top,
+        height: 0.2,
+        warp: warp.clone(),
+        region: union_contours(&[square(1.0, 1.0, 8.0)]).unwrap(),
+        materials: Vec::new(),
+    };
+    let flat = Warp::default();
+    let s = Sections {
+        carrier: carrier.clone(),
+        layers: vec![layer(0, 0.2, &flat), layer(1, 0.4, &warp), layer(2, 0.6, &warp)],
+        open_chains: 0,
+        widest_crack: 0.0,
+        unsplit_cells: 0,
+    };
+    let c = sections(&s).unwrap();
+    // Layer 1 stands on a flat top, layer 2 on layer 1's: its middle bends half as much, then all.
+    for (t, v) in &c.triangles.rows {
+        let [a, b, p] = t.map(|i| c.points.rows[i as usize].0);
+        let (plane, share) = match v[0] as usize {
+            0 => (0.1, 0.0),
+            1 => (0.3, 0.5),
+            _ => (0.5, 1.0),
+        };
+        for q in [a, b, p] {
+            assert!(close(q[2], plane + share * peak([q[0], q[1]])), "{q:?} on layer {}", v[0]);
+        }
+        // Inside each triangle too: none cuts across the pyramid's ridges.
+        let middle = [(a[0] + b[0] + p[0]) / 3.0, (a[1] + b[1] + p[1]) / 3.0];
+        let z = (a[2] + b[2] + p[2]) / 3.0;
+        assert!(close(z, plane + share * peak(middle)), "{middle:?} on layer {}", v[0]);
+    }
+    assert!(close(area(&c), 3.0 * 64.0), "{}", area(&c));
+
+    let bead = |points: Vec<Point>, closed: bool| Path {
+        role: Role::OUTER_WALL,
+        width: 0.42,
+        closed,
+        points,
+        travel_crosses: false,
+        overhang: Vec::new(),
+    };
+    let p = Paths {
+        carrier: carrier.clone(),
+        layers: vec![PathLayer {
+            index: 1,
+            top: 0.4,
+            height: 0.2,
+            warp: warp.clone(),
+            paths: vec![bead(vec![[0.0, 5.0], [10.0, 5.0]], false), bead(square(3.0, 3.0, 4.0), true)],
+            material: 0,
+        }],
+    };
+    let c = paths(&p).unwrap();
+    // The first bead climbs to the summit and down, cut there; the ring lies level at 0.6, cut
+    // at its corners, where it crosses the ridges, and closed.
+    let on = |q: [f64; 3]| close(q[2], 0.3 + peak([q[0], q[1]]));
+    assert!(c.points.rows.iter().all(|(q, _)| on(*q)));
+    assert!(c.points.rows.iter().any(|(q, _)| close(q[2], 1.3)), "the summit is drawn");
+    let lengths: f64 = c
+        .segments
+        .rows
+        .iter()
+        .map(|(e, _)| {
+            let [a, b] = e.map(|i| c.points.rows[i as usize].0);
+            (a[0] - b[0]).hypot(a[1] - b[1])
+        })
+        .sum();
+    assert!(close(lengths, 10.0 + 16.0), "{lengths}");
+
+    // A wall of the regions lies on the same middle as the section.
+    let r = Regions {
+        carrier,
+        layers: vec![RegionLayer {
+            index: 1,
+            material: 0,
+            top: 0.4,
+            height: 0.2,
+            warp,
+            walls: vec![union_contours(&[square(1.0, 1.0, 8.0)]).unwrap()],
+            inner_walls_within: None,
+            top_surface: Vec::new(),
+            solid: union_contours(&[square(2.0, 2.0, 6.0)]).unwrap(),
+            bridge: Vec::new(),
+            bridge_on_sparse: Vec::new(),
+            sparse: Vec::new(),
+            below: None,
+            above: Vec::new(),
+            supports: Vec::new(),
+            support_interface: Vec::new(),
+        }],
+    };
+    let c = regions(&r).unwrap();
+    assert!(c.points.rows.iter().all(|(q, _)| close(q[2], 0.3 + peak([q[0], q[1]]) / 2.0)));
+    assert!(close(area(&c), 36.0), "{}", area(&c));
 }
 
 #[test]

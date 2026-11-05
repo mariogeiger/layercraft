@@ -29,8 +29,8 @@ pub use orient::orientation;
 pub use relief::{Carrier, MAX_POINTS, Relief, Warp};
 
 pub use ops::{
-    GRID_MM, RESOLUTION_MM, area, clip_lines, difference, disc_offset, disc_opening, intersection, offset,
-    opening, triangulate, union, union_contours, winding_region,
+    Erosions, GRID_MM, RESOLUTION_MM, area, clip_lines, difference, disc_offset, disc_opening, intersection,
+    offset, opening, slice, triangulate, union, union_contours, winding_region,
 };
 
 /// A point in the plane, in millimetres.

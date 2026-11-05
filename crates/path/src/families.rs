@@ -21,8 +21,8 @@
 
 use crate::frame::Frame;
 use layercraft_geom::{
-    Contour, GeomError, Moments, Point, Polyline, RESOLUTION_MM, Region, Relief, bounds, clip_lines,
-    difference, disc_offset, disc_opening, edges, encloses, hatch, intersection, polyline_length,
+    Contour, Erosions, GeomError, Moments, Point, Polyline, RESOLUTION_MM, Region, Relief, bounds,
+    clip_lines, difference, disc_offset, disc_opening, edges, encloses, hatch, intersection, polyline_length,
     segment_distance, union, winding_region,
 };
 use std::cmp::Ordering;
@@ -527,14 +527,13 @@ struct Inset {
 }
 
 /// The insets of an area `s/2 + k·s` deep, the level sets of the distance to its edge, where a bead
-/// `w` wide passes, as far as `depth` and as long as they reach into `bands`. Each is taken from
-/// the area itself, the disc's erosions and dilations adding up, `E(E(A, a), b) = E(A, a + b)`:
-/// an offset of an offset would cut each arc's chords again.
+/// `w` wide passes, as far as `depth` and as long as they reach into `bands`.
 fn insets(area: &Region, bands: &Region, s: f64, w: f64, depth: f64) -> Result<Vec<Inset>, GeomError> {
     let mut out = Vec::new();
+    let mut erosions = Erosions::new(area, depth + w / 2.0)?;
     let mut k = 0usize;
     while s / 2.0 + k as f64 * s <= depth {
-        let past = disc_offset(area, -(s / 2.0 + k as f64 * s + w / 2.0))?;
+        let past = erosions.at(s / 2.0 + k as f64 * s + w / 2.0)?;
         let centre = disc_offset(&past, w / 2.0)?;
         if intersection(&centre, bands)?.is_empty() {
             break;
@@ -651,15 +650,16 @@ pub(crate) fn fill(
     let mut components: Vec<Component> = area.iter().map(|shape| Component::new(shape, &fall)).collect();
     // What a disc `W*` across reaches in the area, and the kernel's resolution on: where it runs
     // along the area's edge it covers it, which the two edges, rounded each its own way, would
-    // leave needles between as thin as the lattice. The rest is the bands.
-    let thick = match crossing > 0.0 {
+    // leave needles between as thin as the lattice. The rest is the bands, what that reach leaves
+    // of the area: the area less their common part would bring those needles back.
+    let (thick, thin) = match crossing > 0.0 {
         true => {
             let core = disc_offset(area, -crossing / 2.0)?;
-            intersection(&disc_offset(&core, crossing / 2.0 + RESOLUTION_MM)?, area)?
+            let reached = disc_offset(&core, crossing / 2.0 + RESOLUTION_MM)?;
+            (intersection(&reached, area)?, difference(area, &reached)?)
         }
-        false => area.clone(),
+        false => (area.clone(), Vec::new()),
     };
-    let thin = difference(area, &thick)?;
     let mut cells = cells_of(&thick, &thin, &components, beneath)?;
     for (j, component) in components.iter_mut().enumerate() {
         component.add_below(cells.iter().filter(|c| c.component == j).flat_map(|c| c.below.iter()));

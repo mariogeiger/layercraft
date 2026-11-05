@@ -2,8 +2,11 @@
 //!
 //! A bead's centre line lies half its height under the nozzle: at a layer's mid-height, where
 //! the section cuts, or a strand's radius down for a bridge, which hangs round. So the stages of
-//! one layer overlay, and a role has the same code in all of them. A comment names the values of
-//! each label, `role: 0 outer wall, 1 inner wall, …`, for a viewer's legend.
+//! one layer overlay, and a role has the same code in all of them. A bent layer is drawn on its
+//! bend: sections and regions halfway between the layer's top and the top of the one below it,
+//! beads half their height under the top; each edge and area is cut where the bend turns, so
+//! that it lies on the bend everywhere. A comment names the values of each label,
+//! `role: 0 outer wall, 1 inner wall, …`, for a viewer's legend.
 //!
 //! - mesh: the bodies' triangles, with their `body`;
 //! - sections: each layer's section, triangulated, with its `layer`;
@@ -17,12 +20,14 @@
 //!   After the machine's own G-code the nozzle may be anywhere: nothing is drawn until it is known.
 
 use crate::ply::{Complex, ViewError, float, int};
-use layercraft_geom::{Point, Region, triangulate};
+use layercraft_geom::{Carrier, Point, Region, Relief, Warp, bounds, slice, triangulate};
 use layercraft_mesh::Mesh;
 use layercraft_motion::{Limits, Program, estimate};
 use layercraft_path::{Paths, Role};
 use layercraft_region::Regions;
 use layercraft_section::Sections;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 
 /// A role's name in a legend.
 pub fn role_name(role: Role) -> String {
@@ -56,38 +61,148 @@ fn chords(r: f64) -> usize {
     if n.is_finite() { n.clamp(3.0, 4096.0) as usize } else { 3 }
 }
 
-/// Adds `region`'s triangles at height `z`.
+/// How far a layer's drawing lies over its plane at each point: a mean of the layer tops' reliefs.
+struct Bend<'a> {
+    parts: Vec<(&'a Relief, f64)>,
+}
+
+impl Bend<'_> {
+    fn is_flat(&self) -> bool {
+        self.parts.iter().all(|(relief, _)| relief.is_zero())
+    }
+
+    fn at(&self, p: Point) -> f64 {
+        self.parts.iter().map(|(relief, share)| share * relief.at(p)).sum()
+    }
+
+    /// The fractions of the way from `a` to `b` where it may turn, in order.
+    fn breaks(&self, a: Point, b: Point) -> Vec<f64> {
+        let mut ts: Vec<f64> = self.parts.iter().flat_map(|(relief, _)| relief.breaks(a, b)).collect();
+        ts.sort_by(f64::total_cmp);
+        ts.dedup();
+        ts
+    }
+
+    /// The edges of its triangles over the box from `lo` to `hi`, each once.
+    fn edges(&self, lo: Point, hi: Point) -> Vec<[Point; 2]> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for (relief, _) in &self.parts {
+            for ([a, b, c], _) in relief.facets_over(lo, hi) {
+                for (p, q) in [(a, b), (b, c), (c, a)] {
+                    let (u, v) = ([p[0].to_bits(), p[1].to_bits()], [q[0].to_bits(), q[1].to_bits()]);
+                    if seen.insert(if u <= v { (u, v) } else { (v, u) }) {
+                        out.push([p, q]);
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Each layer's top as a relief, and the position of the layer each stands on, the last pass of
+/// the index before its own, for layers given by their indices and warps.
+fn tops<'a>(
+    carrier: &Carrier,
+    layers: impl Iterator<Item = (usize, &'a Warp)>,
+) -> Result<(Vec<Relief>, Vec<Option<usize>>), ViewError> {
+    let (mut reliefs, mut below) = (Vec::new(), Vec::new());
+    let (mut under, mut current): (Option<usize>, Option<(usize, usize)>) = (None, None);
+    for (position, (index, warp)) in layers.enumerate() {
+        reliefs.push(carrier.relief(warp).map_err(ViewError::Geometry)?);
+        if let Some((last, at)) = current
+            && last != index
+        {
+            under = Some(at);
+        }
+        below.push(under);
+        current = Some((index, position));
+    }
+    Ok((reliefs, below))
+}
+
+/// Each layer's drawing halfway between its top and the top it stands on, the bed at first.
+fn middles<'a>(reliefs: &'a [Relief], below: &[Option<usize>], bed: &'a Relief) -> Vec<Bend<'a>> {
+    reliefs
+        .iter()
+        .zip(below)
+        .map(|(own, under)| {
+            let under = under.and_then(|k| reliefs.get(k)).unwrap_or(bed);
+            Bend { parts: vec![(own, 0.5), (under, 0.5)] }
+        })
+        .collect()
+}
+
+/// Adds `region`'s triangles at height `z` on `bend`: each face between the edges of the bend's
+/// triangles is linear, so that its own triangles lie on the bend.
 fn fill<const E: usize, const F: usize>(
     c: &mut Complex<0, E, F>,
     region: &Region,
     z: f64,
+    bend: &Bend,
     values: [f64; F],
 ) -> Result<(), ViewError> {
-    let (points, triangles) = triangulate(region).map_err(ViewError::Geometry)?;
-    let first = c.points.rows.len() as u32;
-    for p in &points {
-        c.point([p[0], p[1], z], [])?;
+    let mut faces: Vec<Region> = vec![region.clone()];
+    if !bend.is_flat()
+        && let Some([lo, hi]) = bounds(region)
+    {
+        let edges = bend.edges(lo, hi);
+        if !edges.is_empty() {
+            faces =
+                slice(region, &edges).map_err(ViewError::Geometry)?.into_iter().map(|s| vec![s]).collect();
+        }
     }
-    for t in triangles {
-        c.triangle(t.map(|i| first + i), values);
+    // The faces share their corners, on the lattice: a point of the plate, one point of the bend.
+    let mut ids: HashMap<[u64; 2], u32> = HashMap::new();
+    for face in &faces {
+        let (points, triangles) = triangulate(face).map_err(ViewError::Geometry)?;
+        let mut own = Vec::with_capacity(points.len());
+        for p in &points {
+            own.push(match ids.entry([p[0].to_bits(), p[1].to_bits()]) {
+                Entry::Occupied(id) => *id.get(),
+                Entry::Vacant(place) => *place.insert(c.point([p[0], p[1], z + bend.at(*p)], [])?),
+            });
+        }
+        for t in triangles {
+            if let [Some(&a), Some(&b), Some(&d)] = t.map(|i| own.get(i as usize)) {
+                c.triangle([a, b, d], values);
+            }
+        }
     }
     Ok(())
 }
 
-/// Adds a polyline at height `z`, back to its start when `closed`.
+/// Adds a polyline at height `z` on `bend`, back to its start when `closed`.
 fn polyline<const E: usize, const F: usize>(
     c: &mut Complex<0, E, F>,
     points: &[Point],
     closed: bool,
     z: f64,
+    bend: &Bend,
     values: [f64; E],
 ) -> Result<(), ViewError> {
+    let closes = closed && points.len() >= 3;
     let mut ids = Vec::with_capacity(points.len());
-    for p in points {
-        ids.push(c.point([p[0], p[1], z], [])?);
+    let mut add = |c: &mut Complex<0, E, F>, p: Point| -> Result<(), ViewError> {
+        ids.push(c.point([p[0], p[1], z + bend.at(p)], [])?);
+        Ok(())
+    };
+    let ends = points.iter().zip(points.iter().cycle().skip(1)).take(if closes {
+        points.len()
+    } else {
+        points.len().saturating_sub(1)
+    });
+    for (&a, &b) in ends {
+        add(c, a)?;
+        for t in bend.breaks(a, b) {
+            add(c, [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])])?;
+        }
     }
-    if closed && ids.len() >= 3 {
+    if closes {
         ids.extend(ids.first().copied());
+    } else if let Some(&last) = points.last() {
+        ids.push(c.point([last[0], last[1], z + bend.at(last)], [])?);
     }
     for w in ids.windows(2) {
         if let [a, b] = *w {
@@ -120,8 +235,10 @@ pub fn mesh(mesh: &Mesh) -> Result<Complex<0, 0, 1>, ViewError> {
 /// Each layer's section, at mid-height, with its `layer`.
 pub fn sections(sections: &Sections) -> Result<Complex<0, 0, 1>, ViewError> {
     let mut c = Complex::new([], [], [int("layer")]);
-    for layer in &sections.layers {
-        fill(&mut c, &layer.region, layer.top - layer.height / 2.0, [layer.index as f64])?;
+    let (reliefs, below) = tops(&sections.carrier, sections.layers.iter().map(|l| (l.index, &l.warp)))?;
+    let bed = Relief::default();
+    for (layer, bend) in sections.layers.iter().zip(middles(&reliefs, &below, &bed)) {
+        fill(&mut c, &layer.region, layer.top - layer.height / 2.0, &bend, [layer.index as f64])?;
     }
     Ok(c)
 }
@@ -130,23 +247,25 @@ pub fn sections(sections: &Sections) -> Result<Complex<0, 0, 1>, ViewError> {
 pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
     let mut c = Complex::new([], [int("layer"), int("role")], [int("layer"), int("role")]);
     c.comments.push(role_comment());
-    for layer in &regions.layers {
+    let (reliefs, below) = tops(&regions.carrier, regions.layers.iter().map(|l| (l.index, &l.warp)))?;
+    let bed = Relief::default();
+    for (layer, bend) in regions.layers.iter().zip(middles(&reliefs, &below, &bed)) {
         let (z, index) = (layer.top - layer.height / 2.0, layer.index as f64);
         for (k, wall) in layer.walls.iter().enumerate() {
             let role = role_code(if k == 0 { Role::OUTER_WALL } else { Role::INNER_WALL });
             for contour in wall.iter().flatten() {
-                polyline(&mut c, contour, true, z, [index, role])?;
+                polyline(&mut c, contour, true, z, &bend, [index, role])?;
             }
         }
         let solid = if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID };
         let roles = [Role::TOP_SURFACE, solid, Role::BRIDGE, Role::INTERNAL_BRIDGE, Role::SPARSE];
         for (area, role) in layer.infill().into_iter().zip(roles) {
-            fill(&mut c, area, z, [index, role_code(role)])?;
+            fill(&mut c, area, z, &bend, [index, role_code(role)])?;
         }
         for (area, role) in
             [(&layer.supports, Role::SUPPORT), (&layer.support_interface, Role::SUPPORT_INTERFACE)]
         {
-            fill(&mut c, area, z, [index, role_code(role)])?;
+            fill(&mut c, area, z, &bend, [index, role_code(role)])?;
         }
     }
     Ok(c)
@@ -158,11 +277,13 @@ pub fn paths(paths: &Paths) -> Result<Complex<0, 5, 0>, ViewError> {
     let mut c = Complex::new([], properties, []);
     c.comments.push(role_comment());
     let mut bead = 0usize;
-    for layer in &paths.layers {
+    let (reliefs, _) = tops(&paths.carrier, paths.layers.iter().map(|l| (l.index, &l.warp)))?;
+    for (layer, relief) in paths.layers.iter().zip(&reliefs) {
+        let bend = Bend { parts: vec![(relief, 1.0)] };
         for path in &layer.paths {
             let [w, h] = bead_section(path.role, path.width, layer.height);
             let values = [layer.index as f64, role_code(path.role), w, h, bead as f64];
-            polyline(&mut c, &path.points, path.closed, layer.top - h / 2.0, values)?;
+            polyline(&mut c, &path.points, path.closed, layer.top - h / 2.0, &bend, values)?;
             bead += 1;
         }
     }

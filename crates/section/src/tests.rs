@@ -370,7 +370,8 @@ fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
         let other = section(&turned(&mesh, angle.to_radians(), mirror), &bent()).unwrap();
         assert_eq!(other.layers.len(), sections.layers.len());
         assert_eq!(other.unsplit_cells, 0);
-        // Every leaf, at every point, a micrometre's rounding apart at most.
+        // Every leaf, at every point, its slope of 0.15 times what the corners of its triangles,
+        // along an outline offset from the solid's, slide apart at most: a micrometre's rounding.
         let mut worst = 0.0f64;
         let mut at_worst = (0, [0.0; 2], 0.0, 0.0);
         let pairs = sections.layers.iter().zip(tops(&sections)).zip(other.layers.iter().zip(tops(&other)));
@@ -389,7 +390,7 @@ fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
             assert!((area(a) - area(b)).abs() < 1e-3 * area(a).max(1.0), "layer {}", a.index);
         }
         assert!(
-            worst < 1e-5,
+            worst < 0.15 * layercraft_geom::RESOLUTION_MM,
             "turned {angle}°, mirrored {mirror}: the leaves differ by {worst} mm at {at_worst:?}"
         );
     }

@@ -574,7 +574,8 @@ fn vertices_apart(a: &Region, b: &Region) -> f64 {
 fn a_disc_offset_turns_and_mirrors_with_its_region() {
     // A region with no symmetry, with sharp, blunt and reflex corners and a hole: grown or shrunk,
     // then turned or mirrored, it is grown or shrunk once turned or mirrored, each arc cut into
-    // the same chords, to the lattice's rounding.
+    // the same chords, under RESOLUTION_MM apart: a gentle turn slides its vertex along the curve
+    // by its edges' rounding over the turn.
     let outline = vec![[0.0, 0.0], [9.0, 0.0], [9.5, 4.0], [5.0, 3.0], [6.0, 7.5], [1.0, 6.0]];
     let region = union_contours(&[outline, vec![[2.0, 1.5], [2.5, 3.5], [3.6, 2.0]]]).unwrap();
     for (angle, mirror) in [(37.0, false), (110.0, true)] {
@@ -586,7 +587,7 @@ fn a_disc_offset_turns_and_mirrors_with_its_region() {
             let count = |r: &Region| r.iter().flatten().map(Vec::len).sum::<usize>();
             assert_eq!((a.len(), count(&a)), (b.len(), count(&b)), "offset {d}, {angle}°");
             let gap = vertices_apart(&a, &b);
-            assert!(gap < 1e-5, "offset {d}, {angle}°: vertices {gap} mm apart");
+            assert!(gap < RESOLUTION_MM, "offset {d}, {angle}°: vertices {gap} mm apart");
         }
     }
 }
@@ -613,7 +614,7 @@ fn a_disc_offset_of_a_square_is_its_sum_with_a_disc() {
         let grown = disc_offset(&a, r).unwrap();
         let (got, exact) = (area(&grown), 100.0 + 40.0 * r + std::f64::consts::PI * r * r);
         let cut = 2.0 * std::f64::consts::PI * r * RESOLUTION_MM;
-        assert!(got <= exact + 1e-9 && exact - got <= cut, "{r}: {got} of {exact}");
+        assert!((got - exact).abs() <= cut, "{r}: {got} of {exact}");
         let shrunk = area(&disc_offset(&a, -r).unwrap());
         assert!(close(shrunk, (10.0 - 2.0 * r).powi(2)), "{r}: {shrunk}");
         let back = disc_offset(&grown, -r).unwrap();
@@ -624,6 +625,41 @@ fn a_disc_offset_of_a_square_is_its_sum_with_a_disc() {
             "{r}: {off} {corners}"
         );
     }
+}
+
+#[test]
+fn a_disc_offset_in_stages_keeps_its_arcs_chords() {
+    // A square grown by r has four quarter turns of radius r, each cut once into chords that stay
+    // within RESOLUTION_MM of it: the stages after the first carry each vertex along, one for one,
+    // but for a chord whose rounding tips its turn over the limit, split once into half turns.
+    let a = union_contours(&[square(0.0, 0.0, 10.0)]).unwrap();
+    for r in [3.0, 12.0, 47.0] {
+        let grown = disc_offset(&a, r).unwrap();
+        let chord = 2.0 * (1.0 - RESOLUTION_MM / r).acos();
+        let most = 2.0 * 4.0 * ((std::f64::consts::FRAC_PI_2 / chord).ceil() + 1.0);
+        let vertices = grown.iter().flatten().map(Vec::len).sum::<usize>() as f64;
+        assert!(vertices <= most, "{r}: {vertices} vertices, at most {most}");
+    }
+}
+
+#[test]
+fn erosions_one_from_the_other_are_those_of_the_region() {
+    // E(E(A, a), b) = E(A, a + b): a region with reflex corners and a hole, eroded in turn and at
+    // once, to within what the chords allow of the same arcs.
+    let outline = vec![[0.0, 0.0], [30.0, 0.0], [31.0, 14.0], [16.0, 10.0], [19.0, 24.0], [3.0, 19.0]];
+    let region = union_contours(&[outline, vec![[6.0, 5.0], [8.0, 11.0], [12.0, 6.0]]]).unwrap();
+    let mut erosions = Erosions::new(&region, 4.2).unwrap();
+    for depth in [0.35, 0.75, 1.15, 1.55, 2.6, 4.2] {
+        let (turn, once) = (erosions.at(depth).unwrap(), disc_offset(&region, -depth).unwrap());
+        for (from, to) in [(&turn, &once), (&once, &turn)] {
+            let off = from.iter().flatten().flatten().map(|&p| to_boundary(p, to)).fold(0.0, f64::max);
+            assert!(off < 2.0 * RESOLUTION_MM, "{depth}: {off} mm apart");
+        }
+    }
+    let deepest = disc_offset(&region, -4.2).unwrap();
+    assert_eq!(erosions.at(0.35).unwrap(), erosions.at(4.2).unwrap());
+    assert!((area(&erosions.at(4.2).unwrap()) - area(&deepest)).abs() < 0.1 * RESOLUTION_MM * 100.0);
+    assert!(Erosions::new(&region, 40.0).unwrap().at(40.0).unwrap().is_empty());
 }
 
 #[test]
