@@ -57,6 +57,6 @@ outranks feature work.**
   worktree: commit there with the hooks, merge onto `main`, then remove the branch and worktree.
 - Bump the version in every push (0.x: a breaking change bumps the second number, anything else
   the third) and add the user-visible change to `CHANGELOG.md`.
-- Push only with the owner's authority. Never commit build directories, sliced output or the
-  owner's designs; check `git status` and `git ls-files` before pushing.
+- Push every change as soon as it lands on `main`, without asking. Never commit build directories,
+  sliced output or the owner's designs; check `git status` and `git ls-files` before pushing.
 - Commit no design documents. The reason for a change goes in its commit message.
