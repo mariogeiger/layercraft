@@ -231,8 +231,7 @@ so a viewer can show a legend.
 
 [SolidCraft](https://github.com/tangency-labs/solidcraft) draws all of this, live, with the
 colour and the filters on the GPU, so a slider follows the mouse even on the 2 million moves of
-a Benchy's program. This is still a proposal upstream; until it lands, it lives on the
-[`stage-viewer` branch of a fork](https://github.com/mariogeiger/solidcraft/tree/stage-viewer).
+a Benchy's program. This came after its `v0.40.0-rc.2`: until a later release, build its `main`.
 
 ## Never harm the machine
 

@@ -2,6 +2,13 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.2
+
+### Changed
+
+- The README points to SolidCraft's own `main` to look at the stages' `.ply` files, now that it
+  draws their edges, faces and named numbers, instead of a branch of a fork.
+
 ## 0.17.1
 
 ### Changed
