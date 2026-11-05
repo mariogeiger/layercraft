@@ -2,6 +2,13 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.16.2
+
+### Documentation
+
+- The README is rewritten around a table: each thing that sets layercraft apart, beside a
+  screenshot of SolidCraft showing the `.ply` files layercraft wrote.
+
 ## 0.16.1
 
 ### Changed
