@@ -386,7 +386,7 @@ fn a_dense_strip_is_laid_along_its_length() {
     let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
     let at = |u: f64, v: f64| [u * c - v * s, u * s + v * c];
     let piece: Region = vec![vec![vec![at(0.0, -0.2), at(20.0, -0.2), at(20.0, 1.8), at(0.0, 1.8)]]];
-    let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 6.25 };
+    let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 6.25, shows: false };
     let laid = families::fill(&piece, spacing, &families::Beneath::default(), |_| None).unwrap();
     assert!(laid.lines.is_empty(), "{:?}", laid.lines);
     assert_eq!(laid.insets.len(), 2, "{:?}", laid.insets);
@@ -400,6 +400,45 @@ fn a_dense_strip_is_laid_along_its_length() {
             assert!(length < 2.0 || (angle - 30.0).abs() < 0.01, "a {length} mm stretch at {angle}°");
         }
     }
+}
+
+#[test]
+fn a_top_surface_takes_the_family_with_no_joins_to_see() {
+    // About the crossing width, as a Scrabble board's cell: inside, a notched one lies in insets,
+    // whose direction jumps along their diagonals; on a top surface, lines hide their ends under
+    // the wall and nothing jumps. Turned, the same.
+    let fill = |outline: &[Point], turn: f64, shows: bool| {
+        let (s, c) = turn.to_radians().sin_cos();
+        let piece: Region =
+            vec![vec![outline.iter().map(|p| [c * p[0] - s * p[1], s * p[0] + c * p[1]]).collect()]];
+        let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 20.0, shows };
+        families::fill(&piece, spacing, &families::Beneath::default(), |_| None).unwrap()
+    };
+    let square = [[0.0, 0.0], [21.0, 0.0], [21.0, 21.0], [0.0, 21.0]];
+    // A round socket 9.2 mm across, its neck 5.2 mm wide, open on the side x = 21.
+    let (centre, radius, neck) = ([15.5, 10.5], 4.6f64, 2.6f64);
+    let start = (neck / radius).asin();
+    let socket = (0..=48).map(|k| {
+        let angle = -start - (std::f64::consts::TAU - 2.0 * start) * f64::from(k) / 48.0;
+        [centre[0] + radius * angle.cos(), centre[1] + radius * angle.sin()]
+    });
+    let notched: Vec<Point> = [[0.0, 0.0], [21.0, 0.0], [21.0, centre[1] - neck]]
+        .into_iter()
+        .chain(socket)
+        .chain([[21.0, centre[1] + neck], [21.0, 21.0], [0.0, 21.0]])
+        .collect();
+    assert!(!fill(&notched, 0.0, false).insets.is_empty());
+    for outline in [&square[..], &notched[..]] {
+        for turn in [0.0, 37.0] {
+            let laid = fill(outline, turn, true);
+            assert!(laid.insets.is_empty(), "{turn}°: {} insets", laid.insets.len());
+            assert!(!laid.lines.is_empty());
+        }
+    }
+    // A band runs along itself, as inside, but in lines: lines across would be nothing but ends.
+    let band = fill(&[[0.0, 0.0], [40.0, 0.0], [40.0, 3.0], [0.0, 3.0]], 0.0, true);
+    assert!(band.insets.is_empty());
+    assert!(band.lines.iter().flatten().all(|p| p[0] < 0.5 || p[0] > 39.5), "{:?}", band.lines);
 }
 
 #[test]

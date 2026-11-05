@@ -2,6 +2,17 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.16.1
+
+### Changed
+
+- A top surface shows no joins it can avoid. There an inset now costs its bending energy,
+  `(s/2)∫κ²`, about `π/2` at each corner, and a line's end against the wall a quarter of an end,
+  up to a whole one on a bead as short as it is wide. A square or notched top about the crossing
+  width, which lay in insets with a diagonal join at each corner, now lies in one family of
+  lines. A Scrabble board's cells do, and the rings round their inlays; its ribs keep their insets.
+  Solid infill and the first layer are laid as before.
+
 ## 0.16.0
 
 ### Changed

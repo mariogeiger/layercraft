@@ -17,7 +17,7 @@
 //! family that costs least beside its neighbours', until none changes; ties go to the insets, then
 //! nearest the area's frame. Lines are centred across their area; the insets lie `s/2 + k·s` deep,
 //! and the strips they leave, narrower than two beads, go to the gap fill. On a bent layer's top,
-//! lines follow the fall line.
+//! lines follow the fall line. A top surface also pays for the joins it shows (`kinks`).
 
 use crate::frame::Frame;
 use layercraft_geom::{
@@ -55,6 +55,10 @@ const ALWAYS_CROSS: f64 = 1e12;
 /// The mean slope under which a piece counts as flat: a degree.
 const FLAT_SLOPE: f64 = 0.017_455_064_928_217_585;
 
+/// What an end at the area's edge costs on a top surface at the least, in ends: the wall it overlaps
+/// hides it, where a bend or an end against another family lies open on the surface.
+const HIDDEN_END: f64 = 0.25;
+
 /// The family of curves a cell's beads follow.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Family {
@@ -88,12 +92,13 @@ pub struct Dense {
 }
 
 /// How an area is laid: beads `spacing` apart and `width` wide, crossing the layer below where
-/// wider than `crossing`.
+/// wider than `crossing`; `shows` when it is a top surface, whose joins are seen.
 #[derive(Debug, Clone, Copy)]
 pub struct Spacing {
     pub spacing: f64,
     pub width: f64,
     pub crossing: f64,
+    pub shows: bool,
 }
 
 /// The direction of a segment, in degrees, and its length.
@@ -269,8 +274,10 @@ impl Component {
 /// A family a cell may take, and what it costs there.
 struct Choice {
     family: Family,
-    /// The ends on the area's edge.
+    /// The ends on the area's edge, by what each costs.
     edge_ends: f64,
+    /// What its bends cost, where the area shows.
+    kinks: f64,
     /// The ends on each neighbour's edge, by its host.
     ends_to: Vec<(usize, f64)>,
     /// The area laid along the beads below, over `s·W*`.
@@ -599,6 +606,34 @@ fn ends(piece: &[Point]) -> Vec<(Point, [f64; 2])> {
         .collect()
 }
 
+/// What a bead's bends cost on a top surface, which shows where the beads' direction jumps and
+/// hides their ends at its edge under the wall they overlap. A curve's direction jumps where it
+/// bends within a spacing `s`, so a bead costs its bending energy, `(s/2)∫κ²`: nothing on a long
+/// straight or a wide arc, about `π/2` at a corner turned through a quarter on the bead's radius.
+/// It is taken at each corner, the closing one too, as `θ²/2 · s/ℓ`, a turn through `θ` over the
+/// mean `ℓ` of its two chords, which a curve cut finer leaves the same; a chord longer than `s`
+/// turns as sharply as one `s` long. So a square `W` wide pays `πW/s` for its insets' corners
+/// against `W/(2s)` for its lines' ends (`HIDDEN_END`), at any size, and takes lines; a rib a bead
+/// or two wide, where lines across are all ends, keeps its insets.
+fn kinks(piece: &[Point], s: f64) -> f64 {
+    let bend = |a: &Point, b: &Point, c: &Point| {
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [c[0] - b[0], c[1] - b[1]]);
+        let (lu, lv) = (u[0].hypot(u[1]), v[0].hypot(v[1]));
+        if lu > 0.0 && lv > 0.0 {
+            let turn = (u[0] * v[1] - u[1] * v[0]).atan2(u[0] * v[0] + u[1] * v[1]);
+            turn * turn / 2.0 * s / ((lu + lv) / 2.0).min(s)
+        } else {
+            0.0
+        }
+    };
+    let inner: f64 = piece.windows(3).map(|w| if let [a, b, c] = w { bend(a, b, c) } else { 0.0 }).sum();
+    let closing = match (whole(piece), piece.get(piece.len().wrapping_sub(2)), piece.first(), piece.get(1)) {
+        (true, Some(a), Some(b), Some(c)) => bend(a, b, c),
+        _ => 0.0,
+    };
+    inner + closing
+}
+
 /// Fills a dense area with beads: `area` with the parameters `p`, over the dense beads
 /// `beneath`, its lines along `fall` where it gives a shape of it one.
 pub(crate) fn fill(
@@ -640,8 +675,19 @@ pub(crate) fn fill(
         let Some(component) = components.get(cell.component) else { continue };
         let mut choices = Vec::with_capacity(families.len());
         for &family in families {
-            let mut choice = Choice { family, edge_ends: 0.0, ends_to: Vec::new(), along_below: 0.0 };
+            let mut choice =
+                Choice { family, edge_ends: 0.0, kinks: 0.0, ends_to: Vec::new(), along_below: 0.0 };
             for piece in beads(family, cell, component, s, &rings)? {
+                // A bead hardly longer than it is wide is all ends, hidden or not.
+                let edge_end = if p.shows {
+                    let short = (s / polyline_length(&piece).max(s)).min(1.0);
+                    HIDDEN_END + (1.0 - HIDDEN_END) * short
+                } else {
+                    1.0
+                };
+                if p.shows {
+                    choice.kinks += kinks(&piece, s);
+                }
                 if family == Family::Insets && whole(&piece) {
                     continue;
                 }
@@ -653,7 +699,7 @@ pub(crate) fn fill(
                             None => choice.ends_to.push((n, 1.0)),
                         },
                         Some(_) => {}
-                        None => choice.edge_ends += 1.0,
+                        None => choice.edge_ends += edge_end,
                     }
                 }
             }
@@ -688,7 +734,7 @@ fn cost(cells: &[Cell], i: usize, k: usize) -> f64 {
     let Some(cell) = cells.get(i) else { return f64::INFINITY };
     let Some(choice) = cell.choices.get(k) else { return f64::INFINITY };
     let family_of = |n: usize| cells.get(n).and_then(|c| c.family());
-    let mut total = choice.edge_ends + choice.along_below;
+    let mut total = choice.edge_ends + choice.kinks + choice.along_below;
     for &(n, count) in &choice.ends_to {
         if family_of(n) != Some(choice.family) {
             total += count;
@@ -706,7 +752,8 @@ fn cost(cells: &[Cell], i: usize, k: usize) -> f64 {
 /// The cells' families: each cell's best alone, then each in turn, largest first, the family
 /// that costs least beside its neighbours', until none changes.
 fn choose(cells: &mut [Cell], host: &[usize]) {
-    let alone = |c: &Choice| c.edge_ends + c.along_below + c.ends_to.iter().map(|(_, k)| k).sum::<f64>();
+    let alone =
+        |c: &Choice| c.edge_ends + c.kinks + c.along_below + c.ends_to.iter().map(|(_, k)| k).sum::<f64>();
     let deciding: Vec<usize> = (0..cells.len()).filter(|&i| host.get(i) == Some(&i)).collect();
     for &i in &deciding {
         if let Some(cell) = cells.get_mut(i) {

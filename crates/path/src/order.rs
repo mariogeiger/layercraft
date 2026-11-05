@@ -377,7 +377,12 @@ pub fn islands(
         } else if role.kind == Kind::Solid && role.support == Support::Solid {
             let on_top = role.face == Face::Top;
             let fall = |piece: &Region| if on_top { fall_line(piece, relief) } else { None };
-            let laid = fill(&reach, Spacing { spacing, width, crossing: crossing(role) }, beneath, fall)?;
+            let laid = fill(
+                &reach,
+                Spacing { spacing, width, crossing: crossing(role), shows: on_top },
+                beneath,
+                fall,
+            )?;
             lines = laid.lines;
             along = laid.insets;
             residue = union(&residue, &laid.residue)?;
