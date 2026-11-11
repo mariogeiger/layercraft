@@ -48,8 +48,10 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         max_speed_z: motion.limits.max_speed_z,
     };
     let slowed = layercraft_motion::limit(&mut program, &limits);
-    let frame = layercraft_motion::frame(&program, &motion.templates, &scope, &settings.flush(colours))
-        .map_err(|e| e.to_string())?;
+    let heat = settings.heat_for(colours);
+    let frame =
+        layercraft_motion::frame(&program, &motion.templates, &heat, &scope, &settings.flush(colours))
+            .map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);
     if let Some(first) = violations.first() {
         for v in &violations {

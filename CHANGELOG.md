@@ -2,6 +2,18 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.3
+
+### Fixed
+
+- The nozzle and the bed now take each layer's temperature. The first layer's held for the whole
+  print, as nothing set the others: PETG Translucent printed at 250 °C instead of 245 °C.
+  The second layer sets the filament's and the plate's other-layer temperatures (`M104`,
+  `M140`), and a filament change waits for the new filament's own (`M109`), where the X2D's
+  change left the nozzle at the 235 °C its cut cooled it to for the rest of the print.
+- A machine description whose nozzle temperatures lie outside the filament's own range is
+  refused instead of printed.
+
 ## 0.17.2
 
 ### Changed

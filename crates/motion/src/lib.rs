@@ -184,6 +184,44 @@ pub struct Templates {
     pub change_filament: String,
 }
 
+/// The temperatures a print holds, in °C, which the slicer sets between the machine's
+/// templates: the start leaves the first layer's, and a filament change leaves the nozzle at no
+/// set temperature.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Heat {
+    /// Each material's nozzle temperature on the first layer, then on the others.
+    pub nozzle: Vec<[f64; 2]>,
+    /// The bed's temperature on the first layer, then on the others.
+    pub bed: [f64; 2],
+}
+
+impl Heat {
+    /// Material `k`'s nozzle temperature on layer `index`.
+    pub fn nozzle_at(&self, k: usize, index: usize) -> Result<f64, MotionError> {
+        let pair = self
+            .nozzle
+            .get(k)
+            .ok_or_else(|| MotionError::BadParams(format!("no temperature for material {k}")))?;
+        on_layer(*pair, index, "nozzle")
+    }
+
+    /// The bed's temperature on layer `index`.
+    pub fn bed_at(&self, index: usize) -> Result<f64, MotionError> {
+        on_layer(self.bed, index, "bed")
+    }
+}
+
+/// The first layer's temperature or the others', checked: one a printer can be asked for,
+/// finite and above zero.
+fn on_layer([first, rest]: [f64; 2], index: usize, what: &str) -> Result<f64, MotionError> {
+    let t = if index == 0 { first } else { rest };
+    if t.is_finite() && t > 0.0 {
+        Ok(t)
+    } else {
+        Err(MotionError::BadParams(format!("a {what} temperature of {t} °C")))
+    }
+}
+
 /// How beads become moves.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MotionParams {

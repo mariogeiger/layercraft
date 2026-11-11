@@ -7,10 +7,15 @@
 //! new one's start), and the end. The first layer's extent, the highest layer and the filaments
 //! come from the moves themselves, so a program merged from several, or edited by hand, gets the
 //! frame it needs. A change flushes `flush[from][to]` mm of filament, as the caller says.
+//!
+//! Between the templates the frame holds the temperatures (`Heat`): the start leaves the first
+//! filament and the bed at their first layer's, so a layer that needs another sets it on its way
+//! up (`M104`, `M140`), the nozzle following the filament loaded; and a change leaves the nozzle
+//! at whatever its cut and flush cooled it to, so the pass after it waits for its own (`M109`).
 
 use crate::moves::chained;
 use crate::time::{Limits, estimate};
-use crate::{Layer, MotionError, Program, Summary, Templates, disc_area};
+use crate::{Heat, Layer, MotionError, Program, Summary, Templates, disc_area};
 use layercraft_machine::{Scope, Value, expand};
 
 /// The machine's G-code around a program's layers.
@@ -124,10 +129,12 @@ pub fn finish(program: &Program, limits: &Limits, filament_diameter: f64) -> Sum
 }
 
 /// The machine's G-code around `program`: `templates` expanded with `scope`, the machine's
-/// settings and the slicer's placeholders, and what the program itself tells.
+/// settings and the slicer's placeholders, and what the program itself tells, at the
+/// temperatures `heat` gives.
 pub fn frame(
     program: &Program,
     templates: &Templates,
+    heat: &Heat,
     scope: &Scope,
     flush: &[Vec<f64>],
 ) -> Result<Frame, MotionError> {
@@ -178,6 +185,8 @@ pub fn frame(
     // The highest any layer so far reaches, a bent one above its plane.
     let mut highest = 0.0f64;
     let (mut index, mut material, mut changes) = (None, first, 0usize);
+    // What the nozzle and the bed are set to: the start brings both to the first layer's.
+    let (mut nozzle, mut bed) = (heat.nozzle_at(first, 0)?, heat.bed_at(0)?);
     for layer in &program.layers {
         let mut text = String::new();
         if index != Some(layer.index) {
@@ -187,6 +196,17 @@ pub fn frame(
             scope.insert("layer_z".into(), num(layer.highest()));
             scope.insert("max_layer_z".into(), num(highest));
             text += &lines(&expand_text("layer change", &t.layer_change, &scope)?);
+            let wanted = heat.bed_at(layer.index)?;
+            if wanted != bed {
+                bed = wanted;
+                text += &format!("M140 S{bed} ; the bed for this layer\n");
+            }
+            // A pass of another filament sets its own after the change.
+            let wanted = heat.nozzle_at(material, layer.index)?;
+            if layer.material == material && wanted != nozzle {
+                nozzle = wanted;
+                text += &format!("M104 S{nozzle} ; the nozzle for this layer\n");
+            }
         }
         if layer.material != material {
             let (from, to) = (material, layer.material);
@@ -199,7 +219,7 @@ pub fn frame(
             }
             // Where the pass starts, which the machine's change may travel back to.
             let at = layer.moves.iter().find_map(|m| m.to).unwrap_or([0.0, 0.0, layer.z]);
-            let temperature = |k: usize| item(&scope, "nozzle_temperature", k).unwrap_or(num(0.0));
+            let (old_temp, new_temp) = (heat.nozzle_at(from, layer.index)?, heat.nozzle_at(to, layer.index)?);
             let change = [
                 ("current_filament_id", num(from as f64)),
                 ("next_filament_id", num(to as f64)),
@@ -208,8 +228,8 @@ pub fn frame(
                 ("current_hotend", num(-1.0)),
                 ("next_hotend", num(-1.0)),
                 ("flush_length", num(length)),
-                ("old_filament_temp", temperature(from)),
-                ("new_filament_temp", temperature(to)),
+                ("old_filament_temp", num(old_temp)),
+                ("new_filament_temp", num(new_temp)),
                 ("old_filament_e_feedrate", num(melt_feed(&scope, from))),
                 ("new_filament_e_feedrate", num(melt_feed(&scope, to))),
                 // The start's load counts as the first.
@@ -279,6 +299,8 @@ pub fn frame(
             scope.insert("current_filament_id".into(), num(to as f64));
             text += &lines(&expand_text("filament start", &t.filament_start, &scope)?);
             material = to;
+            nozzle = new_temp;
+            text += &format!("M109 S{nozzle} ; wait for the new filament's temperature\n");
         }
         layers.push(text);
     }

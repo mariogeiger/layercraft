@@ -8,7 +8,7 @@
 
 use crate::printers::printer;
 use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
-use layercraft_motion::{Limits, MotionParams, RoleMotion, Templates, placeholders};
+use layercraft_motion::{Heat, Limits, MotionParams, RoleMotion, Templates, placeholders};
 use layercraft_path::{Crossing, Face, PathParams, SparsePattern, SupportLines};
 use layercraft_region::{RegionParams, SupportParams};
 use layercraft_section::{Foliation, Layering};
@@ -32,6 +32,8 @@ pub struct Settings {
     pub nozzle_diameter: f64,
     /// The scope's per-filament settings: one item each, the filament's.
     pub filament_keys: Vec<String>,
+    /// The temperatures of the filament and the bed, for one material.
+    pub heat: Heat,
 }
 
 /// The least a filament change flushes, in mm³: our own rule, not the maker's, that clears the
@@ -57,6 +59,12 @@ fn luminance(colour: &str) -> f64 {
 }
 
 impl Settings {
+    /// The temperatures for `colours.len()` filaments of this one kind, by material.
+    pub fn heat_for(&self, colours: &[String]) -> Heat {
+        let nozzle = self.heat.nozzle.first().copied().unwrap_or_default();
+        Heat { nozzle: vec![nozzle; colours.len().max(1)], bed: self.heat.bed }
+    }
+
     /// The template scope for `colours.len()` filaments of this one kind, by material: each
     /// per-filament setting repeated, the colours listed, every filament fed to the first
     /// extruder.
@@ -300,8 +308,9 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         on_plate_only: m.number(Process, "support_on_build_plate_only").unwrap_or(0.0) > 0.0,
     };
     let support_enabled = m.number(Process, "enable_support").unwrap_or(0.0) > 0.0;
-    let (first_bed_key, _) = plate_keys(&bed_type);
+    let (first_bed_key, other_bed_key) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
+    let heat = heat(m, [bed_first, m.number(Filament, other_bed_key)?])?;
     let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
     let filament_diameter = m.number(Filament, "filament_diameter")?;
     let max_volumetric_speed = m.number(Filament, "filament_max_volumetric_speed")?;
@@ -523,6 +532,30 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         printer_model: m.text(M, "model_id").unwrap_or_default(),
         nozzle_diameter: nozzle,
         filament_keys: m.keys(Filament),
+        heat,
         bed_type,
     })
+}
+
+/// The filament's nozzle temperatures on the first layer and on the others, each within the
+/// filament's own range, and the bed's, `bed`.
+fn heat(m: &Machine, bed: [f64; 2]) -> Result<Heat, MachineError> {
+    let (low, high) = (
+        m.number(Kind::Filament, "nozzle_temperature_range_low")?,
+        m.number(Kind::Filament, "nozzle_temperature_range_high")?,
+    );
+    let mut nozzle = [0.0; 2];
+    for (t, key) in nozzle.iter_mut().zip(["nozzle_temperature_initial_layer", "nozzle_temperature"]) {
+        *t = m.number(Kind::Filament, key)?;
+        if !(low..=high).contains(t) {
+            return Err(MachineError::OutOfRange(
+                key.into(),
+                format!("{t} °C, outside the filament's {low} to {high} °C"),
+            ));
+        }
+    }
+    if !bed.iter().all(|t| t.is_finite() && *t >= 0.0) {
+        return Err(MachineError::OutOfRange("the bed's temperatures".into(), format!("{bed:?} °C")));
+    }
+    Ok(Heat { nozzle: vec![nozzle], bed })
 }

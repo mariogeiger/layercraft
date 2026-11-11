@@ -48,6 +48,8 @@ pub enum MachineError {
     Missing(String),
     #[error("setting `{0}` is not a number: {1}")]
     NotANumber(String, String),
+    #[error("setting `{0}` is out of range: {1}")]
+    OutOfRange(String, String),
     #[error("cannot import the machine: {0}")]
     Import(String),
     #[error("not supported yet: {0}")]
