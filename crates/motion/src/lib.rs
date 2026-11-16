@@ -4,20 +4,20 @@
 //! fan, and the bead it lays. Moves can be concatenated, reordered or edited without any state
 //! leaking from one to the next; the machine's own G-code goes around the layers (`frame`).
 //!
-//! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at
-//! its sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length
-//! `L` fills that times `L`, and pushes `flow · area · L / filament_area` of filament; over a
-//! bent slab `t` thick, it fills its strip, as wide as beads lie apart, `t` deep, less what the
-//! nozzle's face, passing later and lower, planes off (`room`). A wall loop stops `seam_gap`
-//! short of its start. Speeds come by role, a wall's slowed by the share
-//! of its bead hanging over air (`overhang_speeds`, by band, with `overhang_fan_speed` past a
-//! share), capped by the hot end's volumetric limit. A layer too short to cool is slowed by a
-//! pass of its own (`cool`), and waits out the rest off the part when even its slowest is too
+//! A bead `w` wide on a layer `h` high has the cross-section of a rectangle with half-discs at its
+//! sides, `(w − h)·h + π·h²/4`, and a strand, round, the disc `π·w²/4`; a move of length `L` fills
+//! that times `L`, and pushes `flow · area · L / filament_area` of filament; over a bent slab `t`
+//! thick, it fills its strip, as wide as beads lie apart, `t` deep, less what the nozzle's face,
+//! passing later and lower, planes off (`room`). A wall loop stops `seam_gap` short of its start.
+//! Speeds come by role, slowed by the share of the bead over air (`overhang_speeds`, by band, with
+//! `overhang_fan_speed` past a share): a wall's as measured, a bridge's strand wholly, as slow as a
+//! wall over air; all capped by the hot end's volumetric limit. A layer too short to cool is slowed
+//! by a pass of its own (`cool`), and waits out the rest off the part when even its slowest is too
 //! short; the beads are written as the fewest lines and arcs within the resolution (`fit`), and
-//! every move is held to the hot end's melt limit and the Z axis's speed (`limit`). Leaving
-//! a bead, the nozzle wipes back over it while it pulls the filament, then climbs one turn of a
-//! helix: moving sideways as it rises, it breaks the string instead of stretching it. Each bead
-//! takes the parameters at its centre; `finish` reads a program's summary from its moves.
+//! every move is held to the hot end's melt limit and the Z axis's speed (`limit`). Leaving a bead,
+//! the nozzle wipes back over it while it pulls the filament, then climbs one turn of a helix:
+//! moving sideways as it rises, it breaks the string instead of stretching it. Each bead takes the
+//! parameters at its centre; `finish` reads a program's summary from its moves.
 
 mod cool;
 mod fit;

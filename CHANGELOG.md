@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.4
+
+### Changed
+
+- A bridge's strands now cross the air as slowly as a wall wholly over it, at the profile's
+  last overhang speed (10 mm/s with `0.20mm Standard @BBL X2D`) instead of its bridge speed
+  (50 mm/s): on a test of spans from 20 to 200 mm, the strands sagged at 50 mm/s while the walls
+  beside them, at 10 mm/s, stayed straight. The bridge speed still caps them. A bridge layer
+  takes longer: that test's, 47 min instead of 16.
+
 ## 0.17.3
 
 ### Fixed

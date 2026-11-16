@@ -168,8 +168,14 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
     base.min(melt)
 }
 
-/// The speed of a wall bead hanging the fraction `u` of its width over air, `speed` on solid:
-/// the speed of the overhang band `u` falls in, never faster than `speed`.
+/// The fraction of segment `i` of a bead's width hanging over air: a strand on air hangs whole,
+/// a wall by what the path stage measured under it.
+fn hanging(path: &Path, i: usize) -> f64 {
+    if path.role.support == Support::Air { 1.0 } else { path.overhang.get(i).copied().unwrap_or(0.0) }
+}
+
+/// The speed of a bead hanging the fraction `u` of its width over air, `speed` on solid: the
+/// speed of the overhang band `u` falls in, never faster than `speed`.
 fn overhang_speed(p: &MotionParams, u: f64, speed: f64) -> f64 {
     let n = p.overhang_speeds.len().saturating_sub(1);
     if u <= 0.0 || n == 0 {
@@ -487,7 +493,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
                 if (b[0] - a[0]).hypot(b[1] - a[1]) <= 0.0 {
                     continue;
                 }
-                let u = path.overhang.get(i).copied().unwrap_or(0.0);
+                let u = hanging(path, i);
                 let speed = overhang_speed(&p, u, speed);
                 s.fan =
                     if layer.index < p.fan_off_layers { fan } else { overhang_fan(&p, path.role, u, fan) };

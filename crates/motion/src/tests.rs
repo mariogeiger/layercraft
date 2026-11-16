@@ -555,8 +555,10 @@ fn moves_are_held_to_what_the_hot_end_melts_and_the_z_axis_moves() {
 }
 
 #[test]
-fn a_wall_slows_by_how_far_it_hangs() {
-    // Four segments of an outer wall, on solid, a third over air, three quarters, wholly over.
+fn a_bead_slows_by_how_far_it_hangs() {
+    // Four segments of an outer wall, on solid, a third over air, three quarters, wholly over;
+    // then a bridge's strand, wholly over air, which crosses as slowly as that last segment
+    // although the bridge's own speed is 50 mm/s.
     let wall = Path {
         role: Role::OUTER_WALL,
         width: 0.4,
@@ -565,6 +567,7 @@ fn a_wall_slows_by_how_far_it_hangs() {
         travel_crosses: false,
         overhang: vec![0.0, 0.3, 0.75, 1.0],
     };
+    let strand = Path::new(Role::BRIDGE, 0.4, false, vec![[18.0, 10.4], [10.0, 10.4]]);
     let paths = Paths {
         carrier: Default::default(),
         layers: vec![PathLayer {
@@ -572,7 +575,7 @@ fn a_wall_slows_by_how_far_it_hangs() {
             top: 0.4,
             height: 0.2,
             warp: Default::default(),
-            paths: vec![wall],
+            paths: vec![wall, strand],
             material: 0,
         }],
     };
@@ -587,8 +590,10 @@ fn a_wall_slows_by_how_far_it_hangs() {
     let beads: Vec<&Move> = all(&program).into_iter().filter(|m| m.bead.is_some()).collect();
     let speeds: Vec<f64> = beads.iter().map(|m| m.speed).collect();
     let fans: Vec<f64> = beads.iter().map(|m| m.fan).collect();
-    assert!(speeds.iter().zip([100.0, 50.0, 30.0, 5.0]).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
-    assert_eq!(fans, [0.2, 0.2, 0.5, 0.5]);
+    let expected = [100.0, 50.0, 30.0, 5.0, 5.0];
+    assert_eq!(speeds.len(), expected.len(), "{speeds:?}");
+    assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-9), "{speeds:?}");
+    assert_eq!(fans, [0.2, 0.2, 0.5, 0.5, 0.5]);
 }
 
 #[test]
