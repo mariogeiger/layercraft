@@ -36,27 +36,10 @@ pub struct Settings {
     pub heat: Heat,
 }
 
-/// The least a filament change flushes, in mm³: our own rule, not the maker's, that clears the
-/// melt the old filament leaves in the hot end.
-const FLUSH_BASE: f64 = 250.0;
-
-/// What a change flushes more for each unit of relative luminance the new colour gains over the
-/// old, in mm³: a dark trace shows most in a light colour, so blue to yellow flushes the most.
-const FLUSH_PER_LUMINANCE: f64 = 600.0;
-
-/// The relative luminance of `#RRGGBB` (sRGB, ITU-R BT.709), 0 for black to 1 for white; a
-/// colour that does not read as one counts as mid grey.
-fn luminance(colour: &str) -> f64 {
-    let hex = colour.trim().trim_start_matches('#');
-    let channel = |i: usize| {
-        let c = hex
-            .get(i..i + 2)
-            .and_then(|h| u8::from_str_radix(h, 16).ok())
-            .map_or(0.5, |v| f64::from(v) / 255.0);
-        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
-    };
-    0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
-}
+/// What a filament change flushes, in mm³, whatever the colours: enough to prime the nozzle
+/// with the new filament, not to clear the old one, which mixes into the new colour's first
+/// beads, the inner walls (the owner's choice, 2026-11-18: less waste over a clean transition).
+const FLUSH: f64 = 60.0;
 
 impl Settings {
     /// The temperatures for `colours.len()` filaments of this one kind, by material.
@@ -109,20 +92,13 @@ impl Settings {
         scope
     }
 
-    /// The filament each change flushes, in mm, from one material (row) to another (column).
+    /// The filament each change flushes, in mm, from one material (row) to another (column):
+    /// `FLUSH` between two colours, none for one colour.
     pub fn flush(&self, colours: &[String]) -> Vec<Vec<f64>> {
         let area = layercraft_motion::disc_area(self.motion.filament_diameter);
         colours
             .iter()
-            .map(|from| {
-                colours
-                    .iter()
-                    .map(|to| {
-                        let gain = (luminance(to) - luminance(from)).max(0.0);
-                        if from == to { 0.0 } else { (FLUSH_BASE + FLUSH_PER_LUMINANCE * gain) / area }
-                    })
-                    .collect()
-            })
+            .map(|from| colours.iter().map(|to| if from == to { 0.0 } else { FLUSH / area }).collect())
             .collect()
     }
 }

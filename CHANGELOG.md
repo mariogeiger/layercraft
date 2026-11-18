@@ -12,6 +12,10 @@ All notable user-visible changes to this project are documented here.
   reads (the cooling before the new filament prints, the retractions when the filament is cut
   and when it leaves the extruder, the retraction at a change). No G-code of the maker's is used
   any more.
+- A colour change flushes 60 mm³ (25 mm of filament) whatever the colours, only enough to prime
+  the nozzle, instead of 250 mm³ plus up to 600 more towards a lighter colour: the old colour
+  mixes into the new one's first beads, the inner walls, as the owner prefers to wasting
+  filament. Grey to pink flushed about 450 mm³ before.
 - A filament has no G-code of its own: the `filament_start_gcode` and `filament_end_gcode` hooks
   are gone from the frame, the printer's sequences reading the filament's settings instead. The
   frame no longer gives the variables only the maker's change read (`toolchange_count`, the

@@ -1,7 +1,7 @@
-//! Compiled end to end with the X2D's settings, whose G-code templates come from an installed
-//! Bambu Studio: the owner's pottery stamp, local and private, a T whose bar stands on supports,
-//! and a block whose sparse infill is rolls unless lines are asked for. Each test skips when what
-//! it reads is missing.
+//! Compiled end to end with the X2D's settings, which still stand in an installed Bambu Studio's
+//! profiles: the owner's pottery stamp, local and private, a T whose bar stands on supports, a
+//! block whose sparse infill is rolls unless lines are asked for, and two blocks in two colours
+//! whose changes flush the least. Each test skips when what it reads is missing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::path::{Path, PathBuf};
@@ -116,4 +116,40 @@ fn sparse_infill_is_rolls_unless_lines_are_asked_for() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(default == rolls, "the default infill is not rolls");
     assert!(default != lines, "rolls and lines lay the same paths");
+}
+
+#[test]
+fn a_colour_change_flushes_only_enough_to_prime_the_nozzle() {
+    use layercraft_mesh::{Material, Mesh, solids::cuboid};
+    if !bambu_studio() {
+        eprintln!("skipped: no Bambu Studio");
+        return;
+    }
+    // A dark block and a light one side by side, a change on every layer: the most a flush
+    // that follows the colours would ask for.
+    let colour = |c: &str| Material { colour: Some(c.into()) };
+    let mut light = cuboid("light", [132.0, 124.0, 0.0], [140.0, 132.0, 1.0]);
+    light.material = 1;
+    let mesh = Mesh {
+        bodies: vec![cuboid("dark", [116.0, 124.0, 0.0], [124.0, 132.0, 1.0]), light],
+        materials: vec![colour("#000000"), colour("#FFFFFF")],
+    };
+    let dir = std::env::temp_dir().join(format!("layercraft-flush-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (input, gcode, out) = (dir.join("two.json"), dir.join("two.gcode"), dir.join("two.gcode.3mf"));
+    std::fs::write(&input, serde_json::to_string(&mesh).unwrap()).unwrap();
+    let status = Command::new(env!("CARGO_BIN_EXE_layercraft"))
+        .args(["compile", "--from", &format!("mesh={}", input.display())])
+        .args(["--gcode", gcode.to_str().unwrap(), "--out", out.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let text = std::fs::read_to_string(&gcode).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    // 60 mm³ of 1.75 mm filament, 24.9451 mm, whichever way the colours change, in 5 s.
+    let flushes: Vec<&str> =
+        text.lines().filter(|l| l.starts_with("M620.10 A1") && l.contains(" L")).collect();
+    assert!(flushes.len() > 1);
+    assert!(flushes.iter().all(|l| l.contains(" L24.9451 ")), "{flushes:?}");
+    assert!(text.lines().filter(|l| l.starts_with("SYNC T")).all(|l| l.starts_with("SYNC T5 ")));
 }

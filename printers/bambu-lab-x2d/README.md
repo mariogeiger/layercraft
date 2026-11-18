@@ -59,7 +59,8 @@ no error.
 `filament-change.gcode` is layercraft's own, written from what the maker's gave on compiles of
 two-colour plates that varied one setting at a time; a test holds it to those measurements. It
 lifts the head 3 mm, sets how the old and the new filament are flushed (the flush speed, the
-length layercraft chose from the colours, the temperatures), cuts the old filament, pulls it
+temperatures, and 60 mm³ whatever the colours: enough to prime the nozzle, the old colour mixing
+into the new one's first inner walls, as the owner prefers to wasting filament), cuts the old filament, pulls it
 back 3 mm as it leaves the extruder, loads and flushes the new one (5 s for every 125 mm),
 calibrates its flow, watches for printing in the air as the start does, and sets its auxiliary
 fans as the layer change would, the printer's chamber cooling past its first layers. The
