@@ -65,17 +65,21 @@ fn a_cantilever_compiles_onto_supports_and_passes_verify() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
     let paths: layercraft_path::Paths = serde_json::from_str(&laid).unwrap();
-    // Under the bar (z 10), whose first strands hang 0.4 mm from z 10.2 down to 9.8: the
-    // columns' body, then their interface up to 9.6, then the 0.2 mm of air.
-    let kinds = |top: f64| -> Vec<layercraft_path::Role> {
+    // Under the bar, whose first layer lies flat from z 10: the columns' loops, then their
+    // interface up to 9.8, its first layer over air, then the 0.2 mm of air.
+    use layercraft_path::{Role, Support};
+    let kinds = |top: f64| -> Vec<Role> {
         let layer = paths.layers.iter().find(|l| (l.top - top).abs() < 1e-6).unwrap();
         layer.paths.iter().map(|p| p.role).filter(|r| r.kind == layercraft_path::Kind::Support).collect()
     };
-    assert!(kinds(5.0).iter().all(|&r| r == layercraft_path::Role::SUPPORT) && !kinds(5.0).is_empty());
-    assert!(
-        kinds(9.6).iter().all(|&r| r == layercraft_path::Role::SUPPORT_INTERFACE) && !kinds(9.6).is_empty()
-    );
-    assert!(kinds(9.8).is_empty() && kinds(10.0).is_empty());
+    let resting = Role { support: Support::Solid, ..Role::SUPPORT_INTERFACE };
+    for (top, interface) in [(5.0, None), (9.6, Some(Role::SUPPORT_INTERFACE)), (9.8, Some(resting))] {
+        let roles = kinds(top);
+        assert!(roles.contains(&Role::SUPPORT), "z {top}: no loop");
+        assert!(roles.iter().all(|&r| r == Role::SUPPORT || Some(r) == interface), "z {top}: {roles:?}");
+        assert_eq!(interface.is_some(), roles.iter().any(|&r| r != Role::SUPPORT), "z {top}");
+    }
+    assert!(kinds(10.0).is_empty());
 }
 
 #[test]

@@ -142,12 +142,11 @@ pub struct PathParams {
     pub support: SupportLines,
 }
 
-/// The supports' lines: `width` wide, the body's `gap` and the interface's `interface_gap` apart
-/// past their tiling spacing, in mm; a gap of 0 lays them solid.
+/// The supports' lines: `width` wide, the interface's `interface_gap` apart past their tiling
+/// spacing, in mm; a gap of 0 lays it solid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupportLines {
     pub width: f64,
-    pub gap: f64,
     pub interface_gap: f64,
 }
 
@@ -215,7 +214,8 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     let s = &p.support;
     if !(s.width.is_finite()
         && (0.05..=3.0).contains(&s.width)
-        && [s.gap, s.interface_gap].iter().all(|g| g.is_finite() && (0.0..=50.0).contains(g)))
+        && s.interface_gap.is_finite()
+        && (0.0..=50.0).contains(&s.interface_gap))
     {
         return Err(PathError::BadParams("support lines 0.05 to 3 mm wide, 0 to 50 mm apart".into()));
     }
@@ -245,12 +245,16 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
         solids::Solids::of(&regions.layers, |l| l.supports.iter().chain(&l.support_interface).collect())?;
     // Every bead of the passes laid so far at this height.
     let mut earlier: Vec<crossing::Segment> = Vec::new();
+    // The supports' interface on the layer below, and on this one so far.
+    let (mut interface_below, mut interface) = (Vec::new(), Vec::new());
     for (pass, layer) in regions.layers.iter().enumerate() {
         if height != Some(layer.top) {
             beneath = families::Beneath::new(std::mem::take(&mut laid));
             earlier.clear();
             height = Some(layer.top);
+            interface_below = std::mem::take(&mut interface);
         }
+        interface = layercraft_geom::union(&interface, &layer.support_interface)?;
         let parts = order::parts(layer, field)?;
         let relief = regions.carrier.relief(&layer.warp)?;
         let asked = parts.iter().find_map(|(p, _)| match p.sparse_pattern {
@@ -273,7 +277,7 @@ pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, Path
             islands.extend(order::islands(&part, &params, guides, &solids, pass, &mut seams)?);
         }
         seams.commit();
-        islands.extend(supports::islands(layer, field.base(), &columns, pass)?);
+        islands.extend(supports::islands(layer, field.base(), &columns, pass, &interface_below)?);
         let paths = crossing::mark(order::sequence(islands, &mut at, &earlier), &earlier);
         earlier.extend(paths.iter().flat_map(crossing::segments));
         for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {

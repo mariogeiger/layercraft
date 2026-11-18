@@ -65,8 +65,9 @@ impl Role {
     pub const SPARSE: Role = role(Kind::Sparse, Face::Inside, Support::Sparse);
     /// A support's line, standing on the one below it.
     pub const SUPPORT: Role = role(Kind::Support, Face::Inside, Support::Solid);
-    /// A support's top, dense, laid across the lines below it: what the part rests on.
-    pub const SUPPORT_INTERFACE: Role = role(Kind::Support, Face::Top, Support::Sparse);
+    /// A support's top, dense, what the part rests on: its first layer laid over air, from the
+    /// column's loop to its loop.
+    pub const SUPPORT_INTERFACE: Role = role(Kind::Support, Face::Top, Support::Air);
 
     /// The roles slicers name, in a fixed order: the codes of a legend.
     pub const NAMED: [Role; 12] = [

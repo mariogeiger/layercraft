@@ -6,8 +6,11 @@
 //! section below, a layer hangs. Strands across a hanging piece, a nozzle wide, are laid the way
 //! that leaves the fewest of their ends over air, as the path stage lays a bridge's: a strand held
 //! at both ends, and no longer than `max_bridge`, bridges; any other needs holding, and the band
-//! a strand wide on either side of it, which reaches the edge past the outermost line, is a roof. Under each roof stands a column, its top `top_gap` below the roof's
-//! underside, its sides `xy_gap` off the part, down to the plate or onto the part, ending
+//! a strand wide on either side of it, which reaches the edge past the outermost line, is a roof.
+//! Under each roof stands a column, its top `top_gap` below the roof's underside: the roof's
+//! first layer rests on the column, laid as solid a layer thick rather than as strands hanging
+//! over air (`held`), so that all of it, walls and lines, lies the same gap above the column. Its
+//! sides stand `xy_gap` off the part, down to the plate or onto the part, ending
 //! `bottom_gap` above it, or only to the plate (`on_plate_only`). The top `interface_layers` of
 //! a column are its interface, dense, which the roof rests on; the rest is its body.
 //!
@@ -28,9 +31,12 @@ const EPS: f64 = 1e-6;
 /// Every layer's supports: the body of the columns, then their interface.
 pub type LayerSupports = (Region, Region);
 
-/// What the supports found: each layer's columns, and each layer's roof that no column holds.
+/// What the supports found: each layer's columns, each layer's roof that columns hold, and
+/// each layer's roof that no column holds.
 pub struct Supported {
     pub columns: Vec<LayerSupports>,
+    /// By layer, from the first, the roof that stands on columns, with its gap under it.
+    pub held: Vec<Region>,
     /// By layer, from the first, the pieces of its roof left over air.
     pub unheld: Vec<(usize, Region)>,
 }
@@ -94,7 +100,8 @@ pub fn roof(
 }
 
 /// The supports of every layer, from the part's `sections`, each layer's `tops` and `heights`,
-/// for beads `w` wide and strands `strand` wide, and what of the roofs they leave unheld.
+/// for beads `w` wide and strands `strand` wide, the roofs they hold and those they leave
+/// unheld.
 pub fn supports(
     sections: &[Region],
     tops: &[f64],
@@ -119,9 +126,7 @@ pub fn supports(
         if r.is_empty() {
             continue;
         }
-        // The roof's first layer is laid as a bridge: round strands a strand wide, hanging from
-        // the nozzle at the layer's top, reach below the layer when they are thicker than it.
-        let underside = top - h.max(strand) - p.top_gap;
+        let underside = top - h - p.top_gap;
         let start = (0..i).rev().find(|&j| tops.get(j).is_some_and(|&t| t <= underside + EPS));
         if let Some(slot) = start.and_then(|j| starting.get_mut(j)) {
             *slot = union(slot, &r)?;
@@ -172,7 +177,7 @@ pub fn supports(
             *slot = (difference(&body, &interface)?, interface);
         }
     }
-    let mut unheld = Vec::new();
+    let (mut held, mut unheld) = (vec![Vec::new(); n], Vec::new());
     for (i, r, start) in roofs {
         let top = match start.and_then(|j| out.get(j)) {
             Some((body, interface)) => union(body, interface)?,
@@ -182,6 +187,9 @@ pub fn supports(
         if !loose.is_empty() {
             unheld.push((i, loose));
         }
+        if let Some(slot) = held.get_mut(i).filter(|_| !top.is_empty()) {
+            *slot = union(slot, &r)?;
+        }
     }
-    Ok(Supported { columns: out, unheld })
+    Ok(Supported { columns: out, held, unheld })
 }

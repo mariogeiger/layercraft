@@ -9,8 +9,8 @@
 //! letters, all walls and no inside, the top shells run on underneath. Below, only the air needs
 //! a skin over it. The part of `A_i` not covered by layer `i + 1` is the top surface.
 //! Solid or top that the layer below does not hold up is a bridge, laid as hanging strands: over
-//! air, wherever it is wider than a bead and deeper than a strand hangs below the layer, reaching
-//! a bead's width onto the support at its ends; over sparse infill, only where it is wide enough
+//! air wider than a bead, deeper than a strand hangs and on no column (`supports`), reaching a
+//! bead's width onto the support at its ends; over sparse infill, only where it is wide enough
 //! to span a gap between the sparse lines (`sparse_gap`) — a narrower band rests on them. Over
 //! shallower air, as an engraving a layer deep, a strand would lie on the floor and fill it.
 //! Sparse infill under `min_sparse_area` is solid; first-layer beads are wider, to grip the bed.
@@ -343,6 +343,16 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
     let insides: Vec<Region> =
         inside_parts.iter().map(|parts| parts.iter().flatten().cloned().collect()).collect();
     let heights: Vec<f64> = sections.layers.iter().map(|l| l.height).collect();
+    // The supports, over the whole plate, by the base parameters: a column may stand under
+    // several parts. What a column holds is laid on it, not hung over air.
+    let p = field.base();
+    let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
+    let found =
+        supports::supports(&regions, &tops, &heights, &p.supports, p.outer_wall_width, p.bridge_width)?;
+    if let Some((layer, loose)) = found.unheld.first() {
+        let z = tops.get(*layer).copied().unwrap_or(f64::NAN);
+        return Err(RegionError::Unheld { layer: layer + 1, z, area: layercraft_geom::area(loose) });
+    }
     // Each layer whole, all its materials together, as the next layer sees it; and its passes.
     let mut whole: Vec<RegionLayer> = Vec::with_capacity(regions.len());
     let mut passes: Vec<Vec<RegionLayer>> = Vec::with_capacity(regions.len());
@@ -375,6 +385,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
                 regions: &regions,
                 heights: &heights,
                 insides: &insides,
+                held: found.held.get(i).map_or(&[][..], Vec::as_slice),
                 below: whole.last(),
             };
             let piece = split_part(i, layer, p, region, inside, &around)?;
@@ -414,16 +425,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         whole.push(out);
         passes.push(own);
     }
-    // Over the whole plate, by the base parameters: a column may stand under several parts. A
-    // layer's columns go with its first pass.
-    let p = field.base();
-    let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
-    let found =
-        supports::supports(&regions, &tops, &heights, &p.supports, p.outer_wall_width, p.bridge_width)?;
-    if let Some((layer, loose)) = found.unheld.first() {
-        let z = tops.get(*layer).copied().unwrap_or(f64::NAN);
-        return Err(RegionError::Unheld { layer: layer + 1, z, area: layercraft_geom::area(loose) });
-    }
+    // A layer's columns go with its first pass.
     for (own, (body, interface)) in passes.iter_mut().zip(found.columns) {
         if let Some(first) = own.first_mut() {
             (first.supports, first.support_interface) = (body, interface);
@@ -440,6 +442,8 @@ struct Around<'a> {
     regions: &'a [Region],
     heights: &'a [f64],
     insides: &'a [Region],
+    /// What of the layer stands on the supports' columns, a gap above them.
+    held: &'a [Shape],
     /// The layer below, split.
     below: Option<&'a RegionLayer>,
 }
@@ -453,7 +457,7 @@ fn split_part(
     inside: &Region,
     around: &Around,
 ) -> Result<RegionLayer, RegionError> {
-    let Around { next, regions, heights, insides, below: previous } = *around;
+    let Around { next, regions, heights, insides, held, below: previous } = *around;
     let h = layer.height;
     let widths = widths(p, i);
     let i = i as isize;
@@ -508,6 +512,7 @@ fn split_part(
         (Ok(index), Some(previous)) => {
             let width = widths.inner.max(widths.outer);
             let air = over_deep_air(&filled, regions, heights, index, (p.bridge_width - h).max(0.0))?;
+            let air = difference(&air, &held.to_vec())?;
             // Each strand rests a bead's width on the support at either end.
             let gap = opening(&air, width / 2.0)?;
             let over_air = intersection(&offset(&gap, width)?, &union(&filled, &deep)?)?;

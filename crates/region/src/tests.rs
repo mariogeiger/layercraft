@@ -306,16 +306,16 @@ fn tee() -> Vec<layercraft_mesh::Body> {
 #[test]
 fn a_cantilever_stands_on_supports_down_to_the_plate() {
     let regions = supported(tee(), SUPPORTS);
-    // The bar's first layer is 50 (z 10 to 10.2), laid as a bridge whose round strands, 0.4 mm
-    // wide, hang from z 10.2 down to 9.8; the columns' top is layer 47, at 9.6, 0.2 mm of air
-    // under them. Each column runs from the stem's side, 0.35 mm off, to the bar's end:
-    // 7.65 × 4 mm, twice.
+    // The bar's first layer is 50 (z 10 to 10.2), laid flat on the columns as solid, not as
+    // strands hanging over air; the columns' top is layer 48, at 9.8, 0.2 mm of air under the
+    // bar. Each column runs from the stem's side, 0.35 mm off, to the bar's end: 7.65 × 4 mm,
+    // twice.
     let column = 2.0 * 7.65 * 4.0;
     for layer in &regions.layers {
         let (body, interface) = (area(&layer.supports), area(&layer.support_interface));
         let (want_body, want_interface) = match layer.index {
-            0..=45 => (column, 0.0),
-            46 | 47 => (0.0, column),
+            0..=46 => (column, 0.0),
+            47 | 48 => (0.0, column),
             _ => (0.0, 0.0),
         };
         assert!(close(body, want_body), "layer {}: body {body}", layer.index);
@@ -325,6 +325,9 @@ fn a_cantilever_stands_on_supports_down_to_the_plate() {
         let both = union(&layer.supports, &layer.support_interface).unwrap();
         assert!(area(&intersection(&both, &part).unwrap()) < 1e-6, "layer {}", layer.index);
     }
+    let bar = &regions.layers[50];
+    assert!(bar.bridge.is_empty(), "the bar hangs {} mm² of strands", area(&bar.bridge));
+    assert!(area(&bar.solid) > column / 2.0, "the bar's first layer is not solid");
 }
 
 #[test]

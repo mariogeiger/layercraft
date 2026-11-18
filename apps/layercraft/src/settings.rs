@@ -393,7 +393,6 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             sparse_pattern: rolls(layer_height),
             support: SupportLines {
                 width: width(m, "support_line_width", nozzle)?,
-                gap: m.number(Process, "support_base_pattern_spacing")?,
                 interface_gap: m.number(Process, "support_interface_spacing")?,
             },
         },

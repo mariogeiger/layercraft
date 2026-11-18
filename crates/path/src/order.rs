@@ -60,6 +60,11 @@ impl Island {
         self.infill.push(path);
     }
 
+    /// Adds a wall's loop, the `k`-th from the outside: walls are laid before the infill.
+    pub(crate) fn push_wall(&mut self, k: usize, path: Path) {
+        self.walls.push((k, path));
+    }
+
     /// Joins the island's lines by the areas `fills`.
     pub(crate) fn share(&mut self, fills: Rc<Vec<Fill>>) {
         self.fills = fills;

@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_geom::{Region, area, bead_area, bead_spacing, polyline_length};
+use layercraft_geom::{Region, area, bead_area, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
 use layercraft_region::{RegionParams, SupportParams, split};
@@ -25,7 +25,7 @@ const PATHS: PathParams = PathParams {
     crossing: Crossing { top: 6.25, inside: 6.25, first_layer: 6.25 },
     resolution: 0.012,
     sparse_pattern: SparsePattern::Lines,
-    support: SupportLines { width: 0.4, gap: 2.0, interface_gap: 0.4 },
+    support: SupportLines { width: 0.4, interface_gap: 0.4 },
 };
 
 fn region_params() -> RegionParams {
@@ -645,7 +645,7 @@ fn rolls_turn_move_and_mirror_with_their_part() {
 }
 
 #[test]
-fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
+fn supports_are_loops_under_a_cantilever_spanned_by_their_interface() {
     // A T: a 4 mm stem under a 20 mm bar, which overhangs 8 mm on either side from z = 10.
     let mesh = Mesh {
         bodies: vec![
@@ -658,36 +658,47 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
-    let roles = |k: usize, role: Role| paths.layers[k].paths.iter().filter(|p| p.role == role).count();
-    // The body stands in lines at the layer's angle, the same on every layer; the two layers
-    // above are its interface, across them; the two layers under the bar are the gap, air under
-    // the bar's first strands, which hang 0.4 mm.
-    let pitch = bead_spacing(0.4, 0.2) + 2.0;
-    for k in [1, 20, 45] {
-        assert!(roles(k, Role::SUPPORT) > 0 && roles(k, Role::SUPPORT_INTERFACE) == 0, "layer {k}");
-        let laid = hatch_segments(&paths.layers[k].paths, Role::SUPPORT, 45.0);
-        let length: f64 = laid.iter().map(|(a, b)| polyline_length(&[*a, *b])).sum();
-        // The lines fill the two 7.65 × 4 mm columns, their beads' sides inside, at their pitch,
-        // to within a line's ends.
-        let area = 2.0 * (7.65 - 0.4) * (4.0 - 0.4);
-        assert!((length * pitch - area).abs() < 0.15 * area, "layer {k}: {length} mm of lines");
-        // Laid either way, in any order: the same lines.
-        let unordered = |mut segments: Vec<([f64; 2], [f64; 2])>| {
-            let mut ends: Vec<[[f64; 2]; 2]> =
-                segments.drain(..).map(|(a, b)| if a < b { [a, b] } else { [b, a] }).collect();
-            ends.sort_by(|x, y| x.partial_cmp(y).unwrap());
-            ends
-        };
-        let stacked = hatch_segments(&paths.layers[20].paths, Role::SUPPORT, 45.0);
-        assert_eq!(unordered(laid), unordered(stacked), "layer {k}");
+    let of = |k: usize, keep: &dyn Fn(Role) -> bool| -> Vec<Path> {
+        paths.layers[k].paths.iter().filter(|p| keep(p.role)).cloned().collect()
+    };
+    let loops = |k: usize| of(k, &|r| r == Role::SUPPORT);
+    let closed = |r: &Path| r.points.iter().chain(r.points.first()).copied().collect::<Vec<Point>>();
+    let interface = |k: usize| of(k, &|r| r.kind == Kind::Support && r.face == Face::Top);
+    // Each 7.65 × 4 mm column is a loop a bead's width in, the same on every layer, and nothing
+    // else up to its interface.
+    let perimeter = 2.0 * ((7.65 - 0.4) + (4.0 - 0.4));
+    for k in [1, 20, 46] {
+        let rings = loops(k);
+        assert!(rings.len() == 2 && rings.iter().all(|r| r.closed), "layer {k}");
+        for ring in &rings {
+            let mut points = ring.points.clone();
+            points.extend(ring.points.first().copied());
+            assert!((polyline_length(&points) - perimeter).abs() < 0.05, "layer {k}");
+            let stacked: Vec<Vec<Point>> = loops(20).iter().map(closed).collect();
+            assert!(ring.points.iter().all(|&p| distance_to(p, &stacked) < 1e-3), "layer {k}");
+        }
+        assert!(interface(k).is_empty(), "layer {k}");
     }
-    for k in [46, 47] {
-        assert!(roles(k, Role::SUPPORT) == 0 && roles(k, Role::SUPPORT_INTERFACE) > 0, "layer {k}");
-        assert!(!hatch_segments(&paths.layers[k].paths, Role::SUPPORT_INTERFACE, 135.0).is_empty());
+    // The bar's underside is at z 10: the columns' tops, their interface, 0.2 mm under it, on
+    // layers 47 and 48; the first over air, slowly, the second on it; layer 49 is the gap.
+    let rings: Vec<Vec<Point>> = loops(46).iter().map(closed).collect();
+    for (k, support) in [(47, Support::Air), (48, Support::Solid)] {
+        let lines = interface(k);
+        assert!(!lines.is_empty() && lines.iter().all(|p| p.role.support == support), "layer {k}");
+        // Across each column the short way, every line runs from its loop to its loop, held at
+        // both ends by the loop under it.
+        for line in &lines {
+            let (Some(&a), Some(&b)) = (line.points.first(), line.points.last()) else { continue };
+            assert!((a[0] - b[0]).abs() < 1e-3, "layer {k}: {a:?} to {b:?} not across");
+            let off = distance_to(a, &rings).max(distance_to(b, &rings));
+            assert!(off < 1e-3, "layer {k}: {a:?} to {b:?} ends {off} mm off the loop");
+        }
     }
-    for k in [48, 49] {
-        assert_eq!(roles(k, Role::SUPPORT) + roles(k, Role::SUPPORT_INTERFACE), 0, "layer {k}");
-    }
+    assert_eq!(of(49, &|r| r.kind == Kind::Support).len(), 0);
+    // The bar rests on the columns as solid, a layer thick, not as strands hanging over air.
+    assert!(
+        paths.layers[50].paths.iter().all(|p| p.role.support != Support::Air || p.role.kind == Kind::Wall)
+    );
     // Every support line stays 0.35 mm off the stem, less its half width.
     for layer in &paths.layers {
         for path in layer.paths.iter().filter(|p| p.role.kind == Kind::Support) {

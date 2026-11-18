@@ -2,6 +2,24 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.20.0
+
+### Changed
+
+- A support's column is a thin shell: one loop along its edge, stacked layer on layer, and no
+  lines inside. Its interface is laid across it the short way, every line running from the loop
+  to the loop, so that each rests on the shell at both ends; the first layer of the interface
+  spans the column over air, slowly, as a strand on air hangs (`Support::Air`), the next rest on
+  it. Before, the interface was hatched over the whole column while the lines under it, 2.5 mm
+  apart, did not follow its edge: lines hung past the last one into the air.
+- A roof standing on a column is laid as solid, a layer thick, `top_gap` above the column, all of
+  it at one height. Before, its middle was laid as hanging strands and the column stopped a
+  strand's depth lower, leaving the roof's walls 0.4 mm over the column instead of 0.2.
+- The X2D's qualities let a strand held at both ends bridge any length (`bridge_no_support`), as
+  the owner has seen the printer do slowly: only what hangs from one side stands on supports.
+  A 1.4 mm slot bridged between two posts stood on its own columns before.
+- `SupportLines` has no `gap` any more, and `support_base_pattern_spacing` is not read.
+
 ## 0.19.0
 
 ### Changed
