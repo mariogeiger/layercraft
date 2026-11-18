@@ -182,10 +182,11 @@ const SLAB_SPREAD: f64 = 0.5;
 /// exactly, whatever their size.
 const BEND_CELL: f64 = 0.625;
 
-/// Convection rolls for sparse infill: 30° off square to the walls, which braces them against
-/// each other and against shear alike, the other way every five layers.
-pub fn rolls(s: &Settings) -> SparsePattern {
-    SparsePattern::Rolls { tilt: 30.0, ply: 5.0 * s.layering.layer_height }
+/// Convection rolls for sparse infill, the default: 30° off square to the walls, which braces
+/// them against each other and against shear alike, the other way every five layers of
+/// `layer_height`.
+pub fn rolls(layer_height: f64) -> SparsePattern {
+    SparsePattern::Rolls { tilt: 30.0, ply: 5.0 * layer_height }
 }
 
 /// The hop and the radius of the helix a lift turns, a spiral one's `spiral_radius`; a filament's
@@ -418,7 +419,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 .collect(),
             crossing,
             resolution: m.number(Process, "resolution")?,
-            sparse_pattern: SparsePattern::Lines,
+            sparse_pattern: rolls(layer_height),
             support: Some(SupportLines {
                 width: width(m, "support_line_width", nozzle)?,
                 gap: m.number(Process, "support_base_pattern_spacing")?,

@@ -6,6 +6,7 @@ use crate::settings;
 use clap::{Parser, Subcommand};
 use layercraft_machine::Machine;
 use layercraft_machine::import::{BAMBU_STUDIO_PROFILES, Selection, import};
+use layercraft_path::SparsePattern;
 use std::path::{Path, PathBuf};
 
 /// The colour of a filament the design gives none.
@@ -73,10 +74,11 @@ enum Command {
         /// gently sloped tops.
         #[arg(long)]
         flat: bool,
-        /// What sparse areas are filled with: straight lines crossing from layer to layer, or
-        /// convection rolls from wall to wall, stacked, tilted the other way every five layers.
-        #[arg(long, value_enum, default_value = "lines")]
-        infill: Infill,
+        /// What sparse areas are filled with: convection rolls from wall to wall, stacked,
+        /// tilted the other way every five layers, or straight lines crossing from layer to
+        /// layer (default: rolls).
+        #[arg(long, value_enum)]
+        infill: Option<Infill>,
         /// Hold up what nothing below holds with supports, or not (default: as the process says).
         #[arg(long, value_enum)]
         supports: Option<Switch>,
@@ -125,8 +127,8 @@ enum Command {
         #[arg(long)]
         flat: bool,
         /// What sparse areas are filled with, as for `compile`.
-        #[arg(long, value_enum, default_value = "lines")]
-        infill: Infill,
+        #[arg(long, value_enum)]
+        infill: Option<Infill>,
         /// Supports or not, as for `compile`.
         #[arg(long, value_enum)]
         supports: Option<Switch>,
@@ -190,12 +192,12 @@ fn load_machine(name: &str) -> Result<Machine, String> {
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill`,
-/// supports on or off, or as the process says.
+/// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
+/// with the settings' rolls, supports on or off, or as the process says.
 #[derive(Clone, Copy)]
 struct Choices {
     flat: bool,
-    infill: Infill,
+    infill: Option<Infill>,
     supports: Option<Switch>,
 }
 
@@ -208,8 +210,10 @@ fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>, choices: Choices
     if flat {
         settings.layering.foliation = None;
     }
-    if infill == Infill::Rolls {
-        settings.path.sparse_pattern = settings::rolls(&settings);
+    match infill {
+        Some(Infill::Lines) => settings.path.sparse_pattern = SparsePattern::Lines,
+        Some(Infill::Rolls) => settings.path.sparse_pattern = settings::rolls(settings.layering.layer_height),
+        None => {}
     }
     match supports {
         Some(Switch::On) => settings.region.supports = Some(settings.supports.clone()),
@@ -297,7 +301,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let choices = Choices { flat: false, infill: Infill::Lines, supports: None };
+            let choices = Choices { flat: false, infill: None, supports: None };
             let s = setup(&machine, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {

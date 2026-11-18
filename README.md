@@ -64,8 +64,8 @@ E(2): a part turned, moved or mirrored is printed turned, moved or mirrored, and
 changes. A direction comes from the part's walls, strips and slopes, never from the plate's axes
 or a grid laid on them. Only the machine may break that symmetry, where its hardware does.
 
-Six copies of one shape with `--infill rolls`, each turned or mirrored by its own amount, cut
-through the same layer: each carries the same lines.
+Six copies of one shape, each turned or mirrored by its own amount, cut through the same layer:
+each carries the same lines.
 
 </td>
 <td><img src="docs/images/no-direction.jpg" alt="Six copies of one asymmetric shape at different angles, two of them mirrored, each with the same wavy infill turned with it" width="100%"></td>
@@ -105,10 +105,10 @@ between them one bead widening and narrowing along its length.
 <tr>
 <td>
 
-**Infill that grows like convection rolls.** With `--infill rolls`, sparse infill is the zero
-set of a Swift–Hohenberg field relaxed over each layer's sparse area. Its lines run wall to wall,
-one line spacing apart. Each layer's field starts from the one below, so its lines rest on those
-below, and every five layers they lean the other way.
+**Infill that grows like convection rolls.** Sparse infill is the zero set of a Swift–Hohenberg
+field relaxed over each layer's sparse area. Its lines run wall to wall, one line spacing apart.
+Each layer's field starts from the one below, so its lines rest on those below, and every five
+layers they lean the other way. `--infill lines` lays straight lines instead.
 
 Only the infill of a block is shown here, a colour per layer: the rolls stand in stacked walls.
 

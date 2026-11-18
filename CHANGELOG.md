@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.17.5
+
+### Changed
+
+- Sparse infill is convection rolls by default: `compile` and `view` lay what `--infill rolls`
+  laid, and `--infill lines` lays straight lines as before. On a Benchy the print takes 42.5 min
+  of motion against 42.6 and 3791 mm of filament against 3809; compiling it takes 108 s against
+  92 and holds 1.54 GB against 1.42.
+
 ## 0.17.4
 
 ### Changed
