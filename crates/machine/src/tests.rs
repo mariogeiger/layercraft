@@ -38,6 +38,15 @@ fn variables_expressions_and_branches() {
 }
 
 #[test]
+fn comments_and_lines_of_branches_print_nothing() {
+    let s = scope(&[("i", Value::Num(1.0))]);
+    let template = "G1 X1\n{# a note, {braces} and all,\n   over two lines #}\n  {if i == 1}\nM1\n\t{else}\nM2\n{endif}\nM3 {# kept: M3 is on its line #}\n\n";
+    assert_eq!(expand(template, &s).unwrap(), "G1 X1\nM1\nM3 \n\n");
+    assert_eq!(expand("{if i}a{endif}\n{#x#}", &s).unwrap(), "a\n");
+    assert!(expand("{# never closed }", &s).is_err());
+}
+
+#[test]
 fn precedence_is_arithmetic() {
     let s = Scope::new();
     assert_eq!(expand("{1 + 2 * 3 - 4 / 2}", &s).unwrap(), "5");

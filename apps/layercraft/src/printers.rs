@@ -25,6 +25,9 @@ pub struct Printer {
     pub spiral_lift_radius: f64,
     /// G-code the printer expects after the filament's start, before the first layer.
     pub prologue: String,
+    /// The printer's layer change, layercraft's own G-code template (`layer-change.gcode`).
+    #[serde(skip)]
+    pub layer_change: String,
     /// The printer's end, layercraft's own G-code template (`end.gcode`).
     #[serde(skip)]
     pub end: String,
@@ -47,6 +50,7 @@ pub struct Nozzle {
 /// they stand in.
 struct Folder {
     measured: &'static str,
+    layer_change: &'static str,
     end: &'static str,
     maker: &'static str,
     printer: &'static str,
@@ -57,6 +61,7 @@ struct Folder {
 /// The Bambu Lab X2D.
 const X2D: Folder = Folder {
     measured: include_str!("../../../printers/bambu-lab-x2d/printer.json"),
+    layer_change: include_str!("../../../printers/bambu-lab-x2d/layer-change.gcode"),
     end: include_str!("../../../printers/bambu-lab-x2d/end.gcode"),
     maker: include_str!("../../../printers/bambu-lab-x2d/bambu-studio.json"),
     printer: include_str!("../../../printers/bambu-lab-x2d/machine.json"),
@@ -135,6 +140,7 @@ pub fn printer(model: &str) -> Result<Printer, MachineError> {
         let mut p: Printer =
             serde_json::from_str(folder.measured).map_err(|e| MachineError::Import(e.to_string()))?;
         if p.model == model {
+            p.layer_change = folder.layer_change.to_string();
             p.end = folder.end.to_string();
             return check(p);
         }
@@ -169,8 +175,10 @@ mod tests {
         for folder in FOLDERS {
             let p: Printer = serde_json::from_str(folder.measured).unwrap();
             let read = printer(&p.model).unwrap();
-            assert_eq!(read, Printer { end: folder.end.to_string(), ..p });
-            assert!(!read.end.trim().is_empty());
+            let own =
+                Printer { layer_change: folder.layer_change.to_string(), end: folder.end.to_string(), ..p };
+            assert_eq!(read, own);
+            assert!(!read.layer_change.trim().is_empty() && !read.end.trim().is_empty());
         }
     }
 
@@ -188,6 +196,72 @@ mod tests {
             assert!(text.lines().any(|l| l == plate), "top {top}: {text}");
         }
         assert!(printer("Some Other Printer").is_err());
+    }
+
+    /// The commands the X2D's layer change gives layer `layer` (from 0) of a filament that holds
+    /// its auxiliary fans at `s0` % for `n` layers and reaches `s1` % at layer `f`, softening at
+    /// `soft` °C, without the counter's two.
+    fn layer_change(layer: f64, [n, f, s0, s1, soft]: [f64; 5]) -> Vec<String> {
+        let scope = [
+            ("layer_num", layer),
+            ("current_filament_id", 0.0),
+            ("close_additional_fan_first_x_layers", n),
+            ("additional_fan_full_speed_layer", f),
+            ("first_x_layer_fan_speed", s0),
+            ("additional_cooling_fan_speed", s1),
+            ("max_additional_fan", s1),
+            ("min_vitrification_temperature", soft),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), Value::Num(v)))
+        .collect();
+        let text =
+            layercraft_machine::expand(&printer("Bambu Lab X2D").unwrap().layer_change, &scope).unwrap();
+        let commands: Vec<String> =
+            text.lines().map(|l| l.split(';').next().unwrap_or("").trim().to_string()).collect();
+        assert_eq!(commands.iter().filter(|c| c.is_empty()).count(), 0, "{text}");
+        let counter = [format!("M73 L{}", layer + 1.0), format!("M991 S0 P{layer}")];
+        let (body, last) = commands.split_at_checked(commands.len().saturating_sub(2)).unwrap();
+        assert_eq!(last, counter, "{text}");
+        body.to_vec()
+    }
+
+    /// As the maker's own layer change gave them, measured by compiling with it.
+    #[test]
+    fn the_x2d_layer_change_holds_the_auxiliary_fans_then_hands_them_to_the_chamber() {
+        let fans = |s: &str| vec![format!("M106 P2 S{s}"), format!("M106 P10 S{s}")];
+        let pla = vec!["M142 P1 R30 S40 U0.7 V1.0 O45".to_string()];
+        for (filament, by_layer) in [
+            ([1.0, 0.0, 40.0, 70.0, 45.0], vec![fans("102"), pla.clone(), vec![]]),
+            (
+                [1.0, 5.0, 40.0, 70.0, 45.0],
+                vec![fans("102"), fans("121.125"), fans("140.25"), fans("159.375"), pla.clone(), vec![]],
+            ),
+            (
+                [2.0, 6.0, 40.0, 70.0, 45.0],
+                vec![fans("102"), fans("102"), fans("121.125"), fans("140.25"), fans("159.375"), pla.clone()],
+            ),
+            (
+                [0.0, 4.0, 40.0, 70.0, 45.0],
+                vec![fans("121.125"), fans("140.25"), fans("159.375"), pla.clone()],
+            ),
+            ([3.0, 3.0, 40.0, 70.0, 45.0], vec![fans("102"), fans("102"), fans("102"), pla.clone(), vec![]]),
+            ([1.0, 0.0, 60.0, 70.0, 50.0], vec![fans("153"), pla.clone()]),
+            (
+                [3.0, 0.0, 40.0, 10.0, 70.0],
+                vec![
+                    fans("102"),
+                    fans("102"),
+                    fans("102"),
+                    vec!["M142 P1 R50 S55 U0.1 V0.5 O55".to_string()],
+                ],
+            ),
+            ([0.0, 0.0, 40.0, 70.0, 51.0], vec![vec!["M142 P1 R50 S55 U0.7 V0.5 O55".to_string()], vec![]]),
+        ] {
+            for (layer, commands) in by_layer.iter().enumerate() {
+                assert_eq!(&layer_change(layer as f64, filament), commands, "{filament:?} layer {layer}");
+            }
+        }
     }
 
     #[test]

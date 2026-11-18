@@ -2,8 +2,8 @@
 
 What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
 `quality/` and `material/` for each print quality and filament; what they do not tell, measured
-on the printer itself, in `printer.json`; and its own G-code, `end.gcode`. This page says where
-they come from.
+on the printer itself, in `printer.json`; and its own G-code, `layer-change.gcode` and
+`end.gcode`. This page says where they come from.
 
 ## Settings
 
@@ -17,9 +17,23 @@ they come from.
   material's `nil` leaves the printer's value.
 - Until layercraft writes its own G-code, `bambu-studio.json` names the profiles of an installed
   Bambu Studio that stand behind the printer, each quality and each material. They bring the
-  start, end, layer-change and filament-change templates and the rest of what the printer's
+  start and filament-change templates and the rest of what the printer's
   files declare, and these settings replace theirs for the nozzle printed with.
 - A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
+
+## The layer change
+
+`layer-change.gcode` is layercraft's own, written from what the maker's gave on compiles that
+varied one setting at a time; a test holds it to those measurements. Before each layer it counts
+the layer for the printer (`M73 L`, `M991`). Through a filament's first
+`close_additional_fan_first_x_layers` layers it holds the two auxiliary part fans at
+`first_x_layer_fan_speed`, then, when `additional_fan_full_speed_layer` is later, climbs in a
+straight line to `additional_cooling_fan_speed` there; then it hands them to the printer's own
+chamber cooling (`M142`), which keeps them at that speed or faster as the chamber warms. Its
+band is one for filaments that soften at 50 °C or less (PLA, TPU), another above (PETG), as
+measured with the 0.4 mm nozzle. Printed on 2026-11-18 in PLA, the printer reported its two
+auxiliary fans at 40 % through layer 1 and at 70 % from layer 2, its layer counter following,
+no error.
 
 ## The end
 

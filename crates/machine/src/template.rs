@@ -2,11 +2,13 @@
 //!
 //! Text is copied as is, except `[name]`, replaced by a variable's value — of a list, the item of
 //! the extruder in use, `current_extruder` (the first when not given) — and `{…}` blocks: an
-//! expression, printed, or `{if c}`, `{elsif c}`, `{else}`, `{endif}`. Expressions have
-//! numbers, strings, variables, indexing `v[i]`, `ceil`/`floor`/`min`/`max`/`abs`/`int`, the
-//! arithmetic, comparison and logical operators, and `c ? a : b`. Evaluation is lazy and
-//! strict: a branch not taken is never evaluated, and a variable that is needed but not given
-//! is an error naming it, never a silent empty value.
+//! expression, printed, or `{if c}`, `{elsif c}`, `{else}`, `{endif}`, and `{# … #}`, a comment
+//! for the template's reader that prints nothing. A line holding nothing but such branches and
+//! comments, and blanks, leaves nothing, not even its line break, so a template's structure and
+//! notes stay out of the G-code. Expressions have numbers, strings, variables, indexing `v[i]`,
+//! `ceil`/`floor`/`min`/`max`/`abs`/`int`, the arithmetic, comparison and logical operators, and
+//! `c ? a : b`. Evaluation is lazy and strict: a branch not taken is never evaluated, and a
+//! variable that is needed but not given is an error naming it, never a silent empty value.
 
 use crate::value::Value;
 use std::collections::BTreeMap;
@@ -32,6 +34,14 @@ enum Piece {
     Elsif(String),
     Else,
     Endif,
+    Comment,
+}
+
+impl Piece {
+    /// Whether the piece prints nothing whatever the variables: a branch's frame or a comment.
+    fn silent(&self) -> bool {
+        matches!(self, Piece::If(_) | Piece::Elsif(_) | Piece::Else | Piece::Endif | Piece::Comment)
+    }
 }
 
 fn is_ident(s: &str) -> bool {
@@ -65,6 +75,12 @@ fn pieces(template: &str) -> Result<Vec<Piece>, TemplateError> {
     while let Some(open) = rest.find('{') {
         split_text(rest.get(..open).unwrap_or(""), &mut out);
         let after = rest.get(open + 1..).unwrap_or("");
+        if let Some(note) = after.strip_prefix('#') {
+            let Some(close) = note.find("#}") else { return err("a `{#` is never closed") };
+            out.push(Piece::Comment);
+            rest = note.get(close + 2..).unwrap_or("");
+            continue;
+        }
         let Some(close) = after.find('}') else { return err("a `{` is never closed") };
         let inner = after.get(..close).unwrap_or("").trim();
         let word = |w: &str| inner.strip_prefix(w).filter(|r| r.is_empty() || r.starts_with([' ', '(']));
@@ -82,7 +98,42 @@ fn pieces(template: &str) -> Result<Vec<Piece>, TemplateError> {
         rest = after.get(close + 1..).unwrap_or("");
     }
     split_text(rest, &mut out);
-    Ok(out)
+    Ok(silent_lines_dropped(out))
+}
+
+/// The pieces without the lines that hold silent pieces and nothing else but blanks, each
+/// dropped with its line break; the silent pieces stay, to frame the branches.
+fn silent_lines_dropped(pieces: Vec<Piece>) -> Vec<Piece> {
+    // Text cut after each line break, so each line ends with its own piece.
+    let mut cut = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        match piece {
+            Piece::Text(t) => cut.extend(t.split_inclusive('\n').map(|l| Piece::Text(l.to_string()))),
+            other => cut.push(other),
+        }
+    }
+    fn flush(line: &mut Vec<Piece>, out: &mut Vec<Piece>) {
+        let blank = |p: &Piece| match p {
+            Piece::Text(t) => t.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n')),
+            other => other.silent(),
+        };
+        if line.iter().any(Piece::silent) && line.iter().all(blank) {
+            out.extend(line.drain(..).filter(Piece::silent));
+        } else {
+            out.append(line);
+        }
+    }
+    let mut out = Vec::with_capacity(cut.len());
+    let mut line: Vec<Piece> = Vec::new();
+    for piece in cut {
+        let ends = matches!(&piece, Piece::Text(t) if t.ends_with('\n'));
+        line.push(piece);
+        if ends {
+            flush(&mut line, &mut out);
+        }
+    }
+    flush(&mut line, &mut out);
+    out
 }
 
 /// Expands a template with the given variables.

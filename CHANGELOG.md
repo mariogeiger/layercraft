@@ -2,6 +2,21 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.18.2
+
+### Changed
+
+- The X2D's layer change is layercraft's own (`printers/bambu-lab-x2d/layer-change.gcode`)
+  instead of the maker's: at each layer the same commands, the layer counter, the auxiliary part
+  fans held through the filament's first layers, then the printer's own chamber cooling, without
+  the maker's comments and empty lines. Each material now states the three settings it reads:
+  `close_additional_fan_first_x_layers`, `first_x_layer_fan_speed` and
+  `additional_fan_full_speed_layer`. Printed on the X2D in PLA: the auxiliary fans ran at 40 %
+  through layer 1 and at 70 % from layer 2, under the printer's chamber cooling.
+- In the G-code templates, `{# … #}` is a comment for the template's reader that prints nothing,
+  and a line holding only branches and comments leaves no empty line: the maker's start and
+  filament change lose their empty lines.
+
 ## 0.18.1
 
 ### Changed
