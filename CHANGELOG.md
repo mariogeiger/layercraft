@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.18.1
+
+### Changed
+
+- The X2D's end is layercraft's own (`printers/bambu-lab-x2d/end.gcode`) instead of the maker's:
+  the same heaters and fans off, filament back into the AMS, parked head, lowered plate (now to
+  80 mm, or 10 mm under the top of a taller part), reset scales and detectors and air
+  purification, with a tune of its own and without the timelapse. Printed on the X2D.
+
 ## 0.18.0
 
 ### Changed

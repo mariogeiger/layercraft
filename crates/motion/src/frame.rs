@@ -1,6 +1,7 @@
 //! The machine's own G-code around the layers, and what a program does, read from its moves.
 //!
-//! The frame is the maker's templates expanded for the program as it stands: the start (the
+//! The frame is the printer's templates, layercraft's own or the maker's, expanded for the
+//! program as it stands: the start (the
 //! machine's limits, its start sequence, the filament's, a prologue, absolute positions and
 //! relative extrusion), a layer change before each layer's first pass, a filament change before
 //! each pass of another material than the one before (the old filament's end, the change, the

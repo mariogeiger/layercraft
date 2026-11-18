@@ -1,4 +1,6 @@
 /target/
 *.gcode
+# A printer's own G-code is source, not sliced output.
+!/printers/*/*.gcode
 *.gcode.3mf
 /out/

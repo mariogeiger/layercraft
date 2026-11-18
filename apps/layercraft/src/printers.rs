@@ -25,6 +25,9 @@ pub struct Printer {
     pub spiral_lift_radius: f64,
     /// G-code the printer expects after the filament's start, before the first layer.
     pub prologue: String,
+    /// The printer's end, layercraft's own G-code template (`end.gcode`).
+    #[serde(skip)]
+    pub end: String,
 }
 
 /// The nozzle: a flat face whose flank rises to a column, which reaches `protrusion` below the
@@ -39,21 +42,22 @@ pub struct Nozzle {
     pub protrusion: f64,
 }
 
-/// Each known printer, as its folder describes it.
-const KNOWN: [&str; 1] = [include_str!("../../../printers/bambu-lab-x2d/printer.json")];
-
-/// A printer's settings as its folder holds them, each a JSON object of settings: the
-/// printer's, then by name each quality's and each material's, and the maker's profiles they
-/// stand in.
+/// A printer's folder: its measurements and its own G-code, then its settings, each a JSON
+/// object: the printer's, by name each quality's and each material's, and the maker's profiles
+/// they stand in.
 struct Folder {
+    measured: &'static str,
+    end: &'static str,
     maker: &'static str,
     printer: &'static str,
     qualities: &'static [(&'static str, &'static str)],
     materials: &'static [(&'static str, &'static str)],
 }
 
-/// The Bambu Lab X2D's settings.
+/// The Bambu Lab X2D.
 const X2D: Folder = Folder {
+    measured: include_str!("../../../printers/bambu-lab-x2d/printer.json"),
+    end: include_str!("../../../printers/bambu-lab-x2d/end.gcode"),
     maker: include_str!("../../../printers/bambu-lab-x2d/bambu-studio.json"),
     printer: include_str!("../../../printers/bambu-lab-x2d/machine.json"),
     qualities: &[
@@ -122,11 +126,16 @@ pub fn machine(quality: &str, material: &str) -> Result<Machine, MachineError> {
     Ok(machine)
 }
 
+/// Each known printer's folder.
+const FOLDERS: [&Folder; 1] = [&X2D];
+
 /// The printer whose machine description names the model `model`.
 pub fn printer(model: &str) -> Result<Printer, MachineError> {
-    for text in KNOWN {
-        let p: Printer = serde_json::from_str(text).map_err(|e| MachineError::Import(e.to_string()))?;
+    for folder in FOLDERS {
+        let mut p: Printer =
+            serde_json::from_str(folder.measured).map_err(|e| MachineError::Import(e.to_string()))?;
         if p.model == model {
+            p.end = folder.end.to_string();
             return check(p);
         }
     }
@@ -157,9 +166,26 @@ mod tests {
 
     #[test]
     fn every_known_printer_reads_and_makes_a_nozzle() {
-        for text in KNOWN {
-            let p: Printer = serde_json::from_str(text).unwrap();
-            assert_eq!(printer(&p.model).unwrap(), p);
+        for folder in FOLDERS {
+            let p: Printer = serde_json::from_str(folder.measured).unwrap();
+            let read = printer(&p.model).unwrap();
+            assert_eq!(read, Printer { end: folder.end.to_string(), ..p });
+            assert!(!read.end.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn the_x2d_end_lowers_the_plate_to_80_mm_or_clear_of_a_taller_part() {
+        let end = printer("Bambu Lab X2D").unwrap().end;
+        for (top, plate) in
+            [(5.0, "G1 Z80 F600"), (69.0, "G1 Z80 F600"), (150.0, "G1 Z160 F600"), (255.0, "G1 Z261 F600")]
+        {
+            let scope = [("max_layer_z", top), ("printable_height", 261.0)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), Value::Num(v)))
+                .collect();
+            let text = layercraft_machine::expand(&end, &scope).unwrap();
+            assert!(text.lines().any(|l| l == plate), "top {top}: {text}");
         }
         assert!(printer("Some Other Printer").is_err());
     }

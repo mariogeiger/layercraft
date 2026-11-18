@@ -1,8 +1,9 @@
 # Bambu Lab X2D
 
 What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
-`quality/` and `material/` for each print quality and filament, and what they do not tell,
-measured on the printer itself, in `printer.json`. This page says where they come from.
+`quality/` and `material/` for each print quality and filament; what they do not tell, measured
+on the printer itself, in `printer.json`; and its own G-code, `end.gcode`. This page says where
+they come from.
 
 ## Settings
 
@@ -19,6 +20,18 @@ measured on the printer itself, in `printer.json`. This page says where they com
   start, end, layer-change and filament-change templates and the rest of what the printer's
   files declare, and these settings replace theirs for the nozzle printed with.
 - A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
+
+## The end
+
+`end.gcode` is layercraft's own, written in the template language for the X2D's firmware, whose
+Bambu-specific commands are undocumented: their roles come from where the printer's own files
+use them and from what its owners report. It lifts the nozzle 0.4 mm then 10 mm, turns the
+heaters and fans off, sends each nozzle's filament back into the AMS, parks the head and lowers
+the plate, with Z at 40 % of its current, to 80 mm or 10 mm under the top of a taller part. It
+resets the speed, acceleration and time scales and the detectors, purifies the air for three
+minutes when the printer is set to, and plays a rising C major arpeggio. It leaves out the
+maker's timelapse. Printed on 2026-11-18: the filament went back into the AMS (`tray_now` 255,
+both extruders empty), the head parked, the plate came down, no error.
 
 ## The toolhead
 
