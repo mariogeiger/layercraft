@@ -25,9 +25,7 @@ pub fn islands(
     if layer.supports.is_empty() && layer.support_interface.is_empty() {
         return Ok(Vec::new());
     }
-    let Some(s) = &p.support else {
-        return Err(PathError::BadParams("the regions hold supports, but no support lines are set".into()));
-    };
+    let s = &p.support;
     let width = if layer.index == 0 { p.first_layer_width } else { s.width };
     let spacing = bead_spacing(width, layer.height);
     let all = union(&layer.supports, &layer.support_interface)?;

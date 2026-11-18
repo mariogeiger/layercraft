@@ -54,9 +54,9 @@ pub struct RegionParams {
     /// Pieces of sparse infill smaller than this are solid, in mm².
     #[serde(default)]
     pub min_sparse_area: f64,
-    /// How the parts of layers that nothing holds up are supported; none, not at all.
-    #[serde(default)]
-    pub supports: Option<SupportParams>,
+    /// How the parts of layers that nothing holds up are supported: always, wherever a layer
+    /// hangs, so that no bead is laid over air with nothing to hold it.
+    pub supports: SupportParams,
 }
 
 /// Where supports stand, by the rules of `supports`; distances in mm.
@@ -166,6 +166,12 @@ pub enum RegionError {
     Tune(#[from] TuneError),
     #[error("region geometry: {0}")]
     Geometry(#[from] GeomError),
+    /// A part of a layer hangs where no support can stand under it: printed, it would fall.
+    #[error(
+        "layer {layer} (top at z {z:.2} mm) hangs {area:.2} mm² over air where no support can stand \
+         under it, so the print would fail there"
+    )]
+    Unheld { layer: usize, z: f64, area: f64 },
 }
 
 fn check(params: &RegionParams) -> Result<(), RegionError> {
@@ -182,16 +188,15 @@ fn check(params: &RegionParams) -> Result<(), RegionError> {
     if params.walls > 50 || params.top_layers > 200 || params.bottom_layers > 200 {
         return Err(RegionError::BadParams("too many walls or shell layers".into()));
     }
-    if let Some(s) = &params.supports {
-        let gap = |g: f64| g.is_finite() && (0.0..=10.0).contains(&g);
-        if ![s.top_gap, s.bottom_gap, s.xy_gap].into_iter().all(gap)
-            || s.max_bridge.is_some_and(|m| !(m.is_finite() && m >= 0.0))
-            || s.interface_layers > 50
-        {
-            return Err(RegionError::BadParams(
-                "support gaps must be 0 to 10 mm, the bridge finite, interface layers few".into(),
-            ));
-        }
+    let s = &params.supports;
+    let gap = |g: f64| g.is_finite() && (0.0..=10.0).contains(&g);
+    if ![s.top_gap, s.bottom_gap, s.xy_gap].into_iter().all(gap)
+        || s.max_bridge.is_some_and(|m| !(m.is_finite() && m >= 0.0))
+        || s.interface_layers > 50
+    {
+        return Err(RegionError::BadParams(
+            "support gaps must be 0 to 10 mm, the bridge finite, interface layers few".into(),
+        ));
     }
     if !params.first_layer_shrink.is_finite() || !(0.0..=1.0).contains(&params.first_layer_shrink) {
         return Err(RegionError::BadParams("first layer shrink must be 0 to 1 mm".into()));
@@ -412,13 +417,16 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
     // Over the whole plate, by the base parameters: a column may stand under several parts. A
     // layer's columns go with its first pass.
     let p = field.base();
-    if let Some(s) = &p.supports {
-        let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
-        let found = supports::supports(&regions, &tops, &heights, s, p.outer_wall_width, p.bridge_width)?;
-        for (own, (body, interface)) in passes.iter_mut().zip(found) {
-            if let Some(first) = own.first_mut() {
-                (first.supports, first.support_interface) = (body, interface);
-            }
+    let tops: Vec<f64> = sections.layers.iter().map(|l| l.top).collect();
+    let found =
+        supports::supports(&regions, &tops, &heights, &p.supports, p.outer_wall_width, p.bridge_width)?;
+    if let Some((layer, loose)) = found.unheld.first() {
+        let z = tops.get(*layer).copied().unwrap_or(f64::NAN);
+        return Err(RegionError::Unheld { layer: layer + 1, z, area: layercraft_geom::area(loose) });
+    }
+    for (own, (body, interface)) in passes.iter_mut().zip(found.columns) {
+        if let Some(first) = own.first_mut() {
+            (first.supports, first.support_interface) = (body, interface);
         }
     }
     Ok(Regions { carrier: sections.carrier.clone(), layers: passes.into_iter().flatten().collect() })

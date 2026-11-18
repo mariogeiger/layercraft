@@ -91,18 +91,8 @@ fn support_lines_turn_move_and_mirror_with_their_part() {
         let sections =
             section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
                 .unwrap();
-        let supports = SupportParams {
-            max_bridge: None,
-            top_gap: 0.2,
-            bottom_gap: 0.2,
-            xy_gap: 0.35,
-            interface_layers: 2,
-            on_plate_only: false,
-        };
-        let params = RegionParams { supports: Some(supports), ..region_params() };
-        let regions = split(&sections, &Field::uniform(params)).unwrap();
-        let lines = SupportLines { width: 0.4, gap: 2.0, interface_gap: 0.4 };
-        trace(&regions, &Field::uniform(PathParams { support: Some(lines), ..PATHS })).unwrap()
+        let regions = split(&sections, &Field::uniform(region_params())).unwrap();
+        trace(&regions, &Field::uniform(PATHS)).unwrap()
     };
     let part = [
         vec![[0.0, 0.0], [10.0, 0.0], [10.0, 12.0], [0.0, 12.0]],

@@ -18,8 +18,6 @@ use layercraft_verify::{Envelope, Toolhead};
 pub struct Settings {
     pub layering: Layering,
     pub region: RegionParams,
-    /// Where supports stand, whether or not the process turns them on.
-    pub supports: SupportParams,
     pub path: PathParams,
     pub motion: MotionParams,
     pub envelope: Envelope,
@@ -284,7 +282,6 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         interface_layers: m.number(Process, "support_interface_top_layers")?.max(0.0) as usize,
         on_plate_only: m.number(Process, "support_on_build_plate_only").unwrap_or(0.0) > 0.0,
     };
-    let support_enabled = m.number(Process, "enable_support").unwrap_or(0.0) > 0.0;
     let (first_bed_key, other_bed_key) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let heat = heat(m, [bed_first, m.number(Filament, other_bed_key)?])?;
@@ -372,9 +369,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             bridge_width: nozzle,
             min_sparse_area: m.number(Process, "minimum_sparse_infill_area").unwrap_or(0.0),
-            supports: support_enabled.then(|| supports.clone()),
+            supports,
         },
-        supports,
         path: PathParams {
             outer_wall_width: outer,
             inner_wall_width: inner,
@@ -395,11 +391,11 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             crossing,
             resolution: m.number(Process, "resolution")?,
             sparse_pattern: rolls(layer_height),
-            support: Some(SupportLines {
+            support: SupportLines {
                 width: width(m, "support_line_width", nozzle)?,
                 gap: m.number(Process, "support_base_pattern_spacing")?,
                 interface_gap: m.number(Process, "support_interface_spacing")?,
-            }),
+            },
         },
         motion: MotionParams {
             filament_diameter,

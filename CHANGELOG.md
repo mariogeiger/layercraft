@@ -2,6 +2,19 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.19.0
+
+### Changed
+
+- Supports are no option: whatever a layer cannot bridge stands on columns, always. The
+  `--supports` switch of `compile` and `view` and the qualities' `enable_support` are gone, and
+  the region and path stages require their support settings. A part that needed supports printed
+  without them before, its overhangs laid into the air.
+- A part that would hang where no support can stand is refused: when a roof is left over air past
+  the columns under it (columns kept on the plate, a gap too wide), the regions stage fails
+  naming the layer, its height and the area left hanging, instead of writing a print that would
+  surely fail.
+
 ## 0.18.4
 
 ### Changed

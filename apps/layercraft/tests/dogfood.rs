@@ -58,17 +58,7 @@ fn a_cantilever_compiles_onto_supports_and_passes_verify() {
     let from = format!("mesh={}", input.display());
     let emit = format!("paths={}", paths.display());
     let status = Command::new(env!("CARGO_BIN_EXE_layercraft"))
-        .args([
-            "compile",
-            "--from",
-            &from,
-            "--emit",
-            &emit,
-            "--supports",
-            "on",
-            "--out",
-            out.to_str().unwrap(),
-        ])
+        .args(["compile", "--from", &from, "--emit", &emit, "--out", out.to_str().unwrap()])
         .output()
         .unwrap();
     let laid = std::fs::read_to_string(&paths).unwrap_or_default();

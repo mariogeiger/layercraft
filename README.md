@@ -120,8 +120,9 @@ Only the infill of a block is shown here, a colour per layer: the rolls stand in
 <td>
 
 **Bridges cross the short way, supports stand straight.** Strands cross a bridge the short way
-over the air, anchored on both sides. What a strand cannot bridge stands on columns with
-`--supports on`, under a roof of hanging strands, with a gap of air so that they come off.
+over the air, anchored on both sides. What a strand cannot bridge stands on columns, always:
+under a roof of hanging strands, with a gap of air so that they come off. A layer that would
+hang where no column can stand is refused, rather than printed into the air.
 
 On the left, an arch at its first layer over the span, strands in brown. On the right, a T whose
 bar stands on columns.

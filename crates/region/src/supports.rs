@@ -10,6 +10,11 @@
 //! underside, its sides `xy_gap` off the part, down to the plate or onto the part, ending
 //! `bottom_gap` above it, or only to the plate (`on_plate_only`). The top `interface_layers` of
 //! a column are its interface, dense, which the roof rests on; the rest is its body.
+//!
+//! A roof is held where it lies within a bead's width and the gap of the column under it; what
+//! of a roof, wider than a bead, lies further from any column is unheld: nothing stands under it
+//! (it hangs from the first layers, or a column would stand only on the plate and the part is in
+//! the way), and printed it would fall.
 
 use crate::SupportParams;
 use layercraft_geom::{
@@ -22,6 +27,13 @@ const EPS: f64 = 1e-6;
 
 /// Every layer's supports: the body of the columns, then their interface.
 pub type LayerSupports = (Region, Region);
+
+/// What the supports found: each layer's columns, and each layer's roof that no column holds.
+pub struct Supported {
+    pub columns: Vec<LayerSupports>,
+    /// By layer, from the first, the pieces of its roof left over air.
+    pub unheld: Vec<(usize, Region)>,
+}
 
 /// The band `2·half` wide along the segment `a`–`b`, counterclockwise.
 fn band(a: Point, b: Point, half: f64) -> Option<Vec<Point>> {
@@ -82,7 +94,7 @@ pub fn roof(
 }
 
 /// The supports of every layer, from the part's `sections`, each layer's `tops` and `heights`,
-/// for beads `w` wide and strands `strand` wide.
+/// for beads `w` wide and strands `strand` wide, and what of the roofs they leave unheld.
 pub fn supports(
     sections: &[Region],
     tops: &[f64],
@@ -90,11 +102,13 @@ pub fn supports(
     p: &SupportParams,
     w: f64,
     strand: f64,
-) -> Result<Vec<LayerSupports>, GeomError> {
+) -> Result<Supported, GeomError> {
     let n = sections.len().min(tops.len()).min(heights.len());
     // The roofs whose columns start on each layer: the highest whose top lies `top_gap` under
     // the roof's underside.
     let mut starting: Vec<Region> = vec![Vec::new(); n];
+    // Each roof, its layer and the layer its column would start on.
+    let mut roofs: Vec<(usize, Region, Option<usize>)> = Vec::new();
     for i in 1..n {
         let (Some(section), Some(below), Some(&top), Some(&h)) =
             (sections.get(i), sections.get(i - 1), tops.get(i), heights.get(i))
@@ -112,6 +126,7 @@ pub fn supports(
         if let Some(slot) = start.and_then(|j| starting.get_mut(j)) {
             *slot = union(slot, &r)?;
         }
+        roofs.push((i, r, start));
     }
     // With `on_plate_only`, a column stops wherever the part lies under it, all the way down.
     let mut shadows: Vec<Region> = Vec::with_capacity(n);
@@ -157,5 +172,16 @@ pub fn supports(
             *slot = (difference(&body, &interface)?, interface);
         }
     }
-    Ok(out)
+    let mut unheld = Vec::new();
+    for (i, r, start) in roofs {
+        let top = match start.and_then(|j| out.get(j)) {
+            Some((body, interface)) => union(body, interface)?,
+            None => Vec::new(),
+        };
+        let loose = opening(&difference(&r, &offset(&top, p.xy_gap + w)?)?, w / 2.0)?;
+        if !loose.is_empty() {
+            unheld.push((i, loose));
+        }
+    }
+    Ok(Supported { columns: out, unheld })
 }

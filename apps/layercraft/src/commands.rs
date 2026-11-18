@@ -78,9 +78,6 @@ enum Command {
         /// layer (default: rolls).
         #[arg(long, value_enum)]
         infill: Option<Infill>,
-        /// Hold up what nothing below holds with supports, or not (default: as the process says).
-        #[arg(long, value_enum)]
-        supports: Option<Switch>,
     },
     /// Print several programs together on one plate, layer by layer under one frame: program
     /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
@@ -136,17 +133,7 @@ enum Command {
         /// What sparse areas are filled with, as for `compile`.
         #[arg(long, value_enum)]
         infill: Option<Infill>,
-        /// Supports or not, as for `compile`.
-        #[arg(long, value_enum)]
-        supports: Option<Switch>,
     },
-}
-
-/// A setting turned on or off.
-#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
-enum Switch {
-    On,
-    Off,
 }
 
 /// What sparse areas are filled with.
@@ -157,12 +144,11 @@ enum Infill {
 }
 
 /// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
-/// with the settings' rolls, supports on or off, or as the process says.
+/// with the settings' rolls. Supports are no choice: whatever hangs stands on them.
 #[derive(Clone, Copy)]
 struct Choices {
     flat: bool,
     infill: Option<Infill>,
-    supports: Option<Switch>,
 }
 
 /// The printer in `quality` and `material`, its settings and the tuning, as `choices` make them.
@@ -173,7 +159,7 @@ fn setup(
     tune: Option<&Path>,
     choices: Choices,
 ) -> Result<Setup, String> {
-    let Choices { flat, infill, supports } = choices;
+    let Choices { flat, infill } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
     let machine = crate::printers::machine(quality, material).map_err(|e| e.to_string())?;
     let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
@@ -183,11 +169,6 @@ fn setup(
     match infill {
         Some(Infill::Lines) => settings.path.sparse_pattern = SparsePattern::Lines,
         Some(Infill::Rolls) => settings.path.sparse_pattern = settings::rolls(settings.layering.layer_height),
-        None => {}
-    }
-    match supports {
-        Some(Switch::On) => settings.region.supports = Some(settings.supports.clone()),
-        Some(Switch::Off) => settings.region.supports = None,
         None => {}
     }
     Ok(Setup { machine, settings, tuning })
@@ -227,15 +208,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
             tune,
             flat,
             infill,
-            supports,
         } => {
-            let s = setup(
-                &quality,
-                &material,
-                bed.as_deref(),
-                tune.as_deref(),
-                Choices { flat, infill, supports },
-            )?;
+            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), Choices { flat, infill })?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -261,7 +235,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let choices = Choices { flat: false, infill: None, supports: None };
+            let choices = Choices { flat: false, infill: None };
             let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {
@@ -289,12 +263,11 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, quality, material, layers, tune, flat, infill, supports } => {
+        Command::View { input, out, quality, material, layers, tune, flat, infill } => {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s =
-                    setup(&quality, &material, None, tune.as_deref(), Choices { flat, infill, supports })?;
+                let s = setup(&quality, &material, None, tune.as_deref(), Choices { flat, infill })?;
                 let output =
                     pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?

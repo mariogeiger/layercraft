@@ -20,7 +20,7 @@ const PARAMS: RegionParams = RegionParams {
     sparse_gap: 2.0,
     bridge_width: 0.4,
     min_sparse_area: 15.0,
-    supports: None,
+    supports: SUPPORTS,
 };
 
 /// Equal up to the nanometre lattice: offsets round to it, moving a 10 mm square's area by
@@ -291,7 +291,7 @@ fn supported(bodies: Vec<layercraft_mesh::Body>, supports: SupportParams) -> Reg
         &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None },
     )
     .unwrap();
-    split(&sections, &Field::uniform(RegionParams { supports: Some(supports), ..PARAMS })).unwrap()
+    split(&sections, &Field::uniform(RegionParams { supports, ..PARAMS })).unwrap()
 }
 
 /// A T: a 4 × 4 mm stem 10 mm high under a 20 × 4 mm bar, 7.8 mm past the stem's side and the
@@ -361,8 +361,50 @@ fn a_column_stands_on_the_part_or_only_on_the_plate() {
     // Layers 0 to 9 are the base, 10 the gap over it; the columns start on layer 11.
     assert!(regions.layers[..11].iter().all(|l| l.supports.is_empty()));
     assert!(close(area(&regions.layers[11].supports), 2.0 * 7.65 * 4.0));
-    let plate_only = supported(bodies, SupportParams { on_plate_only: true, ..SUPPORTS });
-    assert!(plate_only.layers.iter().all(|l| l.supports.is_empty() && l.support_interface.is_empty()));
+    // Only on the plate, no column can stand under the bar: it would fall, and nothing is split.
+    let sections = section(
+        &Mesh { bodies, ..Mesh::default() },
+        &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None },
+    )
+    .unwrap();
+    let plate_only = RegionParams { supports: SupportParams { on_plate_only: true, ..SUPPORTS }, ..PARAMS };
+    let refused = split(&sections, &Field::uniform(plate_only)).unwrap_err();
+    assert!(matches!(refused, RegionError::Unheld { layer: 51, .. }), "{refused}");
+}
+
+#[test]
+fn a_layer_that_hangs_where_no_column_can_stand_is_refused() {
+    // A 4 mm square first layer under a 20 mm wide second one: nothing lies under the second's
+    // overhang for a column to stand on, and the 0.2 mm gap leaves it no room either.
+    let bodies = vec![
+        cuboid("foot", [-2.0, -2.0, 0.0], [2.0, 2.0, 0.2]),
+        cuboid("slab", [-10.0, -2.0, 0.2], [10.0, 2.0, 1.0]),
+    ];
+    let sections = section(
+        &Mesh { bodies, ..Mesh::default() },
+        &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None },
+    )
+    .unwrap();
+    let refused = split(&sections, &Field::uniform(PARAMS.clone())).unwrap_err();
+    match refused {
+        RegionError::Unheld { layer, z, area } => {
+            assert_eq!(layer, 2);
+            assert!((z - 0.4).abs() < 1e-9 && area > 40.0, "z {z}, area {area}");
+        }
+        other => panic!("{other}"),
+    }
+    // A T's bar on supports down to the plate, and a deck bridged between pillars, are held.
+    assert!(
+        split(
+            &section(
+                &Mesh { bodies: tee(), ..Mesh::default() },
+                &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }
+            )
+            .unwrap(),
+            &Field::uniform(PARAMS.clone())
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -376,7 +418,7 @@ fn bad_support_params_are_refused() {
         SupportParams { max_bridge: Some(f64::INFINITY), ..SUPPORTS },
         SupportParams { interface_layers: 1_000, ..SUPPORTS },
     ] {
-        assert!(split(&sections, &Field::uniform(RegionParams { supports: Some(bad), ..PARAMS })).is_err());
+        assert!(split(&sections, &Field::uniform(RegionParams { supports: bad, ..PARAMS })).is_err());
     }
 }
 

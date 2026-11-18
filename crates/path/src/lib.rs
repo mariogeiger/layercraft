@@ -138,9 +138,8 @@ pub struct PathParams {
     /// What the sparse lines draw, at the same spacing.
     #[serde(default)]
     pub sparse_pattern: SparsePattern,
-    /// How the supports' areas are filled; none where the regions hold no supports.
-    #[serde(default)]
-    pub support: Option<SupportLines>,
+    /// How the supports' areas are filled.
+    pub support: SupportLines,
 }
 
 /// The supports' lines: `width` wide, the body's `gap` and the interface's `interface_gap` apart
@@ -213,10 +212,10 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     if !p.infill_angle.is_finite() {
         return Err(PathError::BadParams("infill angle must be finite".into()));
     }
-    if let Some(s) = &p.support
-        && !(s.width.is_finite()
-            && (0.05..=3.0).contains(&s.width)
-            && [s.gap, s.interface_gap].iter().all(|g| g.is_finite() && (0.0..=50.0).contains(g)))
+    let s = &p.support;
+    if !(s.width.is_finite()
+        && (0.05..=3.0).contains(&s.width)
+        && [s.gap, s.interface_gap].iter().all(|g| g.is_finite() && (0.0..=50.0).contains(g)))
     {
         return Err(PathError::BadParams("support lines 0.05 to 3 mm wide, 0 to 50 mm apart".into()));
     }

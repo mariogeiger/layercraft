@@ -25,7 +25,7 @@ const PATHS: PathParams = PathParams {
     crossing: Crossing { top: 6.25, inside: 6.25, first_layer: 6.25 },
     resolution: 0.012,
     sparse_pattern: SparsePattern::Lines,
-    support: None,
+    support: SupportLines { width: 0.4, gap: 2.0, interface_gap: 0.4 },
 };
 
 fn region_params() -> RegionParams {
@@ -41,7 +41,14 @@ fn region_params() -> RegionParams {
         sparse_gap: 4.0,
         bridge_width: 0.4,
         min_sparse_area: 0.0,
-        supports: None,
+        supports: SupportParams {
+            max_bridge: None,
+            top_gap: 0.2,
+            bottom_gap: 0.2,
+            xy_gap: 0.35,
+            interface_layers: 2,
+            on_plate_only: false,
+        },
     }
 }
 
@@ -649,21 +656,8 @@ fn supports_are_lines_stacked_under_a_cantilever_and_dense_on_top() {
     };
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
-    let supports = SupportParams {
-        max_bridge: None,
-        top_gap: 0.2,
-        bottom_gap: 0.2,
-        xy_gap: 0.35,
-        interface_layers: 2,
-        on_plate_only: false,
-    };
-    let regions =
-        split(&sections, &Field::uniform(RegionParams { supports: Some(supports), ..region_params() }))
-            .unwrap();
-    // Without support lines set, the supports cannot be laid.
-    assert!(trace(&regions, &Field::uniform(PATHS)).is_err());
-    let lines = SupportLines { width: 0.4, gap: 2.0, interface_gap: 0.4 };
-    let paths = trace(&regions, &Field::uniform(PathParams { support: Some(lines), ..PATHS })).unwrap();
+    let regions = split(&sections, &Field::uniform(region_params())).unwrap();
+    let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
     let roles = |k: usize, role: Role| paths.layers[k].paths.iter().filter(|p| p.role == role).count();
     // The body stands in lines at the layer's angle, the same on every layer; the two layers
     // above are its interface, across them; the two layers under the bar are the gap, air under
