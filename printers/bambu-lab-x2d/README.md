@@ -3,7 +3,7 @@
 What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
 `quality/` and `material/` for each print quality and filament; what they do not tell, measured
 on the printer itself, in `printer.json`; and its own G-code, `start.gcode`,
-`layer-change.gcode` and `end.gcode`. This page says where they come from.
+`layer-change.gcode`, `filament-change.gcode` and `end.gcode`. This page says where they come from.
 
 ## Settings
 
@@ -15,10 +15,10 @@ on the printer itself, in `printer.json`; and its own G-code, `start.gcode`,
 - They keep the profiles' names and conventions: a percentage is of the nozzle's diameter or of
   the default acceleration, a width or an acceleration of 0 stands for the default, and a
   material's `nil` leaves the printer's value.
-- Until layercraft writes its own G-code, `bambu-studio.json` names the profiles of an installed
-  Bambu Studio that stand behind the printer, each quality and each material. They bring the
-  filament-change template and the rest of what the printer's
-  files declare, and these settings replace theirs for the nozzle printed with.
+- `bambu-studio.json` names the profiles of an installed Bambu Studio that still stand behind
+  the printer, each quality and each material. They bring the rest of what the printer's files
+  declare, and these settings replace theirs for the nozzle printed with; none of their G-code
+  is used.
 - A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
 
 ## The start
@@ -53,6 +53,19 @@ band is one for filaments that soften at 50 °C or less (PLA, TPU), another abov
 measured with the 0.4 mm nozzle. Printed on 2026-11-18 in PLA, the printer reported its two
 auxiliary fans at 40 % through layer 1 and at 70 % from layer 2, its layer counter following,
 no error.
+
+## The filament change
+
+`filament-change.gcode` is layercraft's own, written from what the maker's gave on compiles of
+two-colour plates that varied one setting at a time; a test holds it to those measurements. It
+lifts the head 3 mm, sets how the old and the new filament are flushed (the flush speed, the
+length layercraft chose from the colours, the temperatures), cuts the old filament, pulls it
+back 3 mm as it leaves the extruder, loads and flushes the new one (5 s for every 125 mm),
+calibrates its flow, watches for printing in the air as the start does, and sets its auxiliary
+fans as the layer change would, the printer's chamber cooling past its first layers. The
+maker's change also has a spiral lift for later changes, which layercraft never ran: its
+condition compared the lift type's name with numbers. It is left out; the head rises straight.
+A filament has no G-code of its own: the printer's sequences read its settings.
 
 ## The end
 

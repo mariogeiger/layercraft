@@ -18,30 +18,22 @@ use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
 
-/// The variables a Bambu Lab printer's templates expect from the slicer for a single-filament
-/// print on the first extruder: which filament and nozzle are first, the plate and its
-/// first-layer temperature.
+/// The variables a printer's templates read beyond the settings, for a print on the first
+/// extruder: which filament and nozzle are first, how each filament maps to an extruder, the
+/// nozzle's diameter, the plate and its first-layer temperature.
 pub fn placeholders(bed_type: &str, bed_first_layer_temp: f64, nozzle_diameter: f64) -> Scope {
     let num = Value::Num;
     let list = |v: Vec<Value>| Value::List(v);
     [
-        ("initial_no_support_filament_id", num(0.0)),
         ("initial_filament_id", num(0.0)),
         ("initial_nozzle_id", num(0.0)),
         ("initial_no_support_hotend", num(-1.0)),
         ("current_filament_id", num(0.0)),
         ("current_nozzle_id", num(0.0)),
         ("filament_map", list(vec![num(1.0)])),
-        ("first_filaments", list(vec![num(0.0), num(-1.0)])),
-        ("first_non_support_filaments", list(vec![num(0.0), num(-1.0)])),
         ("nozzle_diameter_at_nozzle_id", list(vec![num(nozzle_diameter)])),
         ("curr_bed_type", Value::Str(bed_type.to_string())),
         ("bed_temperature_initial_layer_single", num(bed_first_layer_temp)),
-        ("overall_chamber_temperature", num(0.0)),
-        ("hold_chamber_temp_for_flat_print", Value::Bool(false)),
-        ("is_all_bbl_filament", Value::Bool(true)),
-        ("toolchange_count", num(0.0)),
-        ("spiral_mode", Value::Bool(false)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))

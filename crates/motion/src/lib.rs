@@ -175,10 +175,8 @@ pub struct Templates {
     pub start: String,
     pub end: String,
     pub layer_change: String,
-    pub filament_start: String,
-    /// Printed after the filament's start, before the first layer.
+    /// Printed after the start, before the first layer.
     pub prologue: String,
-    pub filament_end: String,
     /// The change from one filament to another, between two passes of different materials.
     #[serde(default)]
     pub change_filament: String,

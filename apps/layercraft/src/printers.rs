@@ -1,9 +1,9 @@
 //! The printers layercraft knows, each from its folder in `printers/`: its settings, the
 //! printer's own, each quality's and each material's, and what they do not tell, measured on the
-//! printer itself (the folder says how). The settings are built into layercraft, so every
-//! computer prints with the same; until layercraft writes its own G-code, they stand in the
-//! maker's profiles, read from an installed Bambu Studio, for the variant printed with. A
-//! printer's measurements are found by the model its settings name.
+//! printer itself (the folder says how), and its own G-code: start, layer change, filament change
+//! and end. The settings are built into layercraft, so every computer prints with the same; they
+//! still stand in the maker's profiles, read from an installed Bambu Studio, for the variant
+//! printed with. A printer's measurements are found by the model its settings name.
 
 use layercraft_machine::import::{BAMBU_STUDIO_PROFILES, Selection, import};
 use layercraft_machine::{Kind, Machine, MachineError, Value};
@@ -31,6 +31,10 @@ pub struct Printer {
     /// The printer's layer change, layercraft's own G-code template (`layer-change.gcode`).
     #[serde(skip)]
     pub layer_change: String,
+    /// The printer's filament change, layercraft's own G-code template
+    /// (`filament-change.gcode`).
+    #[serde(skip)]
+    pub filament_change: String,
     /// The printer's end, layercraft's own G-code template (`end.gcode`).
     #[serde(skip)]
     pub end: String,
@@ -55,6 +59,7 @@ struct Folder {
     measured: &'static str,
     start: &'static str,
     layer_change: &'static str,
+    filament_change: &'static str,
     end: &'static str,
     maker: &'static str,
     printer: &'static str,
@@ -67,6 +72,7 @@ const X2D: Folder = Folder {
     measured: include_str!("../../../printers/bambu-lab-x2d/printer.json"),
     start: include_str!("../../../printers/bambu-lab-x2d/start.gcode"),
     layer_change: include_str!("../../../printers/bambu-lab-x2d/layer-change.gcode"),
+    filament_change: include_str!("../../../printers/bambu-lab-x2d/filament-change.gcode"),
     end: include_str!("../../../printers/bambu-lab-x2d/end.gcode"),
     maker: include_str!("../../../printers/bambu-lab-x2d/bambu-studio.json"),
     printer: include_str!("../../../printers/bambu-lab-x2d/machine.json"),
@@ -147,6 +153,7 @@ pub fn printer(model: &str) -> Result<Printer, MachineError> {
         if p.model == model {
             p.start = folder.start.to_string();
             p.layer_change = folder.layer_change.to_string();
+            p.filament_change = folder.filament_change.to_string();
             p.end = folder.end.to_string();
             return check(p);
         }
@@ -184,11 +191,12 @@ mod tests {
             let own = Printer {
                 start: folder.start.to_string(),
                 layer_change: folder.layer_change.to_string(),
+                filament_change: folder.filament_change.to_string(),
                 end: folder.end.to_string(),
                 ..p
             };
             assert_eq!(read, own);
-            for sequence in [&read.start, &read.layer_change, &read.end] {
+            for sequence in [&read.start, &read.layer_change, &read.filament_change, &read.end] {
                 assert!(!sequence.trim().is_empty());
             }
         }
@@ -273,6 +281,101 @@ mod tests {
         let pc = start(5.0, "Textured PEI Plate", 55.0, "PC");
         assert!(has(&pc, "M109 S170 A") && has(&pc, "M1015.4 S0 K0 H0.4"));
         assert!(has(&start(5.0, "Textured PEI Plate", 55.0, "PETG-CF"), "M1015.4 S1 K1 H0.4"));
+    }
+
+    /// The X2D's filament change from PETG to PETG at layer `layer` (from 0), top `z`, with the
+    /// settings `with` over the support's (Bambu PETG Translucent, 191.006 mm flushed).
+    fn change(layer: f64, z: f64, with: &[(&str, Value)]) -> Vec<String> {
+        let num = |v: f64| Value::Num(v);
+        let pair = |v: f64| Value::List(vec![num(v), num(v)]);
+        let mut scope: layercraft_machine::Scope = [
+            ("current_filament_id", num(0.0)),
+            ("next_filament_id", num(1.0)),
+            ("current_nozzle_id", num(0.0)),
+            ("next_nozzle_id", num(0.0)),
+            ("current_hotend", num(-1.0)),
+            ("next_hotend", num(-1.0)),
+            ("flush_length", num(191.006)),
+            ("old_filament_temp", num(245.0)),
+            ("new_filament_temp", num(245.0)),
+            ("long_retraction_when_cut", Value::Bool(false)),
+            ("retraction_distance_when_cut", num(10.0)),
+            ("long_retraction_when_ec", Value::Bool(true)),
+            ("retraction_distance_when_ec", num(3.0)),
+            ("max_layer_z", num(z)),
+            ("layer_z", num(z)),
+            ("layer_num", num(layer)),
+            ("flush_volumetric_speeds", pair(6.0)),
+            ("flush_temperatures", pair(270.0)),
+            ("nozzle_diameter_at_nozzle_id", Value::List(vec![num(0.4)])),
+            ("filament_cooling_before_tower", pair(10.0)),
+            ("filament_type", Value::List(vec![Value::Str("PETG".into()), Value::Str("PETG".into())])),
+            ("retract_length_toolchange", pair(2.0)),
+            ("filament_map", pair(1.0)),
+            ("filament_max_volumetric_speed", pair(6.0)),
+            ("initial_layer_print_height", num(0.2)),
+            ("initial_layer_acceleration", pair(500.0)),
+            ("travel_acceleration", pair(10000.0)),
+            ("close_additional_fan_first_x_layers", pair(3.0)),
+            ("additional_fan_full_speed_layer", pair(0.0)),
+            ("first_x_layer_fan_speed", pair(40.0)),
+            ("additional_cooling_fan_speed", pair(10.0)),
+            ("min_vitrification_temperature", num(70.0)),
+            ("max_additional_fan", num(10.0)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        scope.extend(with.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        let text =
+            layercraft_machine::expand(&printer("Bambu Lab X2D").unwrap().filament_change, &scope).unwrap();
+        text.lines()
+            .map(|l| l.split(';').next().unwrap_or("").trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect()
+    }
+
+    /// As the maker's own change gave them, measured by compiling two-colour plates with it.
+    #[test]
+    fn the_x2d_filament_change_flushes_loads_and_sets_the_new_filament() {
+        let has = |commands: &[String], c: &str| commands.iter().any(|x| x == c);
+        // The support's change, at its layer 26.
+        let support = change(25.0, 5.2, &[]);
+        for c in [
+            "M620 S1A B H-1",
+            "G1 Z8.2 F1200",
+            "M620.10 A0 F149.669 L191.006 H0.4 T270 P245 S1",
+            "M620.10 A1 F149.669 L191.006 H0.4 T270 P245 S1",
+            "M620.15 C235",
+            "M620.11 P0 L0 I0 B-1 E0",
+            "M620.11 K1 I0 B-1 R3 F200",
+            "T1 H-1",
+            "SYNC T10",
+            "M983.3 F2.5 A0.4 R2",
+            "M1015.4 S1 K1 H0.4",
+            "M204 S10000",
+            "M142 P1 R50 S55 U0.1 V0.5 O55",
+        ] {
+            assert!(has(&support, c), "{c}: {support:?}");
+        }
+        // Pulled back far when cut, or not as it leaves the extruder, if the settings say so.
+        let cut = change(25.0, 5.2, &[("long_retraction_when_cut", Value::Bool(true))]);
+        assert!(has(&cut, "M620.11 P1 L0 I0 B-1 E-10 F200"));
+        let ec = change(25.0, 5.2, &[("long_retraction_when_ec", Value::Bool(false))]);
+        assert!(has(&ec, "M620.11 K0 I0 B-1 R0"));
+        // On the first layer, its acceleration and the auxiliary fans at the first layers' speed.
+        let first = change(0.0, 0.2, &[]);
+        assert!(has(&first, "M204 S500") && has(&first, "M106 P2 S102") && !has(&first, "M204 S10000"));
+        // Climbing to the filament's speed by its full-speed layer, then the chamber's cooling.
+        let ramp = [
+            ("close_additional_fan_first_x_layers", Value::Num(1.0)),
+            ("additional_fan_full_speed_layer", Value::Num(6.0)),
+            ("additional_cooling_fan_speed", Value::Num(70.0)),
+            ("min_vitrification_temperature", Value::Num(45.0)),
+            ("max_additional_fan", Value::Num(70.0)),
+        ];
+        assert!(has(&change(2.0, 0.6, &ramp), "M106 P10 S132.6"));
+        assert!(has(&change(5.0, 1.2, &ramp), "M142 P1 R30 S40 U0.7 V1.0 O45"));
     }
 
     /// The commands the X2D's layer change gives layer `layer` (from 0) of a filament that holds

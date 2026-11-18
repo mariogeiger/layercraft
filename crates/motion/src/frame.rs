@@ -1,13 +1,11 @@
 //! The machine's own G-code around the layers, and what a program does, read from its moves.
 //!
-//! The frame is the printer's templates, layercraft's own or the maker's, expanded for the
-//! program as it stands: the start (the
-//! machine's limits, its start sequence, the filament's, a prologue, absolute positions and
-//! relative extrusion), a layer change before each layer's first pass, a filament change before
-//! each pass of another material than the one before (the old filament's end, the change, the
-//! new one's start), and the end. The first layer's extent, the highest layer and the filaments
-//! come from the moves themselves, so a program merged from several, or edited by hand, gets the
-//! frame it needs. A change flushes `flush[from][to]` mm of filament, as the caller says.
+//! The frame is the printer's templates expanded for the program as it stands: the start (the
+//! machine's limits, its start sequence, a prologue, absolute positions and relative extrusion), a
+//! layer change before each layer's first pass, a filament change before each pass of another
+//! material than the one before, and the end. The first layer's extent, the highest layer and the
+//! filaments come from the moves themselves, so a program merged from several, or edited by hand,
+//! gets the frame it needs. A change flushes `flush[from][to]` mm of filament, as the caller says.
 //!
 //! Between the templates the frame holds the temperatures (`Heat`): the start leaves the first
 //! filament and the bed at their first layer's, so a layer that needs another sets it on its way
@@ -40,14 +38,6 @@ fn item(scope: &Scope, key: &str, k: usize) -> Option<Value> {
 /// printer's; zero when none does.
 fn first_number(scope: &Scope, keys: &[(&str, usize)]) -> f64 {
     keys.iter().find_map(|(key, k)| item(scope, key, *k).and_then(|v| v.number())).unwrap_or(0.0)
-}
-
-/// A filament's feed rate at its melt limit, in mm/min.
-fn melt_feed(scope: &Scope, k: usize) -> f64 {
-    let speed = item(scope, "filament_max_volumetric_speed", k).and_then(|v| v.number()).unwrap_or(0.0);
-    let diameter = item(scope, "filament_diameter", k).and_then(|v| v.number()).unwrap_or(0.0);
-    let area = disc_area(diameter);
-    if area > 0.0 { speed / area * 60.0 } else { 0.0 }
 }
 
 fn expand_text(which: &str, template: &str, scope: &Scope) -> Result<String, MotionError> {
@@ -153,11 +143,8 @@ pub fn frame(
     scope.insert("max_layer_z".into(), num(0.0));
     // The first pass's filament is loaded at the start.
     let first = program.layers.first().map_or(0, |l| l.material);
-    for key in ["initial_no_support_filament_id", "initial_filament_id", "current_filament_id"] {
+    for key in ["initial_filament_id", "current_filament_id"] {
         scope.insert(key.into(), num(first as f64));
-    }
-    for key in ["first_filaments", "first_non_support_filaments"] {
-        scope.insert(key.into(), pair(first as f64, -1.0));
     }
     let materials = program.layers.iter().map(|l| l.material).max().map_or(1, |m| m + 1);
     if materials > 1 && templates.change_filament.trim().is_empty() {
@@ -176,7 +163,6 @@ pub fn frame(
         pieces.push(t.limits.clone());
     }
     pieces.push(format!("{}\n; MACHINE_START_GCODE_END\n", expand_text("start", &t.start, &scope)?));
-    pieces.push(expand_text("filament start", &t.filament_start, &scope)?);
     if !t.prologue.is_empty() {
         pieces.push(expand_text("prologue", &t.prologue, &scope)?);
     }
@@ -185,7 +171,7 @@ pub fn frame(
     let mut layers = Vec::with_capacity(program.layers.len());
     // The highest any layer so far reaches, a bent one above its plane.
     let mut highest = 0.0f64;
-    let (mut index, mut material, mut changes) = (None, first, 0usize);
+    let (mut index, mut material) = (None, first);
     // What the nozzle and the bed are set to: the start brings both to the first layer's.
     let (mut nozzle, mut bed) = (heat.nozzle_at(first, 0)?, heat.bed_at(0)?);
     for layer in &program.layers {
@@ -211,15 +197,12 @@ pub fn frame(
         }
         if layer.material != material {
             let (from, to) = (material, layer.material);
-            changes += 1;
             let length = flush.get(from).and_then(|row| row.get(to)).copied().unwrap_or(0.0);
             if !(length.is_finite() && length >= 0.0) {
                 return Err(MotionError::BadParams(format!(
                     "flush of {length} mm from material {from} to {to}"
                 )));
             }
-            // Where the pass starts, which the machine's change may travel back to.
-            let at = layer.moves.iter().find_map(|m| m.to).unwrap_or([0.0, 0.0, layer.z]);
             let (old_temp, new_temp) = (heat.nozzle_at(from, layer.index)?, heat.nozzle_at(to, layer.index)?);
             let change = [
                 ("current_filament_id", num(from as f64)),
@@ -231,14 +214,6 @@ pub fn frame(
                 ("flush_length", num(length)),
                 ("old_filament_temp", num(old_temp)),
                 ("new_filament_temp", num(new_temp)),
-                ("old_filament_e_feedrate", num(melt_feed(&scope, from))),
-                ("new_filament_e_feedrate", num(melt_feed(&scope, to))),
-                // The start's load counts as the first.
-                ("toolchange_count", num((changes + 1) as f64)),
-                ("x_after_toolchange", num(at[0])),
-                ("y_after_toolchange", num(at[1])),
-                ("z_after_toolchange", num(at[2])),
-                ("is_prime_tower_interface", Value::Bool(false)),
                 // How the old filament is pulled back when the change cuts it, and when it
                 // leaves the extruder: the filament's own setting, else the printer's.
                 (
@@ -282,33 +257,18 @@ pub fn frame(
                         ],
                     )),
                 ),
-                // The way the head takes to the change, which the X2D's template only names in a
-                // comment: straight from the pass's start.
-                ("travel_point_1_x", num(at[0])),
-                ("travel_point_1_y", num(at[1])),
-                ("travel_point_2_x", num(at[0])),
-                ("travel_point_2_y", num(at[1])),
-                ("travel_point_3_x", num(at[0])),
-                ("travel_point_3_y", num(at[1])),
             ];
-            scope.insert("current_filament_id".into(), num(from as f64));
-            text += &lines(&expand_text("filament end", &t.filament_end, &scope)?);
             for (key, value) in change {
                 scope.insert(key.into(), value);
             }
             text += &lines(&expand_text("filament change", &t.change_filament, &scope)?);
             scope.insert("current_filament_id".into(), num(to as f64));
-            text += &lines(&expand_text("filament start", &t.filament_start, &scope)?);
             material = to;
             nozzle = new_temp;
             text += &format!("M109 S{nozzle} ; wait for the new filament's temperature\n");
         }
         layers.push(text);
     }
-    let end = lines(&format!(
-        "; MACHINE_END_GCODE_START\n{}{}",
-        expand_text("filament end", &t.filament_end, &scope)?,
-        expand_text("end", &t.end, &scope)?
-    ));
+    let end = lines(&format!("; MACHINE_END_GCODE_START\n{}", expand_text("end", &t.end, &scope)?));
     Ok(Frame { start, layers, end })
 }

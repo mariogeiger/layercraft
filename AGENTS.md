@@ -35,9 +35,10 @@ outranks feature work.**
   never committed. Never copy its start or end G-code or other text into the repository.
 - **Settings live in the repository.** A printer's settings, its own, each quality's and each
   material's, are layercraft's values in its folder of `printers/`, built into the binary, so
-  every computer prints with the same: change them there, never in a local file. Until
-  layercraft writes its own G-code, the maker's profiles are read from an installed Bambu Studio
-  at each compile, as data, for the G-code templates and what the printer's files declare.
+  every computer prints with the same: change them there, never in a local file. So is the
+  printer's G-code, its start, layer change, filament change and end. The maker's profiles are
+  still read from an installed Bambu Studio at each compile, as data, for what the printer's
+  files declare.
 - **Every stage is open.** Each stage reads and writes a readable file (`--emit <stage>`,
   `--from <file>`), so an agent can inspect or edit any stage and compile on from it. A stage
   depends only on the stages before it; nothing reaches around the chain.

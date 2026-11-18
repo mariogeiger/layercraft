@@ -1,0 +1,574 @@
+# Changelog, 0.1.0 to 0.9.0
+
+The first releases: the pipeline from a solid to a print, stage by stage. Later releases are in
+[CHANGELOG.md](../CHANGELOG.md).
+
+## 0.9.0
+
+### Added
+
+- Sparse infill as convection rolls: `--infill rolls` on `compile` and `view`. The lines are
+  the zeros of a Swift–Hohenberg field relaxed over each layer's sparse area, one line spacing
+  apart, the spacing of straight lines: they run from wall to wall, welded to the walls, which
+  they meet 30° off square, the other way every millimetre of height (five layers), and each
+  layer's field starts from the one below, so its lines rest on those below. The grid lies in
+  the frame of the sparse areas' principal axes, so the lines turn and move with what is
+  printed; the parts of one plate share it. Corners, which the rolls round, take a little less
+  line than straight lines would: on the ramps 5 % less sparse line and 0.5 % less filament
+  (751 mm against 755), on the Benchy 3582 mm against 3598 and 33.1 min against 32.9.
+- `PathParams` gains `sparse_pattern`: `lines`, the default, or `rolls` with its `tilt` off
+  square in degrees and its `ply`, the height between turns, in mm.
+
+### Fixed
+
+- `clip_lines` no longer cuts a line in two inside the region where it turns back from going
+  left to going right: `i_overlay` walks each run inside from its least point, so where that
+  point was a turn it handed the run back in two halves, which are now joined again. An inner
+  wall's stretch under the layer above could come back in two strokes.
+
+## 0.8.0
+
+### Fixed
+
+- On a bent layer each bead pushes only the plastic that stays. The nozzle's flat face, passing
+  later and lower in the same layer (on down its own bead, wiping back over it, gliding to the
+  next, laying the next line downhill), levels whatever stands above it, and a bead that pushed
+  its whole slab had the rest squeezed out at its sides: the bulges along the side walls of the
+  sloped ramps, where descending walls cross the layers' bands. A bead now pushes its slab less
+  what the face cuts off it later, and the layer over it the more room that leaves. Replayed on
+  a height map of the ramp, the plastic levelled off its outer walls falls from 0.26 to
+  0.01 mm³, off everything from 2.63 to 1.44 mm³ of 900; what is left lies where the infill
+  overlaps the walls. The Benchy takes 3598 mm of filament (3620) and 32.9 min (32.8).
+
+### Changed
+
+- `MotionParams` gains `face_radius`, the radius of the nozzle's flat face, half the printer's
+  `face_diameter` (0, the default, levels nothing).
+
+## 0.7.0
+
+### Fixed
+
+- On a bent layer the nozzle's flat face no longer comes down into the beads of the layer
+  below. Where a slab thinned under a slope, the face's uphill rim reached into them: on the
+  Benchy, up to 177 µm into their flat tops, 113 µm at their middles. The leaf below now lies
+  under the face across its reach, its radius and half the widest bead, whose top stands as
+  high as its middle: `d_{k−1}(y) ≤ d_k(x) + h` for `|y − x| ≤ face_reach`, 0.725 mm on the X2D.
+  It holds between the grid's vertices too, exactly: for leaves linear on the grid's triangles,
+  bounds at the vertices give their interpolation everywhere and nothing more, so the face
+  holds when that interpolation stays under `h` over its disc. The grid needs a larger reach
+  for it, found by bisection: 0.80 mm.
+- `verify` sees that: within the nozzle's column, the beads laid so far are capsules, flat
+  across and as high as the nozzle that laid them, met exactly by the nozzle's underside, the
+  tip followed along each move until a bound or a point decides. The nozzle may iron the beads of
+  its own layer by `Envelope::ironing`, those before not at all: within the rounding of written
+  positions and, on a bent layer, the resolution its moves are written within
+  (`Envelope::resolution`). Past the column, no bead stands higher than the head's plane. This
+  replaces a grid of heights 0.2 mm fine, under which a bent layer's nozzle was let into
+  anything within its column lower than the layer's top raised by a lift: up to 0.25 mm.
+
+### Changed
+
+- `Foliation` gains `face_reach` and `ironing`. A layer leans no more than lets the face iron the
+  beads of its own layer by `ironing`, 0.3 mm on the X2D: about 0.78 mm times its slope, 20.9°,
+  so the 20° of `max_slope` stands.
+- Under a followed top, the copies of its shape a slab lower are as thick as the face lets
+  parallel slabs be on its slope, `max(h, s·R)`, and none are made where no slab is that thick.
+- The leaves bend on a grid of 0.625 nozzles, 0.25 mm on the X2D, instead of 1.25: its
+  triangles cost the face less of its reach.
+- The Benchy's sloped tops lie 11.8 µm from the model on average (10.0 µm in 0.6.0, which let the
+  face into the layer below), 86.7 % of them within 20 µm; it prints in 32.8 min with 3620 mm of
+  filament and compiles in 54 s.
+
+## 0.6.0
+
+### Added
+
+- `printers/`: one folder per printer, holding what its machine description does not tell,
+  measured on the printer itself. `printers/bambu-lab-x2d/printer.json` holds the X2D's toolhead,
+  its spiral lift radius and the G-code its firmware expects before the first layer, and
+  layercraft reads it. Beside it are the owner's sketch and photo of the toolhead, the script that
+  measures the nozzle on the photo, and what is known of the printer. A printer without a folder
+  is refused.
+
+### Changed
+
+- `verify` takes the measured toolhead (`Toolhead { face_radius, flank_slope, column_radius,
+  protrusion, margin }`): a nozzle with a 1.0 mm face, a 50° flank and a column 3.11 mm across,
+  reaching 2.94 mm below the rest of the head. The head's underside, with the other nozzle and
+  the gantry, counts as one plane, with 0.2 mm kept under it.
+- A bent layer dips at most 2.74 mm below what is printed. It used to dip 3.0 mm, 0.06 mm more
+  than the nozzle reaches: that limit came from the profile's `nozzle_height` of 4.0 mm, less a
+  1 mm margin.
+- The Benchy compiles and passes as before. Its sloped tops lie 10.0 µm from the model on
+  average, 89.6 % of them within 20 µm.
+
+## 0.5.0
+
+### Added
+
+- Bent layers: under a top surface sloped gently, up to 20°, the layers bend to follow it, so
+  its last layers lie along it instead of stepping down it. Each layer's top is its height plus
+  a relief, piecewise linear on one triangulated grid of 1.25 nozzles (0.5 mm on the X2D), the
+  same for every layer; a flat layer is the relief zero. The reliefs lean at most 20° along the
+  grid's edges, rise at most as far as the nozzle reaches below the head less a millimetre
+  (3 mm on the X2D), and keep each slab between half and one and a half layer heights thick. A
+  layer is the exact section of the mesh by its bent middle, the mesh cut once along the grid's
+  lines; regions and paths are a flat layer's, a top surface on a bent layer hatched along its
+  fall line. Beads are cut where the reliefs bend and lie on their layer's top; travels hop over
+  the highest point on their way. On the Benchy, its sloped tops lie 9.8 µm from the model on
+  average instead of 54 µm, 90 % of their area within 20 µm instead of 20 %; the slabs hold the
+  model's volume to 0.05 % instead of 0.37 %. It prints in 33.1 min instead of 31.8, and
+  compiles in 57 s instead of 38.
+- `--flat` on `compile` and `view`: every layer flat, as before.
+- `verify` follows the toolhead: the head never comes down into what is printed, neither the
+  nozzle's cone, nor the head around it, nor the gantry above, from the machine description's
+  `nozzle_height`, `extruder_clearance_max_radius` and `extruder_clearance_height_to_rod` and a
+  cone of 60° half-angle, assumed until measured. This replaces the rule that each layer lies
+  above the last. Extrusions lie on their layer's top, within a quarter of its thickness on a
+  bent one, and no move drives the Z axis faster than it goes.
+
+### Changed
+
+- `limit`, formerly `melt`, holds every move to the hot end's melt limit and to the Z axis's
+  speed, up or down, once the beads are fitted and the layers cooled; the planner no longer
+  slows climbs itself.
+- `fit` takes runs of moves laying one bead at one speed, acceleration and fan. A move fits
+  where its vertices lie within the resolution `ε` in space and each move it replaces lays
+  within `2ε/w` of its plastic per mm, so the bead's edges stay within `ε`; an arc climbs evenly
+  about a centre within 1 m, which the printer's arithmetic holds.
+- On a bent slab `t` thick, a bead fills its strip, its spacing wide and `t` deep; on a flat one
+  that is its section, as before.
+- The stage files carry each layer's relief (`warp`), left out where it is zero: older files
+  load.
+
+## 0.4.15
+
+### Changed
+
+- Within an island, the walls of each depth, the beads along its strips, the lines of each
+  infill area not laid in sweeps and the infill left over follow the tour that retracts least
+  often, then travels least, where they went nearest first. Nearest first lays the tour out;
+  2-opt (a run of it reversed, each open path in it laid the other way) and Or-opt (a run of up
+  to three paths moved elsewhere, either way round) then improve it until neither can. A move
+  retracts unless it stays over what the layer above covers or joins neighbouring lines of an
+  area. On the Benchy, retractions fall from 1026 to 735, travel from 28.5 to 26.9 m, and the
+  print from 32 min 30 s to 31 min 48 s; it compiles in the same time.
+- Whether a move stays inside a region is found from the edges near it only, filed by
+  horizontal band, where every edge of the region was looked at, three times.
+
+### Fixed
+
+- A move that leaves a region through one of its corners no longer counts as staying inside:
+  it crosses no edge there, and only its middle was checked.
+- An open bead laid from its far end keeps each segment's overhang: the order reversed its
+  points and not their fractions.
+
+## 0.4.14
+
+### Changed
+
+- Every layer takes `slow_down_layer_time` to cool before the next lands on it, whatever
+  `slow_down_for_layer_cooling` says: Bambu PLA Basic on the X2D turns the slowing off, and the
+  Benchy then laid its cabin's layers in 0.7 to 3 s and its chimney's in 0.1 to 0.3 s, still
+  soft under the next: the chimney smeared and the top of the round window sagged. This undoes
+  0.4.3's reading of the switch.
+- A layer still too short at `slow_down_min_speed` waits out the rest: the nozzle goes 10 mm past
+  the layer's beads, the nearest way that stays on the plate, and stays there, the fan running,
+  before the next layer. The Benchy's chimney waits about 2 s a layer; the print takes 32.5 min.
+
+### Added
+
+- `Move::wait`, the seconds the nozzle stays where a move leaves it, written as the printer's own
+  dwell (`M400 P`, in milliseconds) and read back from it or from `G4`; `verify` refuses a wait
+  that is not finite or is negative, and the time counts it. `cool` takes the plate's printable
+  area.
+
+## 0.4.13
+
+### Changed
+
+- A strip of the infill too thin for two dense lines takes one bead along its centre line, as
+  wide as the strip is thick, where lines across it were short and all ends. The strips are
+  what an opening by the solid line spacing takes from the laid areas together (top surface,
+  solid and sparse), so a strip runs on through them, each stretch of its bead in its own
+  area's role, sparse infill's dense. A bead runs from end to end of its strip, holds the
+  strip's plastic however thin, and changes width only where the strip's thickness changes
+  by more than the printer's resolution. Over the Benchy's layers, its dense beads overlap on
+  538 mm² instead of 1,271 and leave 951 mm² unfilled instead of 984; it prints in 27.2 min
+  instead of 31.2.
+
+### Added
+
+- `layercraft_geom::chordal_axis`: the centre lines of a region's strips with its thickness
+  along them (`Centreline`), from a constrained Delaunay triangulation, their ends run on to
+  the boundary; and `layercraft_geom::opening`, moved from the region crate.
+
+## 0.4.12
+
+### Changed
+
+- Every error type derives its message and its conversions with `thiserror`, the messages
+  word for word as before: the active code drops from 7,448 lines to 7,306. A stage's error
+  from a tuning keeps the tuning's error as its source.
+
+## 0.4.11
+
+### Changed
+
+- The active code drops from 7,782 lines to 7,448, with the same output: Benchy's sections,
+  regions, paths, program and G-code, a tuned cube's and a merged plate's are bit for bit those
+  of 0.4.10. The plane's geometry (a contour's edges, the even-odd test, the distance to a
+  segment, a disc's area) and a layer's infill areas are each written once; the settings'
+  percentages and the filament's own values over the printer's are read by one rule each; the
+  lints come from the workspace alone.
+- The settings read a malformed percentage, or a missing filament retraction, as the rule for
+  a well-formed one does, rather than through a fallback of their own.
+
+### Removed
+
+- `layercraft_mesh::write_3mf`, `solids::rounded_rectangle` and `solids::regular_polygon`,
+  `layercraft_gcode::feature_name` and `layercraft_view::ROLES`: only tests used them, or they
+  repeated another name (`Role::name`, `Role::NAMED`).
+
+## 0.4.10
+
+### Changed
+
+- Each piece of a solid area over solid is hatched at the angle that fills it best, of the
+  layer's, across it and along its four longest edges: the least interior error (the void its
+  beads leave and the plastic they push where there is no room, their ends round), then the
+  least plastic, each in whole cubes of the profile's `resolution`. Taken from the `egglog`
+  branch without egglog: the pieces add up, so each is chosen on its own. The Benchy's dense
+  areas fall from 514 mm³ of interior error to 370 mm³ and its moves from 33.2 min to 31.2;
+  it compiles in 22.4 s instead of 20.8.
+
+## 0.4.9
+
+### Added
+
+- The measurements of calibration plate 3 and the predictions made for it before it was printed
+  (`calibration/plate-3/`). Plates leaning at 45° and 30° rise 0.12 to 0.22 mm above their
+  design whatever their height (5 to 12 mm) and thickness (2 or 3 mm): no elastic ratchet shows,
+  and the nozzle pushes with at most about 1.5 N. A top surface laid at 0.8 of the flow leaves a
+  block as tall (8.10 mm for 8.00), so its excess is not the last layer's plastic.
+
+## 0.4.8
+
+### Added
+
+- `calibration/`: the caliper calibration plates printed so far, each with the script that
+  generates its 3MF, its `tune.json`, the measurements (`mesures.csv`), the photos, how and when
+  it was printed (`plate.json`) and when each object was printed, layer by layer (`timing.json`).
+  `calibration/sim/` holds the models they test: the elastic ratchet of a part bent by the
+  nozzle, and a layer-by-layer simulation of a part's heat and stresses.
+
+## 0.4.7
+
+### Fixed
+
+- Bridge strands over air run from support to support: of the directions tried, the one whose
+  strands leave the fewest ends over air wins, then the one whose longest strand is shortest.
+  Before, only the longest strand counted, and a slab 6 mm wide on two posts 20 mm apart was
+  laid across its width, each strand hanging from nothing at both ends.
+
+## 0.4.6
+
+### Changed
+
+- A move from bead to bead over what the layer above covers, inside the outer wall and off
+  any bridge over air, neither retracts nor lifts: what oozes on the way is buried. Before,
+  only the links between neighbouring infill lines stayed down. The Benchy retracts 1,347
+  times instead of 3,173 (Bambu Studio: 1,772), its moves taking 33.2 min instead of 37.0.
+
+## 0.4.5
+
+### Added
+
+- Beads are written as the fewest lines and arcs (`G2`/`G3`) within the profile's `resolution`
+  (0.012 mm on the X2D) of the beads traced, arcs only with `enable_arc_fitting`. Each move
+  keeps its bead's plastic per mm, speed and fan. The Benchy goes from 768,000 moves to
+  102,000, about as many as Bambu Studio's.
+
+## 0.4.4
+
+### Changed
+
+- A wall bead hanging over air runs at the speed of the profile's band it falls in, each band
+  of a quarter closed above (`overhang_1_4_speed` for up to a quarter of the bead over air, to
+  `overhang_4_4_speed`), and `overhang_totally_speed` wholly over air. Interpolated between
+  the bands, the Benchy's lower hull ran faster than the profile asks.
+
+### Added
+
+- The overhang fan: with `enable_overhang_bridge_fan`, a bead hanging over air by at least
+  `overhang_fan_threshold`, and every bridge, runs the fan at `overhang_fan_speed` at least.
+
+## 0.4.3
+
+### Fixed
+
+- A filament that does not slow down for layer cooling (`slow_down_for_layer_cooling = 0`, as
+  Bambu PLA Basic on the X2D) is no longer slowed: layercraft ignored the switch and slowed
+  every layer shorter than `slow_down_layer_time`.
+- A layer too short to cool is slowed on its hidden beads first, the surface only once they are
+  at their floor. Slowed whole, a short layer laid its outer wall slower than its neighbours,
+  which shows as a band on the side of the part.
+
+## 0.4.2
+
+### Added
+
+- A wall slows by the share of its bead that hangs over the layer below: each wall segment
+  of the paths stage carries it (`overhang`), the regions stage keeps the section below each
+  layer (`support`), and motion takes the profile's overhang speeds (`overhang_1_4_speed` to
+  `overhang_4_4_speed`, `overhang_totally_speed`), each held at the middle of its band and
+  linear between. The Benchy's cabin arch, laid at 200 mm/s, came out ragged; its apex now
+  runs at 10 mm/s.
+
+### Fixed
+
+- An inner wall runs only where its bead passes: through a neck or along a cusp narrower than
+  the bead, its loop ran in and back over its own plastic (3 % of the Benchy's walls). The band
+  it leaves is filled with the inside.
+- With one wall on top, an inner wall lying wholly under the layer above stays a loop starting
+  at the seam. Clipped open at an arbitrary point, it sent the nozzle across the part to the
+  outer wall's seam on every layer, retracting, lifting and priming on the visible surface.
+
+## 0.4.1
+
+### Fixed
+
+- A bridge strand hangs only over air deeper than it reaches: round, a nozzle wide, it hangs
+  `nozzle − h` below its layer (0.2 mm for a 0.4 mm nozzle on 0.2 mm layers). Over an engraving
+  one layer deep, as the text under the Benchy's hull, it lay on the bed and filled the letters
+  with 57 % more plastic than the layer holds; the layer over such a pocket is now laid flat,
+  as solid, and the engraving stays open.
+
+## 0.4.0
+
+### Added
+
+- `layercraft merge` prints several programs on one plate, layer by layer under one frame:
+  program stages and G-code from any slicer (`.gcode`, `.gcode.3mf`), each already placed. The
+  pieces at one height go nearest first, and each finds the filament as it expects it.
+  `--emit program=FILE` writes the merged program, as JSON or as a PLY picture.
+- G-code is read back into a program (`layercraft_gcode::read`): positions, filament absolute
+  or relative, feed, acceleration and fan followed, arcs kept, the machine's own G-code left
+  out; an unknown command or feature is an error. A layer starts at its first travel or bead:
+  the wipe, pull and lift before it leave the layer below.
+- Arcs: a move may turn about a vertical axis while it climbs, any angle up to a full turn,
+  written `G2`/`G3`; the lift's helix is one. Time, verify and pictures follow arcs exactly.
+- Roles are three facts: the kind of bead (wall, dense line, sparse line), the face it makes
+  (outside, top, bottom, none) and what it rests on (solid, sparse infill, air). A strand is a
+  dense line on anything but solid; bottom surfaces, overhang walls, floating shells and
+  internal bridges are named. `monotone` takes faces: the profile's bottom surface pattern now
+  counts too.
+- `melt` holds every bead to what the hot end melts; `deliver` says how many it slowed.
+
+### Changed
+
+- The program stage is layers of moves, each with its whole state (where, how, filament,
+  speed, acceleration, fan, bead): no machine G-code, no summary, no progress in it. The frame
+  (start, layer changes, end) is expanded when written, from the program as it stands; the
+  summary and the printer's progress are read from the moves.
+- Cooling is a pass of its own over any program (`cool`), after the program stage, which keeps
+  full speeds.
+- A layer's first move, from wherever the machine's own G-code leaves the nozzle, is one
+  travel over at the hop height.
+- The thumbnail is drawn from the program's beads, so a merged or read program has one.
+
+### Fixed
+
+- A bead too short to be written at three decimals no longer leaves a `G1 E0.00001` push in
+  place: its filament, and every bead's rounding, carries to the next bead, the total exact.
+
+## 0.3.1
+
+### Fixed
+
+- Bridge strands resting on sparse infill fill their layer exactly: they are spaced
+  `π·w²/(4h)` apart (0.63 mm for a 0.4 mm nozzle on 0.2 mm layers) instead of touching, which
+  laid 57 % more plastic than the layer holds and pushed it up into the top surface. Strands
+  over air still touch, where they hang.
+
+## 0.3.0
+
+### Added
+
+- Settings by place: `--tune FILE.json` takes a list of overrides, each a box of the build
+  volume and part of the settings (`{"within": {"z": [0, 5]}, "set": {"motion": {"lift_radius":
+  0.6}}}`). Every region, path and motion setting can vary by height band, by object or by any
+  box: each shape, island and bead takes the settings at its centre, merged in order. Several
+  variants of a test print on one plate need no editing of stage files. A misspelt setting or
+  stage is an error.
+- A flow per role, read from the profile for bridges (`bridge_flow`) and top surfaces
+  (`top_solid_infill_flow_ratio`).
+- Monotone surfaces: the top surface is laid in sweeps, each line against the one before and
+  all the same way, as the profile's `top_surface_pattern` asks, instead of nearest first.
+
+### Changed
+
+- The stages take a `layercraft_tune::Field` of parameters instead of one set.
+- A program's summary and the printer's progress are read from its moves (`finish`), so a
+  program edited by hand and resumed with `--from` reports its own time and filament. The
+  plastic per layer is what the extrusions push, the flow ratio included.
+
+### Fixed
+
+- The hot end's melt limit caps a bead's speed by the plastic it pushes, flow included, as
+  `verify` checks it, not by its nominal section.
+- A retraction is pushed back by exactly what was pulled, whatever the next bead's settings.
+
+## 0.2.10
+
+### Documentation
+
+- The README shows what layercraft does: the five stages on the 3DBenchy, the bead's
+  cross-section and the formulas behind the filament, and the stages seen in SolidCraft.
+
+## 0.2.9
+
+### Fixed
+
+- A spiral lift turns a helix of 1.2 mm, the smallest radius that broke the end-of-print string
+  in a series of test cubes on the X2D (0, 0.6, 1.2 and 2.4 mm), instead of 3.18 mm derived
+  from the axes' speeds: as clean, faster, and gentler on top surfaces.
+
+## 0.2.8
+
+### Fixed
+
+- A program's PLY picture names the role of the moves that lay no plastic `-1 none`, in the
+  form every other label takes (`role: 0 outer wall, …`), so a viewer can read it as a legend.
+
+## 0.2.7
+
+### Added
+
+- Any stage as a picture: `--emit STAGE=FILE.ply` writes the stage as a PLY file of points,
+  segments and triangles with named properties, for SolidCraft or any viewer to colour and
+  filter by. Sections and region areas are triangulated exactly on the lattice; walls, beads
+  and moves are segments, a bead with its `width` and `height`, at its centre half its height
+  under the nozzle; the program's points carry their time `t`, so `t ≤ t₀` replays the print.
+  A role has the same code in every stage.
+
+## 0.2.6
+
+### Fixed
+
+- No more string pulled up off the part at the end of a print, nor at each lift: the nozzle
+  leaves the part as the profile's spiral lift asks, one turn of a helix (`G3 … P1`) back over
+  where it started, moving sideways as it rises instead of straight up. Its radius makes the Z
+  axis at its top speed keep pace with the travel speed (3.18 mm on the X2D). A filament's own
+  lift height and type win over the printer's; a slope lift is not supported yet.
+- No more `G1 E0` lines: a move that changes nothing at the precision written is left out.
+
+## 0.2.5
+
+### Fixed
+
+- No region keeps a contour thinner than a micrometre: booleans no longer leave rounding
+  debris, such as hundreds of fill scraps on the layer under raised letters.
+- What stands on a layer decides its top shells, not only the air: under a thin rib or raised
+  letters, all walls and no inside, the layers below are solid for the top shells' depth, as
+  under a top surface, instead of a few sparse lines.
+
+## 0.2.4
+
+### Fixed
+
+- Offsets drop the slivers, thinner than a nanometre, that rounding left where a mesh's very
+  short edges meet: no more zero-length wall loops, nor scraps of top surface and solid infill
+  next to thin features, each costing a travel and a retraction.
+
+## 0.2.3
+
+### Fixed
+
+- A bridge over air crosses its gap the short way: its strands take the direction whose
+  longest strand is shortest, and reach a bead's width onto the support at both ends. A bridge
+  over sparse infill keeps the layer's direction, across the sparse lines below.
+
+## 0.2.2
+
+### Fixed
+
+- A piece of sparse infill smaller than the process's `minimum_sparse_infill_area` (15 mm² on
+  the X2D) is solid: a thin tower's core no longer gets a stray line or two.
+- `only_one_wall_top` holds wherever a layer meets the air, not only on layers that are all top:
+  inner walls stay under the layer above and the top surface reaches the outer wall elsewhere.
+
+## 0.2.1
+
+### Fixed
+
+- Bridges only where a strand must span something: over air wider than a bead, over sparse
+  infill wider than the gap between its lines. The stamp's bridges fall from 74 to 28 mm.
+- Infill lines no longer lay plastic along the area's edge between them: the move from one
+  line to the next stays inside the part, without retracting or lifting, so the density is
+  what the spacing gives. The 20 mm square now takes 341 mm of filament, Bambu Studio 344.
+
+## 0.2.0
+
+### Added
+
+- Bridges: solid areas over sparse infill or over air are laid as round strands a nozzle wide,
+  at the bridge speed.
+- Infill lines join into zigzags along the area's edge, so the nozzle no longer lifts and
+  travels between neighbouring lines (63 lifts instead of 177 on the 20 mm test square).
+- The first layer's beads take the first-layer width (0.5 mm on the X2D), to grip the bed.
+- A layer that is all top surface keeps only its outer wall (`only_one_wall_top`).
+
+### Changed
+
+- Wall loops stop the seam gap (15 % of the nozzle) short of their start, so seams do not pile
+  up into a dot. Stage files gain a `bridge` region and role: older stage files do not load.
+
+## 0.1.4
+
+### Fixed
+
+- No more string at the end of a print or after a travel: each retraction wipes back over the
+  bead just laid (the filament's wipe distance), pulling the filament at the retraction speed,
+  and the nozzle lifts off the part before the machine's end sequence.
+- Sparse infill no longer piles up where its lines crossed: one direction per layer, turning a
+  quarter turn each layer, at the spacing that keeps the density.
+
+## 0.1.3
+
+### Fixed
+
+- The X2D refused to start layercraft's `.gcode.3mf` (error 0500-4046): the plate summary now
+  describes the extruders and nozzle, the filament order and the client version of the
+  imported profiles, as the firmware expects. Run `layercraft machine import` again.
+
+## 0.1.2
+
+### Fixed
+
+- Walls and solid infill no longer leave voids: beads sit their tiling spacing apart,
+  `w − h·(1 − π/4)`, the width their rounded cross-section fills, instead of their full width.
+  Solid layers had about 10 % too little plastic.
+
+## 0.1.1
+
+### Fixed
+
+- Sections, regions and toolpaths no longer hold repeated points: every geometric operation
+  works in integer nanometres on one lattice anchored at the origin, so consecutive points are
+  at least a nanometre apart and results from different operations meet exactly.
+
+## 0.1.0
+
+### Added
+
+- The project's mission (`SOUL.md`), agent instructions and repository hooks.
+- `layercraft compile`: a 3MF through exact layer sections, walls, solid shells and sparse
+  infill, toolpaths, timed moves and `verify`, to a `.gcode.3mf` for the Bambu Lab X2D.
+- `--emit STAGE=FILE` and `--from STAGE=FILE` at every stage (mesh, sections, regions, paths,
+  program).
+- `layercraft machine import`: the printer, process and filament read once from an installed
+  Bambu Studio's profiles; the printer's own G-code templates expanded by a strict interpreter.
+- `layercraft view`: a SolidCraft script drawing the toolpaths, one sketch per layer and role.
+- `layercraft compare`: two G-code files side by side, layer by layer and feature by feature.

@@ -760,9 +760,7 @@ fn passes_of_other_materials_change_the_filament_between_them() {
     let p = params();
     let templates = Templates {
         layer_change: "; layer [layer_num]\n".into(),
-        filament_end: "; end [current_filament_id]\n".into(),
-        change_filament: "; change [current_filament_id] to [next_filament_id], [flush_length] mm, count [toolchange_count], [old_filament_temp] to [new_filament_temp]\n".into(),
-        filament_start: "; start [current_filament_id]\n".into(),
+        change_filament: "; change [current_filament_id] to [next_filament_id], [flush_length] mm, [old_filament_temp] to [new_filament_temp]\n".into(),
         ..Templates::default()
     };
     let bead = |x: f64| Move {
@@ -795,7 +793,7 @@ fn passes_of_other_materials_change_the_filament_between_them() {
         [
             "; layer 0\n",
             "; layer 1\nM140 S65 ; the bed for this layer\nM104 S245 ; the nozzle for this layer\n",
-            "; end 0\n; change 0 to 1, 120 mm, count 2, 245 to 235\n; start 1\nM109 S235 ; wait for the new filament's temperature\n",
+            "; change 0 to 1, 120 mm, 245 to 235\nM109 S235 ; wait for the new filament's temperature\n",
             "; layer 2\n"
         ]
     );
@@ -807,7 +805,7 @@ fn passes_of_other_materials_change_the_filament_between_them() {
         ["; layer 0\n", "; layer 1\n"]
     );
     // The machine's end sees the filament last loaded.
-    let end = Templates { filament_end: "; end [current_filament_id]\n".into(), ..templates.clone() };
+    let end = Templates { end: "; end [current_filament_id]\n".into(), ..templates.clone() };
     assert!(frame(&program, &end, &heat, &scope(), &flush).unwrap().end.contains("; end 1"));
     // Without a change in the machine's templates, or without a flush for the pair, no frame.
     let bare = Templates { change_filament: String::new(), ..templates.clone() };

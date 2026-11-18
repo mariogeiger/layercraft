@@ -312,7 +312,6 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
     let (first_bed_key, other_bed_key) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;
     let heat = heat(m, [bed_first, m.number(Filament, other_bed_key)?])?;
-    let template = |kind: Kind, key: &str| m.text(kind, key).unwrap_or_default();
     let filament_diameter = m.number(Filament, "filament_diameter")?;
     let max_volumetric_speed = m.number(Filament, "filament_max_volumetric_speed")?;
     let mut scope = m.scope();
@@ -503,10 +502,8 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
                 start: printer.start.clone(),
                 end: printer.end.clone(),
                 layer_change: printer.layer_change.clone(),
-                filament_start: template(Filament, "filament_start_gcode"),
                 prologue: printer.prologue.clone(),
-                filament_end: template(Filament, "filament_end_gcode"),
-                change_filament: template(M, "change_filament_gcode"),
+                change_filament: printer.filament_change.clone(),
             },
         },
         envelope: Envelope {
