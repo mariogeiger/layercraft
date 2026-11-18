@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.18.3
+
+### Changed
+
+- The X2D's start is layercraft's own (`printers/bambu-lab-x2d/start.gcode`) instead of the
+  maker's: the same commands in the same order, the tune and the logo lamp kept, for every plate
+  and its temperature, every part height and every filament type tried, without the maker's
+  comments and commented-out commands. Printed on the X2D in PLA: every stage ran in order, from
+  the plate checks to the purge line, and the print finished without error.
+
 ## 0.18.2
 
 ### Changed

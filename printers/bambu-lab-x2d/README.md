@@ -2,8 +2,8 @@
 
 What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
 `quality/` and `material/` for each print quality and filament; what they do not tell, measured
-on the printer itself, in `printer.json`; and its own G-code, `layer-change.gcode` and
-`end.gcode`. This page says where they come from.
+on the printer itself, in `printer.json`; and its own G-code, `start.gcode`,
+`layer-change.gcode` and `end.gcode`. This page says where they come from.
 
 ## Settings
 
@@ -17,9 +17,28 @@ on the printer itself, in `printer.json`; and its own G-code, `layer-change.gcod
   material's `nil` leaves the printer's value.
 - Until layercraft writes its own G-code, `bambu-studio.json` names the profiles of an installed
   Bambu Studio that stand behind the printer, each quality and each material. They bring the
-  start and filament-change templates and the rest of what the printer's
+  filament-change template and the rest of what the printer's
   files declare, and these settings replace theirs for the nozzle printed with.
 - A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
+
+## The start
+
+`start.gcode` is layercraft's own, written from what the maker's gave on compiles that varied one
+setting at a time (the plate and its temperature, the part's height, the filament's
+temperatures, flow and type), in the maker's order; a test holds it to those measurements. It
+plays a short tune, resets the machine and lights the logo lamp (both kept by the owner's
+choice), cools the chamber, homes the head and checks the plate: foreign objects, presence,
+alignment, flatness, a clean camera, and for a part 145 mm or taller that nothing is under the
+plate. It loads the first filament from the AMS, calibrates its flow, wipes the nozzle, finds Z,
+levels the plate where the first layer lies, measures the vibrations, calibrates the nozzles'
+offset and lays a purge line; the flow, levelling and offset calibrations run as the print
+command asks. The Z trim is 0.002 mm on the textured plate and 0.022 mm on the others, -0.003
+and 0.017 above 70 °C. TPU and PVA are not pulled back after the calibration, PC cools to 170 °C
+rather than 140 before touching the plate, TPU turns the clog detector on, and only PLA, PETG
+and their carbon-fibre blends have the extruder watch for printing in the air. Printed on
+2026-11-18 in PLA: the printer reported each stage in order (foreign objects, the plate's
+checks, loading, flow calibration, wiping, levelling, vibrations, the nozzles' offset, the purge
+line), then the first layer, no error.
 
 ## The layer change
 

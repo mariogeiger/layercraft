@@ -25,6 +25,9 @@ pub struct Printer {
     pub spiral_lift_radius: f64,
     /// G-code the printer expects after the filament's start, before the first layer.
     pub prologue: String,
+    /// The printer's start, layercraft's own G-code template (`start.gcode`).
+    #[serde(skip)]
+    pub start: String,
     /// The printer's layer change, layercraft's own G-code template (`layer-change.gcode`).
     #[serde(skip)]
     pub layer_change: String,
@@ -50,6 +53,7 @@ pub struct Nozzle {
 /// they stand in.
 struct Folder {
     measured: &'static str,
+    start: &'static str,
     layer_change: &'static str,
     end: &'static str,
     maker: &'static str,
@@ -61,6 +65,7 @@ struct Folder {
 /// The Bambu Lab X2D.
 const X2D: Folder = Folder {
     measured: include_str!("../../../printers/bambu-lab-x2d/printer.json"),
+    start: include_str!("../../../printers/bambu-lab-x2d/start.gcode"),
     layer_change: include_str!("../../../printers/bambu-lab-x2d/layer-change.gcode"),
     end: include_str!("../../../printers/bambu-lab-x2d/end.gcode"),
     maker: include_str!("../../../printers/bambu-lab-x2d/bambu-studio.json"),
@@ -140,6 +145,7 @@ pub fn printer(model: &str) -> Result<Printer, MachineError> {
         let mut p: Printer =
             serde_json::from_str(folder.measured).map_err(|e| MachineError::Import(e.to_string()))?;
         if p.model == model {
+            p.start = folder.start.to_string();
             p.layer_change = folder.layer_change.to_string();
             p.end = folder.end.to_string();
             return check(p);
@@ -175,10 +181,16 @@ mod tests {
         for folder in FOLDERS {
             let p: Printer = serde_json::from_str(folder.measured).unwrap();
             let read = printer(&p.model).unwrap();
-            let own =
-                Printer { layer_change: folder.layer_change.to_string(), end: folder.end.to_string(), ..p };
+            let own = Printer {
+                start: folder.start.to_string(),
+                layer_change: folder.layer_change.to_string(),
+                end: folder.end.to_string(),
+                ..p
+            };
             assert_eq!(read, own);
-            assert!(!read.layer_change.trim().is_empty() && !read.end.trim().is_empty());
+            for sequence in [&read.start, &read.layer_change, &read.end] {
+                assert!(!sequence.trim().is_empty());
+            }
         }
     }
 
@@ -196,6 +208,71 @@ mod tests {
             assert!(text.lines().any(|l| l == plate), "top {top}: {text}");
         }
         assert!(printer("Some Other Printer").is_err());
+    }
+
+    /// The X2D's start for a part `top` mm high on `plate` at `bed` °C, in `filament`.
+    fn start(top: f64, plate: &str, bed: f64, filament: &str) -> Vec<String> {
+        let num = |v: f64| Value::Num(v);
+        let list = |v: Vec<Value>| Value::List(v);
+        let scope = [
+            ("max_print_z", num(top)),
+            ("curr_bed_type", Value::Str(plate.into())),
+            ("bed_temperature_initial_layer_single", num(bed)),
+            ("filament_type", list(vec![Value::Str(filament.into())])),
+            ("initial_filament_id", num(0.0)),
+            ("initial_nozzle_id", num(0.0)),
+            ("initial_no_support_hotend", num(-1.0)),
+            ("filament_map", list(vec![num(1.0)])),
+            ("nozzle_diameter_at_nozzle_id", list(vec![num(0.4)])),
+            ("nozzle_temperature_initial_layer", list(vec![num(220.0)])),
+            ("nozzle_temperature", list(vec![num(220.0)])),
+            ("flush_volumetric_speeds", list(vec![num(21.0)])),
+            ("flush_temperatures", list(vec![num(240.0)])),
+            ("filament_max_volumetric_speed", list(vec![num(21.0)])),
+            ("first_layer_print_min", list(vec![num(124.15), num(124.15)])),
+            ("first_layer_print_size", list(vec![num(7.7), num(7.7)])),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let text = layercraft_machine::expand(&printer("Bambu Lab X2D").unwrap().start, &scope).unwrap();
+        text.lines()
+            .map(|l| l.split(';').next().unwrap_or("").trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect()
+    }
+
+    /// As the maker's own start gave them, measured by compiling with it.
+    #[test]
+    fn the_x2d_start_follows_the_part_the_plate_and_the_filament() {
+        let has = |commands: &[String], c: &str| commands.iter().any(|x| x == c);
+        let pla = start(5.0, "Textured PEI Plate", 55.0, "PLA");
+        assert_eq!(pla.len(), 264);
+        for c in ["M140 S55", "G29 A1 X124.15 Y124.15 I7.7 J7.7 R", "M620.10 A0 F523.843 H0.4 T240 P220 S1"] {
+            assert!(has(&pla, c), "{c}");
+        }
+        for (c, there) in [("G1 E-3 F1800", true), ("M109 S140 A", true), ("M1015.4 S1 K1 H0.4", true)] {
+            assert_eq!(has(&pla, c), there, "{c}");
+        }
+        // Obstacles under the plate are looked for from a 145 mm part up.
+        assert!(!start(144.8, "Textured PEI Plate", 55.0, "PLA").iter().any(|c| c.starts_with("G3811")));
+        assert!(has(&start(145.0, "Textured PEI Plate", 55.0, "PLA"), "G3811 Z145"));
+        // The Z trim, by the plate and whether it is above 70 °C.
+        for (plate, bed, trim) in [
+            ("Textured PEI Plate", 70.0, "G29.1 Z0.002"),
+            ("Textured PEI Plate", 71.0, "G29.1 Z-0.003"),
+            ("Cool Plate", 70.0, "G29.1 Z0.022"),
+            ("Cool Plate", 71.0, "G29.1 Z0.017"),
+        ] {
+            assert!(has(&start(5.0, plate, bed, "PLA"), trim), "{plate} {bed}");
+        }
+        let tpu = start(5.0, "Textured PEI Plate", 55.0, "TPU");
+        assert!(
+            !has(&tpu, "G1 E-3 F1800") && has(&tpu, "M1015.3 S1 H0.4") && has(&tpu, "M1015.4 S0 K0 H0.4")
+        );
+        let pc = start(5.0, "Textured PEI Plate", 55.0, "PC");
+        assert!(has(&pc, "M109 S170 A") && has(&pc, "M1015.4 S0 K0 H0.4"));
+        assert!(has(&start(5.0, "Textured PEI Plate", 55.0, "PETG-CF"), "M1015.4 S1 K1 H0.4"));
     }
 
     /// The commands the X2D's layer change gives layer `layer` (from 0) of a filament that holds

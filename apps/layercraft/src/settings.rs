@@ -500,7 +500,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
             },
             templates: Templates {
                 limits: limits_gcode(m)?,
-                start: template(M, "machine_start_gcode"),
+                start: printer.start.clone(),
                 end: printer.end.clone(),
                 layer_change: printer.layer_change.clone(),
                 filament_start: template(Filament, "filament_start_gcode"),
