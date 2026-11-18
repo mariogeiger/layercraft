@@ -238,9 +238,9 @@ a Benchy's program. This came after its `v0.40.0-rc.2`: until a later release, b
 A wrong line of G-code can drive the nozzle into the bed. So no program leaves layercraft
 without passing `verify`: every position inside the build volume, the head never coming down
 into what is printed, each bead on its layer's top, speeds and flow within what the machine and
-the hot end allow, every number finite. A program that fails is an error, never a warning. What
-the machine description does not tell of a printer, such as its nozzle's shape, is measured on
-the printer and kept in its folder of [`printers/`](printers/).
+the hot end allow, every number finite. A program that fails is an error, never a warning. A
+printer's settings, and what they do not tell, such as its nozzle's shape, measured on the
+printer, are kept in its folder of [`printers/`](printers/).
 
 And layercraft writes files. It never starts a print: that takes a person, every time.
 
@@ -248,15 +248,19 @@ And layercraft writes files. It never starts a print: that takes a person, every
 
 ```bash
 cargo install --path apps/layercraft
-layercraft machine import                       # once: the X2D, 0.20 mm Standard, Bambu PLA Basic
-layercraft compile part.3mf --out part.gcode.3mf
+layercraft compile part.3mf --out part.gcode.3mf   # the X2D, 0.20 mm, Bambu PLA Basic
+layercraft compile part.3mf --out part.gcode.3mf --quality 0.12 --material petg-tr
 layercraft compile part.3mf --out part.gcode.3mf --tune tune.json   # vary settings by place
 layercraft merge a.json b.gcode.3mf --out plate.gcode.3mf   # several programs on one plate
 layercraft compare part.gcode.3mf other.gcode   # side by side with another slicer's output
 ```
 
-`machine import` reads the printer maker's profiles from an installed Bambu Studio, once, into
-`~/.config/layercraft/`; nothing from them enters this repository. `compare` lines up two
+The X2D's settings are layercraft's own, in [`printers/bambu-lab-x2d/`](printers/bambu-lab-x2d/):
+the printer's, each quality's (`--quality 0.20` or `0.12`) and each material's (`--material pla`
+or `petg-tr`), built into the binary, so every computer prints with the same. Until layercraft
+writes its own start, end and filament-change G-code, it reads the printer maker's profiles from
+an installed Bambu Studio at each compile for those templates; their text never enters this
+repository. `compare` lines up two
 G-code files layer by layer and feature by feature: another slicer is a reference to compare
 against, not an oracle. `merge` prints programs together, layer by layer: program stages and
 G-code from any slicer, each already placed, so two slicers' parts can share one plate. Each

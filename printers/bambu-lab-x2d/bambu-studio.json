@@ -1,0 +1,12 @@
+{
+  "printer": "Bambu Lab X2D 0.4 nozzle",
+  "variant": "Direct Drive Standard",
+  "quality": {
+    "0.20": "0.20mm Standard @BBL X2D",
+    "0.12": "0.12mm High Quality @BBL X2D"
+  },
+  "material": {
+    "pla": "Bambu PLA Basic @BBL X2D 0.4 nozzle",
+    "petg-tr": "Bambu PETG Translucent @BBL X2D 0.4 nozzle"
+  }
+}

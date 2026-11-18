@@ -2,6 +2,19 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.18.0
+
+### Changed
+
+- The X2D's settings, the printer's, two qualities' and two materials', are layercraft's own, in
+  `printers/bambu-lab-x2d/`, and built into it: every computer prints with the same, and there is
+  nothing to import or keep in step. `--quality 0.20|0.12` and `--material pla|petg-tr` replace
+  `--machine` (`--machine x2d-hq-petg-tr` is now `--quality 0.12 --material petg-tr`), and
+  `layercraft machine import` and `machine show` are gone. Until layercraft writes its own
+  G-code, the maker's profiles, read from an installed Bambu Studio at each compile, bring the
+  start, end, layer-change and filament-change templates. A part compiles to the same file, byte
+  for byte, as with the descriptions imported before.
+
 ## 0.17.5
 
 ### Changed

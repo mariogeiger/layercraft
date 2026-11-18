@@ -1,10 +1,11 @@
 //! The machine description: a printer, a print process and a filament, as flat settings, and
 //! the macro language of the printer's own G-code templates.
 //!
-//! Settings come from the printer maker's profiles, imported once from an installed slicer
-//! (`import`) and kept outside the repository. A setting may hold one value per extruder
-//! variant (extruder × nozzle flow) or per extruder; `Machine` reads the one for the variant
-//! it prints with.
+//! The printer maker's profiles, read from an installed slicer at each compile (`import`), bring
+//! the printer's G-code templates and the rest of what its files declare; layercraft's own
+//! settings, kept in the repository, replace theirs (`set`). A setting may hold one value per
+//! extruder variant (extruder × nozzle flow) or per extruder; `Machine` reads and sets the one
+//! for the variant it prints with.
 
 mod expr;
 pub mod import;
@@ -14,7 +15,6 @@ mod value;
 pub use template::{Scope, TemplateError, expand};
 pub use value::{Value, render_number};
 
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Which of the three profiles a setting comes from.
@@ -26,13 +26,10 @@ pub enum Kind {
 }
 
 /// A printer, process and filament, flattened.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Machine {
-    /// Where the settings came from (slicer version and profile names).
-    pub source: String,
     /// The version of the slicer whose profiles and file conventions these are, such as
     /// `02.08.02.61`; the printer's firmware checks it in the files it prints.
-    #[serde(default)]
     pub slicer_version: String,
     /// The extruder variant printed with, such as `Direct Drive Standard`.
     pub variant: String,
@@ -94,23 +91,56 @@ impl Machine {
         }
     }
 
-    /// A setting's value for the variant printed with.
-    pub fn get(&self, kind: Kind, key: &str) -> Result<Value, MachineError> {
-        let value = self.table(kind).get(key).ok_or_else(|| MachineError::Missing(key.to_string()))?;
-        let Value::List(list) = value else { return Ok(value.clone()) };
+    /// The entry of a setting's list `len` long that belongs to the variant printed with: one
+    /// per variant, one per extruder, or else the first.
+    fn entry(&self, kind: Kind, len: usize) -> usize {
         let variants = self.variants(kind).len();
         let extruders = match self.machine.get("extruder_type") {
             Some(Value::List(v)) => v.len(),
             _ => 1,
         };
-        let index = if list.len() == variants && variants > 1 {
+        if len == variants && variants > 1 {
             self.variant_index(kind).unwrap_or(0)
-        } else if list.len() == extruders && extruders > 1 {
+        } else if len == extruders && extruders > 1 {
             self.extruder_index()
         } else {
             0
-        };
+        }
+    }
+
+    /// A setting's value for the variant printed with.
+    pub fn get(&self, kind: Kind, key: &str) -> Result<Value, MachineError> {
+        let value = self.table(kind).get(key).ok_or_else(|| MachineError::Missing(key.to_string()))?;
+        let Value::List(list) = value else { return Ok(value.clone()) };
+        let index = self.entry(kind, list.len());
         list.get(index).or(list.first()).cloned().ok_or_else(|| MachineError::Missing(key.to_string()))
+    }
+
+    /// Gives a setting `value` for the variant printed with: in a list of one entry per variant
+    /// or per extruder, the entry `get` reads, the others kept; a list given, or a setting
+    /// without a list, whole.
+    pub fn set(&mut self, kind: Kind, key: &str, value: Value) {
+        let entry = match (self.table(kind).get(key), &value) {
+            (Some(Value::List(list)), single) if !matches!(single, Value::List(_)) => {
+                Some(self.entry(kind, list.len()))
+            }
+            _ => None,
+        };
+        let table = match kind {
+            Kind::Machine => &mut self.machine,
+            Kind::Process => &mut self.process,
+            Kind::Filament => &mut self.filament,
+        };
+        let slot = match (entry, table.get_mut(key)) {
+            (Some(i), Some(Value::List(list))) => list.get_mut(i),
+            _ => None,
+        };
+        match slot {
+            Some(slot) => *slot = value,
+            None => {
+                table.insert(key.to_string(), value);
+            }
+        }
     }
 
     /// A setting's whole value, lists included, such as the corners of the printable area.

@@ -1,22 +1,27 @@
-//! Compiled end to end with the imported X2D description, which is local: the owner's pottery
-//! stamp, also local and private, a T whose bar stands on supports, and a block whose sparse
-//! infill is rolls unless lines are asked for. Each test skips when what it reads is missing.
+//! Compiled end to end with the X2D's settings, whose G-code templates come from an installed
+//! Bambu Studio: the owner's pottery stamp, local and private, a T whose bar stands on supports,
+//! and a block whose sparse infill is rolls unless lines are asked for. Each test skips when what
+//! it reads is missing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Whether Bambu Studio, whose profiles hold the printer's G-code templates, is installed.
+fn bambu_studio() -> bool {
+    Path::new(layercraft_machine::import::BAMBU_STUDIO_PROFILES).exists()
+}
+
 #[test]
 fn the_stamp_compiles_and_passes_verify() {
     let Some(home) = home() else { return };
     let stamp = home.join("Desktop/tampon/tampon.3mf");
-    let machine = home.join(".config/layercraft/machines/x2d.json");
-    if !stamp.exists() || !machine.exists() {
-        eprintln!("skipped: no stamp or no imported X2D");
+    if !stamp.exists() || !bambu_studio() {
+        eprintln!("skipped: no stamp or no Bambu Studio");
         return;
     }
     let out = std::env::temp_dir().join(format!("layercraft-dogfood-{}.gcode.3mf", std::process::id()));
@@ -33,9 +38,8 @@ fn the_stamp_compiles_and_passes_verify() {
 #[test]
 fn a_cantilever_compiles_onto_supports_and_passes_verify() {
     use layercraft_mesh::{Mesh, solids::cuboid};
-    let Some(home) = home() else { return };
-    if !home.join(".config/layercraft/machines/x2d.json").exists() {
-        eprintln!("skipped: no imported X2D");
+    if !bambu_studio() {
+        eprintln!("skipped: no Bambu Studio");
         return;
     }
     // A T in the middle of the plate: a 4 mm stem 10 mm high under a 20 mm bar, 8 mm out on
@@ -87,9 +91,8 @@ fn a_cantilever_compiles_onto_supports_and_passes_verify() {
 #[test]
 fn sparse_infill_is_rolls_unless_lines_are_asked_for() {
     use layercraft_mesh::{Mesh, solids::cuboid};
-    let Some(home) = home() else { return };
-    if !home.join(".config/layercraft/machines/x2d.json").exists() {
-        eprintln!("skipped: no imported X2D");
+    if !bambu_studio() {
+        eprintln!("skipped: no Bambu Studio");
         return;
     }
     // A block 12 mm square and 4 mm high in the middle of the plate: sparse between its skins.

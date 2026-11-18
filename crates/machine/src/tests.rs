@@ -61,7 +61,6 @@ fn missing_or_broken_input_is_an_error() {
 #[test]
 fn settings_follow_the_variant() {
     let machine = Machine {
-        source: String::new(),
         slicer_version: String::new(),
         variant: "Bowden Standard".into(),
         machine: [
@@ -89,4 +88,14 @@ fn settings_follow_the_variant() {
     assert_eq!(machine.number(Kind::Machine, "nozzle_diameter").unwrap(), 0.6);
     assert_eq!(machine.number(Kind::Filament, "density").unwrap(), 15.0);
     assert!(machine.number(Kind::Process, "absent").is_err());
+    // A value given for the variant lands where it is read; the other variants keep theirs, a
+    // list given replaces the whole, and a new setting is added.
+    let mut machine = machine;
+    machine.set(Kind::Machine, "retraction_length", Value::Num(1.5));
+    assert_eq!(machine.get_all(Kind::Machine, "retraction_length").unwrap(), list(&[0.8, 1.5]));
+    assert_eq!(machine.number(Kind::Machine, "retraction_length").unwrap(), 1.5);
+    machine.set(Kind::Machine, "nozzle_diameter", list(&[0.2]));
+    assert_eq!(machine.get_all(Kind::Machine, "nozzle_diameter").unwrap(), list(&[0.2]));
+    machine.set(Kind::Process, "layer_height", Value::Num(0.12));
+    assert_eq!(machine.number(Kind::Process, "layer_height").unwrap(), 0.12);
 }

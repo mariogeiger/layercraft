@@ -4,8 +4,6 @@ use crate::deliver::{Delivery, Setup, deliver};
 use crate::pipeline::{self, Stage, stage_file};
 use crate::settings;
 use clap::{Parser, Subcommand};
-use layercraft_machine::Machine;
-use layercraft_machine::import::{BAMBU_STUDIO_PROFILES, Selection, import};
 use layercraft_path::SparsePattern;
 use std::path::{Path, PathBuf};
 
@@ -36,16 +34,17 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// The machine description: printer, process and filament.
-    #[command(subcommand)]
-    Machine(MachineCommand),
     /// Compile a 3MF (or a stage file) into a .gcode.3mf.
     Compile {
         input: Option<PathBuf>,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value = "x2d")]
-        machine: String,
+        /// The print quality: 0.20 or 0.12, its layer height in mm.
+        #[arg(long, default_value = "0.20")]
+        quality: String,
+        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
+        #[arg(long, default_value = "pla")]
+        material: String,
         /// Write a stage: mesh, sections, regions, paths or program, as STAGE=FILE (repeatable);
         /// as JSON, or as a PLY picture when FILE ends in .ply.
         #[arg(long, value_parser = stage_file)]
@@ -89,8 +88,12 @@ enum Command {
         inputs: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value = "x2d")]
-        machine: String,
+        /// The print quality: 0.20 or 0.12, its layer height in mm.
+        #[arg(long, default_value = "0.20")]
+        quality: String,
+        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
+        #[arg(long, default_value = "pla")]
+        material: String,
         /// The filament's colour for the printer's screen.
         #[arg(long, default_value = "#808080")]
         colour: String,
@@ -115,8 +118,12 @@ enum Command {
         input: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        #[arg(long, default_value = "x2d")]
-        machine: String,
+        /// The print quality: 0.20 or 0.12, its layer height in mm.
+        #[arg(long, default_value = "0.20")]
+        quality: String,
+        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
+        #[arg(long, default_value = "pla")]
+        material: String,
         /// Only layers FROM..TO (end excluded).
         #[arg(long)]
         layers: Option<String>,
@@ -149,49 +156,6 @@ enum Infill {
     Rolls,
 }
 
-#[derive(Subcommand)]
-enum MachineCommand {
-    /// Read the profiles of an installed Bambu Studio, once, into ~/.config/layercraft.
-    Import {
-        #[arg(long, default_value = "x2d")]
-        name: String,
-        #[arg(long, default_value = BAMBU_STUDIO_PROFILES)]
-        profiles: PathBuf,
-        #[arg(long, default_value = "Bambu Lab X2D 0.4 nozzle")]
-        printer: String,
-        #[arg(long, default_value = "0.20mm Standard @BBL X2D")]
-        process: String,
-        #[arg(long, default_value = "Bambu PLA Basic @BBL X2D 0.4 nozzle")]
-        filament: String,
-        #[arg(long, default_value = "Direct Drive Standard")]
-        variant: String,
-    },
-    /// Show where a machine description came from.
-    Show {
-        #[arg(long, default_value = "x2d")]
-        name: String,
-    },
-}
-
-fn machine_file(name: &str) -> Result<PathBuf, String> {
-    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("a machine name is letters, digits, - and _: `{name}`"));
-    }
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?).join(".config"),
-    };
-    Ok(base.join("layercraft").join("machines").join(format!("{name}.json")))
-}
-
-fn load_machine(name: &str) -> Result<Machine, String> {
-    let path = machine_file(name)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        format!("{}: {e} (run `layercraft machine import --name {name}` first)", path.display())
-    })?;
-    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
-}
-
 /// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
 /// with the settings' rolls, supports on or off, or as the process says.
 #[derive(Clone, Copy)]
@@ -201,11 +165,17 @@ struct Choices {
     supports: Option<Switch>,
 }
 
-/// The machine, its settings and the tuning, as `choices` make them.
-fn setup(machine: &str, bed: Option<&str>, tune: Option<&Path>, choices: Choices) -> Result<Setup, String> {
+/// The printer in `quality` and `material`, its settings and the tuning, as `choices` make them.
+fn setup(
+    quality: &str,
+    material: &str,
+    bed: Option<&str>,
+    tune: Option<&Path>,
+    choices: Choices,
+) -> Result<Setup, String> {
     let Choices { flat, infill, supports } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
-    let machine = load_machine(machine)?;
+    let machine = crate::printers::machine(quality, material).map_err(|e| e.to_string())?;
     let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
     if flat {
         settings.layering.foliation = None;
@@ -243,27 +213,11 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 pub fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Command::Machine(MachineCommand::Import { name, profiles, printer, process, filament, variant }) => {
-            let selection = Selection { machine: printer, process, filament, variant };
-            let machine = import(&profiles, &selection).map_err(|e| e.to_string())?;
-            let path = machine_file(&name)?;
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            }
-            let json = serde_json::to_string_pretty(&machine).map_err(|e| e.to_string())?;
-            write_file(&path, json.as_bytes())?;
-            println!("imported {} into {}", machine.source, path.display());
-            Ok(())
-        }
-        Command::Machine(MachineCommand::Show { name }) => {
-            let machine = load_machine(&name)?;
-            println!("{}\nvariant: {}", machine.source, machine.variant);
-            Ok(())
-        }
         Command::Compile {
             input,
             out,
-            machine,
+            quality,
+            material,
             emit,
             from,
             at,
@@ -275,7 +229,13 @@ pub fn run(cli: Cli) -> Result<(), String> {
             infill,
             supports,
         } => {
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), Choices { flat, infill, supports })?;
+            let s = setup(
+                &quality,
+                &material,
+                bed.as_deref(),
+                tune.as_deref(),
+                Choices { flat, infill, supports },
+            )?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -297,12 +257,12 @@ pub fn run(cli: Cli) -> Result<(), String> {
             println!("{}", deliver(output.program, &delivery)?);
             Ok(())
         }
-        Command::Merge { inputs, out, machine, colour, bed, gcode, tune, emit } => {
+        Command::Merge { inputs, out, quality, material, colour, bed, gcode, tune, emit } => {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
             let choices = Choices { flat: false, infill: None, supports: None };
-            let s = setup(&machine, bed.as_deref(), tune.as_deref(), choices)?;
+            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {
                 return Err("not supported yet: merging programs printed in several materials".into());
@@ -329,11 +289,12 @@ pub fn run(cli: Cli) -> Result<(), String> {
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, machine, layers, tune, flat, infill, supports } => {
+        Command::View { input, out, quality, material, layers, tune, flat, infill, supports } => {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s = setup(&machine, None, tune.as_deref(), Choices { flat, infill, supports })?;
+                let s =
+                    setup(&quality, &material, None, tune.as_deref(), Choices { flat, infill, supports })?;
                 let output =
                     pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
                 output.paths.ok_or("no toolpaths")?

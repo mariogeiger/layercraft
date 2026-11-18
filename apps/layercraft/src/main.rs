@@ -1,7 +1,7 @@
 //! layercraft: compile a solid down to a print on a Bambu Lab X2D, with every stage open.
 //!
-//!   layercraft machine import [--name x2d]      read the printer, process and filament once
-//!   layercraft compile part.3mf --out part.gcode.3mf [--emit paths=p.json] [--from paths=p.json]
+//!   layercraft compile part.3mf --out part.gcode.3mf [--quality 0.12] [--material petg-tr]
+//!                                           [--emit paths=p.json] [--from paths=p.json]
 //!                                           [--emit program=p.ply]  a stage as a picture
 //!                                           [--flat]  every layer flat, none bent
 //!                                           [--colour #RRGGBB,…]  one per material (the 3MF's)

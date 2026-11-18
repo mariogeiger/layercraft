@@ -1,8 +1,24 @@
 # Bambu Lab X2D
 
-What layercraft knows of the X2D beyond its machine description, which `layercraft machine
-import` reads from Bambu Studio's profiles. `printer.json` holds the values the compiler takes;
-this page says where they come from.
+What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
+`quality/` and `material/` for each print quality and filament, and what they do not tell,
+measured on the printer itself, in `printer.json`. This page says where they come from.
+
+## Settings
+
+- They began, on 2026-11-18, as the values of Bambu Studio 02.08.02.61's profiles
+  `Bambu Lab X2D 0.4 nozzle`, `0.20mm Standard @BBL X2D`, `0.12mm High Quality @BBL X2D`,
+  `Bambu PLA Basic @BBL X2D 0.4 nozzle` and `Bambu PETG Translucent @BBL X2D 0.4 nozzle`, for
+  the left, direct-drive nozzle (`Direct Drive Standard`). They are the owner's since: this
+  folder's history is theirs.
+- They keep the profiles' names and conventions: a percentage is of the nozzle's diameter or of
+  the default acceleration, a width or an acceleration of 0 stands for the default, and a
+  material's `nil` leaves the printer's value.
+- Until layercraft writes its own G-code, `bambu-studio.json` names the profiles of an installed
+  Bambu Studio that stand behind the printer, each quality and each material. They bring the
+  start, end, layer-change and filament-change templates and the rest of what the printer's
+  files declare, and these settings replace theirs for the nozzle printed with.
+- A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
 
 ## The toolhead
 
@@ -31,7 +47,7 @@ What follows from these numbers:
 
 ## Motion
 
-- The Z axis moves at most 20 mm/s (machine description). A bead climbing a 20° slope runs at
+- The Z axis moves at most 20 mm/s (`machine_max_speed_z`). A bead climbing a 20° slope runs at
   most 58 mm/s.
 - A spiral lift turns a helix of **1.2 mm**: the smallest radius that broke the string at the end
   of a print. The test used Bambu PLA Basic, one 10 mm cube per radius: at 0 the nozzle pulled up

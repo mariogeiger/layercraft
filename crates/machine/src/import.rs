@@ -89,15 +89,8 @@ pub fn import(dir: &Path, selection: &Selection) -> Result<Machine, MachineError
         }
     }
     Ok(Machine {
-        source: format!(
-            "Bambu Studio {} profiles: {} / {} / {}",
-            version.as_deref().unwrap_or("(unknown version)"),
-            selection.machine,
-            selection.process,
-            selection.filament
-        ),
         variant: selection.variant.clone(),
-        slicer_version: version.clone().unwrap_or_default(),
+        slicer_version: version.unwrap_or_default(),
         machine,
         process: flatten(&dir.join("process"), &selection.process)?,
         filament: flatten(&dir.join("filament"), &selection.filament)?,

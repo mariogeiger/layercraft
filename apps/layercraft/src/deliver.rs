@@ -9,7 +9,7 @@ use layercraft_motion::{MoveLimits, Program};
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
-/// A machine description, the stages' settings read from it, and the tuning given.
+/// The machine description, the stages' settings read from it, and the tuning given.
 pub struct Setup {
     pub machine: Machine,
     pub settings: Settings,
@@ -91,9 +91,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         })
         .collect();
     if d.setup.machine.slicer_version.is_empty() {
-        return Err(
-            "the machine description predates layercraft 0.1.3: run `layercraft machine import` again".into(),
-        );
+        return Err("the installed Bambu Studio does not say its version, which the printer checks".into());
     }
     let plate = layercraft_package::Plate {
         gcode: text,

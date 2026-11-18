@@ -19,7 +19,7 @@ outranks feature work.**
   in `[workspace.lints]`, and every crate takes those lints with `[lints] workspace = true`.
 - **Errors are `Result<T, E>`** through the crate's error type and `?`. An unfinished feature
   returns an error ("not supported yet: …").
-- **Input is hostile:** 3MF files, stage files read with `--from`, machine descriptions and the
+- **Input is hostile:** 3MF files, stage files read with `--from`, the maker's profiles and the
   printer's replies. Use `get()` not `[i]`, check floats are finite, cap sizes and loop counts.
 - **Prove it:** every crash or verify fix lands with a regression test in the existing test file
   for its stage, never in a new file named after the bug.
@@ -32,15 +32,18 @@ outranks feature work.**
   disassemble the printer's firmware.
 - **Bambu Studio is a black box.** You may run it, slice with it and read the files it writes,
   to compare results and to learn what the firmware expects of a `.gcode.3mf`. Its output is
-  never committed. Its installed profiles are read only by `layercraft machine import`, which
-  writes the machine description to `~/.config/layercraft/`, outside the repository; never copy
-  its start or end G-code, presets or text into the repository.
+  never committed. Never copy its start or end G-code or other text into the repository.
+- **Settings live in the repository.** A printer's settings, its own, each quality's and each
+  material's, are layercraft's values in its folder of `printers/`, built into the binary, so
+  every computer prints with the same: change them there, never in a local file. Until
+  layercraft writes its own G-code, the maker's profiles are read from an installed Bambu Studio
+  at each compile, as data, for the G-code templates and what the printer's files declare.
 - **Every stage is open.** Each stage reads and writes a readable file (`--emit <stage>`,
   `--from <file>`), so an agent can inspect or edit any stage and compile on from it. A stage
   depends only on the stages before it; nothing reaches around the chain.
 - **Exact where exactness gives truth.** A layer is the exact section of the mesh; filament
   length follows from the cross-section of the bead and the length it covers. Name a magic
-  number, derive it, or take it from the machine description.
+  number, derive it, or take it from the printer's settings.
 - **Reference tests use analytic values.** Solids generated in code (cube, cylinder, rounded
   block, text) with known volumes, areas and section shapes. Bambu Studio's numbers are a
   comparison, not an oracle: report the difference, don't assert equality with it.
