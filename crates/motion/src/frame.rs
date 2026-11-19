@@ -264,8 +264,10 @@ pub fn frame(
             text += &lines(&expand_text("filament change", &t.change_filament, &scope)?);
             scope.insert("current_filament_id".into(), num(to as f64));
             material = to;
-            nozzle = new_temp;
-            text += &format!("M109 S{nozzle} ; wait for the new filament's temperature\n");
+            // Its first pass lies on plastic the change left to cool: as on the plate, at the
+            // first layer's temperature, back to its own on the next layer.
+            nozzle = heat.nozzle_at(to, 0)?;
+            text += &format!("M109 S{nozzle} ; wait for the new filament, as hot as on the first layer\n");
         }
         layers.push(text);
     }

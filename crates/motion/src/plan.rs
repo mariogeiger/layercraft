@@ -447,7 +447,14 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
     let mut previous_leaf: Option<Leaf> = None;
     // How deep the nozzle's face, one for the whole print, cut into the layer below's top.
     let mut cuts = Cuts::default();
+    // The material of the pass before.
+    let mut material: Option<usize> = None;
     for (layer, relief) in paths.layers.iter().zip(&reliefs) {
+        // A pass after a filament change lays its beads on plastic the change left to cool: as
+        // on the first layers, without the fan, so that they melt into it.
+        let changed = material.is_some_and(|m| m != layer.material);
+        material = Some(layer.material);
+        let cool = |p: &MotionParams| layer.index < p.fan_off_layers || changed;
         if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
             previous.moves = s.close(&last, left);
             cuts = room::keep(&mut previous.moves, left, &cuts, base.face_radius);
@@ -473,7 +480,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
             let p = field.at(centre(&path.points, layer.top), check)?;
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
-            let fan = if layer.index < p.fan_off_layers { 0.0 } else { p.fan_speed };
+            let fan = if cool(&p) { 0.0 } else { p.fan_speed };
             s.fan = fan;
             s.go_to(&last, &p, start, &leaf, k == 0, path.travel_crosses);
             s.accel = if layer.index == 0 { p.first_layer_accel } else { role_motion(&p, path.role).accel };
@@ -487,8 +494,7 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
                 }
                 let u = hanging(path, i);
                 let speed = overhang_speed(&p, u, speed);
-                s.fan =
-                    if layer.index < p.fan_off_layers { fan } else { overhang_fan(&p, path.role, u, fan) };
+                s.fan = if cool(&p) { fan } else { overhang_fan(&p, path.role, u, fan) };
                 let mut from = a;
                 for q in leaf.pieces(a, b) {
                     let l = (q[0] - from[0]).hypot(q[1] - from[1]);

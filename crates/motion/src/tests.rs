@@ -597,6 +597,33 @@ fn a_bead_slows_by_how_far_it_hangs() {
 }
 
 #[test]
+fn the_pass_after_a_filament_change_goes_without_the_fan() {
+    // Layer 2 in two materials, layer 3 in the second: the second material's first pass lies on
+    // plastic the change left to cool, and melts into it without the fan; the next layer has it.
+    let pass = |index: usize, material: usize, y: f64| PathLayer {
+        index,
+        top: 0.2 * (index + 1) as f64,
+        height: 0.2,
+        warp: Default::default(),
+        paths: vec![Path::new(Role::INNER_WALL, 0.4, false, vec![[10.0, y], [20.0, y]])],
+        material,
+    };
+    let paths = Paths {
+        carrier: Default::default(),
+        layers: vec![pass(2, 0, 10.0), pass(2, 1, 12.0), pass(3, 1, 14.0)],
+    };
+    let mut p = params();
+    p.fan_speed = 0.4;
+    let program = compiled(&paths, &p);
+    let fans: Vec<Vec<f64>> = program
+        .layers
+        .iter()
+        .map(|l| l.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.fan).collect())
+        .collect();
+    assert_eq!(fans, [vec![0.4], vec![0.0], vec![0.4]]);
+}
+
+#[test]
 fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
     // 10 mm of outer wall and 10 mm of sparse infill at 100 mm/s: 0.2 s, to last 0.5 s. The
     // infill alone takes the 0.3 s more, at 25 mm/s; the wall keeps its 100 mm/s. To last 1.5 s,
@@ -787,14 +814,16 @@ fn passes_of_other_materials_change_the_filament_between_them() {
     let heat = Heat { nozzle: vec![[250.0, 245.0], [240.0, 235.0]], bed: [70.0, 65.0] };
     let f = frame(&program, &templates, &heat, &scope(), &flush).unwrap();
     // The start leaves the first layer's temperatures; the second layer sets the others for the
-    // filament loaded, and after a change the nozzle waits for the new filament's own.
+    // filament loaded; after a change the nozzle waits for the new filament as hot as on its
+    // first layer, for the pass laid on plastic the change left to cool, then on the next layer
+    // takes its own.
     assert_eq!(
         f.layers,
         [
             "; layer 0\n",
             "; layer 1\nM140 S65 ; the bed for this layer\nM104 S245 ; the nozzle for this layer\n",
-            "; change 0 to 1, 120 mm, 245 to 235\nM109 S235 ; wait for the new filament's temperature\n",
-            "; layer 2\n"
+            "; change 0 to 1, 120 mm, 245 to 235\nM109 S240 ; wait for the new filament, as hot as on the first layer\n",
+            "; layer 2\nM104 S235 ; the nozzle for this layer\n"
         ]
     );
     // A program that keeps its temperatures sets none.

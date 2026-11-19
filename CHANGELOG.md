@@ -2,6 +2,15 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.20.1
+
+### Changed
+
+- The first pass after a filament change goes without the part fan, the nozzle as hot as on the
+  first layer, back to the filament's own temperature on the next layer: it lays its beads on
+  plastic the change, a minute or two, left to cool, and must melt into it. The USB-C cable
+  support printed in two PETG broke at its colour boundary, a flat, smooth separation.
+
 ## 0.20.0
 
 ### Changed
