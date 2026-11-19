@@ -3,17 +3,27 @@
 //! own G-code around the layers, every move verified, then written as G-code and packaged with
 //! the plate's summary and thumbnails. Compiled, read or merged, every program leaves this way.
 
-use crate::settings::{Settings, plate_code};
+use crate::settings::{Filaments, Settings, plate_code};
 use layercraft_machine::Machine;
 use layercraft_motion::{MoveLimits, Program};
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
-/// The machine description, the stages' settings read from it, and the tuning given.
+/// The machine description, the stages' settings read from it for the first filament and for
+/// those after it (`more`, one per material, the last standing for those past them), and the
+/// tuning given.
 pub struct Setup {
     pub machine: Machine,
     pub settings: Settings,
+    pub more: Vec<Settings>,
     pub tuning: Tuning,
+}
+
+impl Setup {
+    /// The filaments, by material.
+    pub fn filaments(&self) -> Filaments<'_> {
+        Filaments { first: &self.settings, more: &self.more }
+    }
 }
 
 /// What goes with a program into its file.
@@ -37,20 +47,26 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
         return Err(format!("the program prints {materials} materials; give a colour for each"));
     }
     let colours = d.colours.get(..materials).unwrap_or_default();
-    let scope = settings.scope_for(colours);
+    let filaments = d.setup.filaments();
+    let scope = filaments.scope(colours);
     let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
     layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
     // Held to the machine's limits last: slowing only lengthens the layers cooled.
-    let limits = MoveLimits {
-        max_volumetric_speed: motion.max_volumetric_speed,
-        filament_diameter: motion.filament_diameter,
-        max_speed_z: motion.limits.max_speed_z,
-    };
+    let limits: Vec<MoveLimits> = (0..materials)
+        .map(|k| {
+            let own = &filaments.of(k).motion;
+            MoveLimits {
+                max_volumetric_speed: own.max_volumetric_speed,
+                filament_diameter: own.filament_diameter,
+                max_speed_z: own.limits.max_speed_z,
+            }
+        })
+        .collect();
     let slowed = layercraft_motion::limit(&mut program, &limits);
-    let heat = settings.heat_for(colours);
+    let heat = filaments.heat(materials);
     let frame =
-        layercraft_motion::frame(&program, &motion.templates, &heat, &scope, &settings.flush(colours))
+        layercraft_motion::frame(&program, &motion.templates, &heat, &scope, &filaments.flush(colours))
             .map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);
     if let Some(first) = violations.first() {
@@ -77,7 +93,8 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     }
     let summary = layercraft_motion::finish(&program, &motion.limits, motion.filament_diameter);
     let filament_area = layercraft_motion::disc_area(motion.filament_diameter);
-    let grams = summary.filament_mm * filament_area * settings.filament_density / 1000.0;
+    let grams_of = |k: usize, mm: f64| mm * filament_area * filaments.of(k).filament_density / 1000.0;
+    let grams: f64 = summary.filament_mm_by_material.iter().enumerate().map(|(k, &mm)| grams_of(k, mm)).sum();
     let settings_json: serde_json::Map<String, serde_json::Value> = scope
         .iter()
         .map(|(k, v)| {
@@ -102,12 +119,13 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
             .enumerate()
             .map(|(k, colour)| {
                 let mm = summary.filament_mm_by_material.get(k).copied().unwrap_or(0.0);
+                let own = filaments.of(k);
                 layercraft_package::Filament {
-                    kind: settings.filament_kind.clone(),
+                    kind: own.filament_kind.clone(),
                     colour: colour.clone(),
-                    code: settings.filament_code.clone(),
+                    code: own.filament_code.clone(),
                     used_m: mm / 1000.0,
-                    used_g: mm * filament_area * settings.filament_density / 1000.0,
+                    used_g: grams_of(k, mm),
                 }
             })
             .collect(),

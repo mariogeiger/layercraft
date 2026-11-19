@@ -5,7 +5,7 @@
 //! region, path and motion parameters by place (`--tune`). The program stage holds the moves
 //! at full speed, without the machine's own G-code: cooling and the frame come after it.
 
-use crate::settings::Settings;
+use crate::deliver::Setup;
 use layercraft_mesh::{Mesh, read_3mf};
 use layercraft_motion::Program;
 use layercraft_path::Paths;
@@ -138,16 +138,20 @@ pub fn load(input: &Path, at: [f64; 2]) -> Result<Mesh, String> {
 pub fn run(
     input: Option<&Path>,
     at: [f64; 2],
-    settings: &Settings,
-    tuning: &Tuning,
+    setup: &Setup,
     from: Option<&(Stage, PathBuf)>,
     emits: &[(Stage, PathBuf)],
 ) -> Result<Output, String> {
+    let (settings, tuning) = (&setup.settings, &setup.tuning);
     tuning.check_stages(&TUNED).map_err(|e| e.to_string())?;
     let field = |e: TuneError| e.to_string();
     let region = Field::new(settings.region.clone(), tuning, "region").map_err(field)?;
     let path = Field::new(settings.path.clone(), tuning, "path").map_err(field)?;
-    let motion = Field::new(settings.motion.clone(), tuning, "motion").map_err(field)?;
+    // Each filament moves by its own: the first's, then those after it.
+    let motion = std::iter::once(settings)
+        .chain(&setup.more)
+        .map(|s| Field::new(s.motion.clone(), tuning, "motion").map_err(field))
+        .collect::<Result<Vec<_>, String>>()?;
     let start = from.map(|(s, _)| *s);
     let mesh: Option<Mesh> = match start {
         Some(Stage::Mesh) => from.map(|(_, p)| read_json(p)).transpose()?,

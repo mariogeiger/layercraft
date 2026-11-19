@@ -18,13 +18,15 @@ pub struct MoveLimits {
     pub max_speed_z: f64,
 }
 
-/// Slows every move of `program` that asks more than `limits` allow; how many beads it slowed
-/// to the melt limit.
-pub fn limit(program: &mut Program, limits: &MoveLimits) -> usize {
-    let area = crate::disc_area(limits.filament_diameter);
+/// Slows every move of `program` that asks more than its material's limits (`materials`)
+/// allow; how many beads it slowed to the melt limit.
+pub fn limit(program: &mut Program, materials: &[MoveLimits]) -> usize {
     let mut slowed = 0;
     let mut at = None;
     for layer in &mut program.layers {
+        // Each material its own, the last given standing for those past them.
+        let Some(limits) = materials.get(layer.material).or(materials.last()) else { return 0 };
+        let area = crate::disc_area(limits.filament_diameter);
         let start = at;
         at = layer.moves.iter().rev().find_map(|m| m.to).or(at);
         let held: Vec<(f64, f64)> = chained(&layer.moves, start)

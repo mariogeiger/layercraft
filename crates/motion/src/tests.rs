@@ -96,7 +96,7 @@ fn steady() -> Heat {
 }
 
 fn compiled(paths: &Paths, p: &MotionParams) -> Program {
-    compile(paths, &Field::uniform(p.clone())).unwrap()
+    compile(paths, &[Field::uniform(p.clone())]).unwrap()
 }
 
 /// Every move of the program, in order.
@@ -432,7 +432,7 @@ fn tuned(text: &str) -> Field<MotionParams> {
 fn each_bead_takes_the_parameters_at_its_place() {
     // Above z = 0.3, a lift turns a 1 mm helix; below, it goes straight up.
     let field = tuned(r#"[{"within": {"z": [0.3, 1]}, "set": {"motion": {"lift_radius": 1.0}}}]"#);
-    let program = compile(&line(10.0), &field).unwrap();
+    let program = compile(&line(10.0), std::slice::from_ref(&field)).unwrap();
     let lifts: Vec<&Move> = program
         .layers
         .iter()
@@ -447,7 +447,7 @@ fn each_bead_takes_the_parameters_at_its_place() {
 fn what_is_pulled_back_is_pushed_again() {
     // The second layer's bead pulls 1.5 mm, the first's 0.4: each push matches its pull.
     let field = tuned(r#"[{"within": {"z": [0.3, 1]}, "set": {"motion": {"retract_length": 1.5}}}]"#);
-    let program = compile(&line(10.0), &field).unwrap();
+    let program = compile(&line(10.0), std::slice::from_ref(&field)).unwrap();
     let mut pulled = 0.0;
     let mut pushes = Vec::new();
     for m in all(&program) {
@@ -544,13 +544,13 @@ fn moves_are_held_to_what_the_hot_end_melts_and_the_z_axis_moves() {
         Move { e: 1.0, bead, ..travel([1.0, 0.0, 0.0], 100.0) },
         travel([5.0, 0.0, -3.0], 300.0),
     ]);
-    assert_eq!(limit(&mut program, &limits), 1);
+    assert_eq!(limit(&mut program, std::slice::from_ref(&limits)), 1);
     let area = std::f64::consts::PI * 0.875 * 0.875;
     assert!((program.layers[0].moves[1].speed - 24.0 / area).abs() < 1e-9);
     assert!((program.layers[0].moves[2].speed - 20.0 * 5.0 / 3.0).abs() < 1e-9);
     // Held already: left alone.
     let held = program.clone();
-    assert_eq!(limit(&mut program, &limits), 0);
+    assert_eq!(limit(&mut program, std::slice::from_ref(&limits)), 0);
     assert_eq!(program, held);
 }
 

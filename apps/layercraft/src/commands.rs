@@ -42,9 +42,15 @@ enum Command {
         /// The print quality: 0.20 or 0.12, its layer height in mm.
         #[arg(long, default_value = "0.20")]
         quality: String,
-        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
+        /// The filaments, one per material, comma separated, the last standing for those past
+        /// them: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
         #[arg(long, default_value = "pla")]
         material: String,
+        /// The filament the supports' interface is laid in, numbered from 1 as the materials
+        /// are (default: the column's): one that does not weld to the part, as PLA under PETG,
+        /// lets the supports come off it. Give it a colour and a material.
+        #[arg(long)]
+        support_interface: Option<usize>,
         /// Write a stage: mesh, sections, regions, paths or program, as STAGE=FILE (repeatable);
         /// as JSON, or as a PLY picture when FILE ends in .ply.
         #[arg(long, value_parser = stage_file)]
@@ -144,34 +150,52 @@ enum Infill {
 }
 
 /// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
-/// with the settings' rolls. Supports are no choice: whatever hangs stands on them.
+/// with the settings' rolls, the supports' interface in the material `interface` or the
+/// column's. Supports are no choice: whatever hangs stands on them.
 #[derive(Clone, Copy)]
 struct Choices {
     flat: bool,
     infill: Option<Infill>,
+    interface: Option<usize>,
 }
 
-/// The printer in `quality` and `material`, its settings and the tuning, as `choices` make them.
+/// The printer in `quality` and `materials` (one per material, comma separated), its settings
+/// for each filament and the tuning, as `choices` make them.
 fn setup(
     quality: &str,
-    material: &str,
+    materials: &str,
     bed: Option<&str>,
     tune: Option<&Path>,
     choices: Choices,
 ) -> Result<Setup, String> {
-    let Choices { flat, infill } = choices;
+    let Choices { flat, infill, interface } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
-    let machine = crate::printers::machine(quality, material).map_err(|e| e.to_string())?;
-    let mut settings = settings::read(&machine, bed).map_err(|e| e.to_string())?;
-    if flat {
-        settings.layering.foliation = None;
-    }
-    match infill {
-        Some(Infill::Lines) => settings.path.sparse_pattern = SparsePattern::Lines,
-        Some(Infill::Rolls) => settings.path.sparse_pattern = settings::rolls(settings.layering.layer_height),
-        None => {}
-    }
-    Ok(Setup { machine, settings, tuning })
+    let mut names = materials.split(',').map(str::trim);
+    let first = names.next().unwrap_or_default();
+    let machine = crate::printers::machine(quality, first).map_err(|e| e.to_string())?;
+    let read = |machine: &layercraft_machine::Machine| -> Result<settings::Settings, String> {
+        let mut settings = settings::read(machine, bed).map_err(|e| e.to_string())?;
+        if flat {
+            settings.layering.foliation = None;
+        }
+        match infill {
+            Some(Infill::Lines) => settings.path.sparse_pattern = SparsePattern::Lines,
+            Some(Infill::Rolls) => {
+                settings.path.sparse_pattern = settings::rolls(settings.layering.layer_height)
+            }
+            None => {}
+        }
+        if let Some(k) = interface {
+            let k = k.checked_sub(1).ok_or("the supports' interface filament is numbered from 1")?;
+            settings.region.supports.interface_material = Some(k);
+        }
+        Ok(settings)
+    };
+    let settings = read(&machine)?;
+    let more = names
+        .map(|name| read(&crate::printers::machine(quality, name).map_err(|e| e.to_string())?))
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(Setup { machine, settings, more, tuning })
 }
 
 /// The middle of the plate's printable area.
@@ -199,6 +223,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             out,
             quality,
             material,
+            support_interface,
             emit,
             from,
             at,
@@ -209,12 +234,13 @@ pub fn run(cli: Cli) -> Result<(), String> {
             flat,
             infill,
         } => {
-            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), Choices { flat, infill })?;
+            let choices = Choices { flat, infill, interface: support_interface };
+            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
             };
-            let output = pipeline::run(input.as_deref(), at, &s.settings, &s.tuning, from.as_ref(), &emit)?;
+            let output = pipeline::run(input.as_deref(), at, &s, from.as_ref(), &emit)?;
             let object_name = input
                 .as_ref()
                 .and_then(|p| p.file_stem())
@@ -235,7 +261,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let choices = Choices { flat: false, infill: None };
+            let choices = Choices { flat: false, infill: None, interface: None };
             let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {
@@ -267,9 +293,9 @@ pub fn run(cli: Cli) -> Result<(), String> {
             let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
                 pipeline::read_json(&input)?
             } else {
-                let s = setup(&quality, &material, None, tune.as_deref(), Choices { flat, infill })?;
-                let output =
-                    pipeline::run(Some(&input), plate_centre(&s), &s.settings, &s.tuning, None, &[])?;
+                let choices = Choices { flat, infill, interface: None };
+                let s = setup(&quality, &material, None, tune.as_deref(), choices)?;
+                let output = pipeline::run(Some(&input), plate_centre(&s), &s, None, &[])?;
                 output.paths.ok_or("no toolpaths")?
             };
             let range = match layers {

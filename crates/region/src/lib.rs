@@ -74,6 +74,10 @@ pub struct SupportParams {
     pub interface_layers: usize,
     /// Columns only from the plate, none standing on the part.
     pub on_plate_only: bool,
+    /// The material the interface is laid in, in a pass of its own, when not the column's: one
+    /// that does not weld to the part lets the column come off it.
+    #[serde(default)]
+    pub interface_material: Option<usize>,
 }
 
 /// One layer, split by role. Each wall is the region whose boundary is that wall's centre line.
@@ -295,9 +299,10 @@ fn parts(layer: &Layer, field: &Field<RegionParams>) -> Result<Parts, RegionErro
     Ok(parts)
 }
 
-/// The materials of a layer's parts, starting with `first` when it has it, then in order.
-fn pass_order(parts: &Parts, first: Option<usize>) -> Vec<usize> {
-    let mut order: Vec<usize> = parts.iter().map(|(_, m, _)| *m).collect();
+/// The materials of a layer's parts and `also`, starting with `first` when it has it, then in
+/// order.
+fn pass_order(parts: &Parts, also: Option<usize>, first: Option<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = parts.iter().map(|(_, m, _)| *m).chain(also).collect();
     order.sort_unstable();
     order.dedup();
     if let Some(at) = first.and_then(|f| order.iter().position(|&m| m == f)) {
@@ -370,7 +375,12 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             above: next.clone(),
             ..RegionLayer::default()
         };
-        let order = pass_order(parts, last_material);
+        // The supports' interface, in a material of its own, takes a pass of it.
+        let interface = p
+            .supports
+            .interface_material
+            .filter(|_| found.columns.get(i).is_some_and(|(_, interface)| !interface.is_empty()));
+        let order = pass_order(parts, interface, last_material);
         last_material = order.last().copied().or(last_material);
         let mut out = blank.clone();
         // Each pass, with its parts whose inner walls run everywhere and whether others' stop
@@ -425,10 +435,14 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         whole.push(out);
         passes.push(own);
     }
-    // A layer's columns go with its first pass.
+    // A layer's columns go with its first pass, their interface with its material's.
     for (own, (body, interface)) in passes.iter_mut().zip(found.columns) {
         if let Some(first) = own.first_mut() {
-            (first.supports, first.support_interface) = (body, interface);
+            first.supports = body;
+        }
+        let home = p.supports.interface_material.and_then(|m| own.iter().position(|pass| pass.material == m));
+        if let Some(pass) = own.get_mut(home.unwrap_or(0)) {
+            pass.support_interface = interface;
         }
     }
     Ok(Regions { carrier: sections.carrier.clone(), layers: passes.into_iter().flatten().collect() })

@@ -415,9 +415,12 @@ impl State {
 /// Turns the beads into the program's moves, layer by layer. Each bead takes the parameters
 /// at its centre. Beads run at their full speeds: cooling is a pass of its own (`cool`), and
 /// the machine's own G-code goes around the layers (`frame`).
-pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, MotionError> {
-    let base = field.base();
-    check(base)?;
+pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program, MotionError> {
+    let first = fields.first().ok_or_else(|| MotionError::BadParams("no material's parameters".into()))?;
+    for field in fields {
+        check(field.base())?;
+    }
+    let base = first.base();
     let filament_area = disc_area(base.filament_diameter);
     let mut s = State {
         moves: Vec::new(),
@@ -477,6 +480,8 @@ pub fn compile(paths: &Paths, field: &Field<MotionParams>) -> Result<Program, Mo
         // After the machine's layer change, the nozzle may be anywhere.
         s.placed = false;
         for (k, path) in layer.paths.iter().enumerate() {
+            // Each material its own parameters, the last given standing for those past them.
+            let field = fields.get(layer.material).or(fields.last()).unwrap_or(first);
             let p = field.at(centre(&path.points, layer.top), check)?;
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };

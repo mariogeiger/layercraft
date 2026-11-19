@@ -445,6 +445,27 @@ mod tests {
     }
 
     #[test]
+    fn a_print_of_petg_and_pla_gives_each_filament_its_own_settings() {
+        // PETG for the part, PLA for the supports' interface, the last standing for the third:
+        // each its temperatures, its own item in the templates' per-filament lists, and a flush
+        // between two kinds even of one colour.
+        let read = |name| crate::settings::read(&machine("0.20", name).unwrap(), None).unwrap();
+        let (petg, more) = (read("petg-tr"), [read("pla")]);
+        let filaments = crate::settings::Filaments { first: &petg, more: &more };
+        let heat = filaments.heat(3);
+        assert_eq!(heat.nozzle, [[250.0, 245.0], [220.0, 220.0], [220.0, 220.0]]);
+        let grey = "#808080".to_string();
+        let scope = filaments.scope(&[grey.clone(), grey.clone()]);
+        let list = |items: &[Value]| Some(Value::List(items.to_vec()));
+        let kinds = [Value::Str("PETG".into()), Value::Str("PLA".into())];
+        assert_eq!(scope.get("filament_type").cloned(), list(&kinds));
+        assert_eq!(scope.get("nozzle_temperature").cloned(), list(&[Value::Num(245.0), Value::Num(220.0)]));
+        let flush = filaments.flush(&[grey.clone(), grey.clone(), grey]);
+        let at = |a: usize, b: usize| flush.get(a).and_then(|row| row.get(b)).copied().unwrap_or(-1.0);
+        assert!(at(0, 0) == 0.0 && at(0, 1) > 0.0 && at(1, 2) == 0.0, "{flush:?}");
+    }
+
+    #[test]
     fn every_quality_and_material_reads_and_names_its_profile() {
         let maker: Maker = serde_json::from_str(X2D.maker).unwrap();
         let object =

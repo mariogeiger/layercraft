@@ -2,6 +2,27 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.21.0
+
+### Added
+
+- `compile --support-interface N` lays the supports' interface in filament N, in a pass of its
+  own on the layers that have it: a filament that does not weld to the part, as PLA under PETG,
+  lets the columns come off it by hand. The PETG supports of the USB-C cable support took
+  pliers to remove, and the part broke.
+- `--material` names one filament per material, comma separated, the last standing for those
+  past them (`--material petg-tr,petg-tr,pla`). Each filament prints with its own settings: its
+  temperatures, its own item in the printer templates' per-filament lists, its speeds, flow,
+  fan and melt limit, and its type, code and density in the package. A change between two
+  filaments of one colour but two kinds flushes.
+
+### Changed
+
+- `layercraft_motion::compile` takes one motion field per material and `limit` one set of move
+  limits per material, the last standing for those past them. `Settings::heat_for`,
+  `scope_for` and `flush` are `Filaments::heat`, `scope` and `flush`, over each filament's
+  settings. `SupportParams` has `interface_material`.
+
 ## 0.20.1
 
 ### Changed

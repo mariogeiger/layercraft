@@ -283,6 +283,7 @@ const SUPPORTS: SupportParams = SupportParams {
     xy_gap: 0.35,
     interface_layers: 2,
     on_plate_only: false,
+    interface_material: None,
 };
 
 fn supported(bodies: Vec<layercraft_mesh::Body>, supports: SupportParams) -> Regions {
@@ -328,6 +329,29 @@ fn a_cantilever_stands_on_supports_down_to_the_plate() {
     let bar = &regions.layers[50];
     assert!(bar.bridge.is_empty(), "the bar hangs {} mm² of strands", area(&bar.bridge));
     assert!(area(&bar.solid) > column / 2.0, "the bar's first layer is not solid");
+}
+
+#[test]
+fn the_interface_in_a_material_of_its_own_takes_a_pass_of_it() {
+    // The T in material 0, its columns' interface in material 1: on layers 47 and 48 a pass of
+    // material 1 holds the interface and nothing else, the bodies stay with the part's pass,
+    // and the passes start with the material the layer before ended in.
+    let regions = supported(tee(), SupportParams { interface_material: Some(1), ..SUPPORTS });
+    let of =
+        |index: usize| -> Vec<&RegionLayer> { regions.layers.iter().filter(|l| l.index == index).collect() };
+    for index in [47, 48] {
+        let passes = of(index);
+        let materials: Vec<usize> = passes.iter().map(|p| p.material).collect();
+        assert_eq!(materials, if index == 47 { [0, 1] } else { [1, 0] }, "layer {index}");
+        for pass in passes {
+            let own = pass.material == 1;
+            assert_eq!(!pass.support_interface.is_empty(), own, "layer {index}");
+            assert!(pass.supports.is_empty(), "layer {index}");
+            assert_eq!(pass.walls.iter().all(Vec::is_empty), own, "layer {index}");
+        }
+    }
+    assert!(of(46).iter().all(|p| p.material == 0) && !of(46).iter().all(|p| p.supports.is_empty()));
+    assert!(of(49).iter().all(|p| p.material == 0));
 }
 
 #[test]

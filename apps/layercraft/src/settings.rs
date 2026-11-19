@@ -30,7 +30,7 @@ pub struct Settings {
     pub nozzle_diameter: f64,
     /// The scope's per-filament settings: one item each, the filament's.
     pub filament_keys: Vec<String>,
-    /// The temperatures of the filament and the bed, for one material.
+    /// The temperatures of the filament and the bed.
     pub heat: Heat,
 }
 
@@ -39,47 +39,67 @@ pub struct Settings {
 /// beads, the inner walls (the owner's choice, 2026-11-18: less waste over a clean transition).
 const FLUSH: f64 = 60.0;
 
-impl Settings {
-    /// The temperatures for `colours.len()` filaments of this one kind, by material.
-    pub fn heat_for(&self, colours: &[String]) -> Heat {
-        let nozzle = self.heat.nozzle.first().copied().unwrap_or_default();
-        Heat { nozzle: vec![nozzle; colours.len().max(1)], bed: self.heat.bed }
+/// A print's filaments by material, each with the settings of its own kind: the first's shape
+/// the part, and the last given stands for every material past them.
+pub struct Filaments<'a> {
+    pub first: &'a Settings,
+    pub more: &'a [Settings],
+}
+
+impl Filaments<'_> {
+    /// Material `k`'s settings.
+    pub fn of(&self, k: usize) -> &Settings {
+        match k.checked_sub(1) {
+            Some(j) => self.more.get(j).or(self.more.last()).unwrap_or(self.first),
+            None => self.first,
+        }
     }
 
-    /// The template scope for `colours.len()` filaments of this one kind, by material: each
-    /// per-filament setting repeated, the colours listed, every filament fed to the first
-    /// extruder.
-    pub fn scope_for(&self, colours: &[String]) -> Scope {
+    /// The temperatures of `n` filaments, by material, and the first's bed.
+    pub fn heat(&self, n: usize) -> Heat {
+        let nozzle =
+            (0..n.max(1)).map(|k| self.of(k).heat.nozzle.first().copied().unwrap_or_default()).collect();
+        Heat { nozzle, bed: self.first.heat.bed }
+    }
+
+    /// The template scope for the filaments coloured `colours`, by material: each per-filament
+    /// setting one item per filament, its own, the colours listed, every filament fed to the
+    /// first extruder.
+    pub fn scope(&self, colours: &[String]) -> Scope {
         let n = colours.len().max(1);
-        let mut scope = self.scope.clone();
+        let mut scope = self.first.scope.clone();
+        let item = |k: usize, key: &str| match self.of(k).scope.get(key) {
+            Some(Value::List(items)) => items.first().cloned(),
+            _ => None,
+        };
         for key in self
+            .first
             .filament_keys
             .iter()
             .map(String::as_str)
             .chain(["flush_volumetric_speeds", "flush_temperatures"])
         {
-            if let Some(Value::List(items)) = scope.get(key)
-                && items.len() == 1
-            {
-                let repeated = Value::List(vec![items.first().cloned().unwrap_or(Value::Num(0.0)); n]);
-                scope.insert(key.to_string(), repeated);
+            let items: Option<Vec<Value>> = (0..n).map(|k| item(k, key)).collect();
+            if let Some(items) = items {
+                scope.insert(key.to_string(), Value::List(items));
             }
         }
         // A printer setting a filament may override is, for the templates, one per filament:
         // the filament's own, or the first extruder's where it says `nil`.
-        for own in &self.filament_keys {
+        for own in &self.first.filament_keys {
             let Some(key) = own.strip_prefix("filament_") else { continue };
-            let (Some(Value::List(printer)), Some(Value::List(filament))) = (scope.get(key), scope.get(own))
-            else {
+            if !matches!(self.first.scope.get(key), Some(Value::List(_))) {
                 continue;
-            };
-            let value = match filament.first() {
-                Some(Value::Str(nil)) if nil == "nil" => printer.first().cloned(),
-                Some(v) => Some(v.clone()),
-                None => printer.first().cloned(),
-            };
-            if let Some(value) = value {
-                scope.insert(key.to_string(), Value::List(vec![value; n]));
+            }
+            let values: Option<Vec<Value>> = (0..n)
+                .map(|k| match item(k, own) {
+                    Some(Value::Str(nil)) if nil == "nil" => item(k, key),
+                    Some(v) => Some(v),
+                    None => item(k, key),
+                })
+                .collect();
+            if let Some(values) = values {
+                scope.insert(key.to_string(), Value::List(values));
             }
         }
         scope.insert(
@@ -91,12 +111,16 @@ impl Settings {
     }
 
     /// The filament each change flushes, in mm, from one material (row) to another (column):
-    /// `FLUSH` between two colours, none for one colour.
+    /// `FLUSH` between two filaments, none between two of one kind and colour.
     pub fn flush(&self, colours: &[String]) -> Vec<Vec<f64>> {
-        let area = layercraft_motion::disc_area(self.motion.filament_diameter);
-        colours
-            .iter()
-            .map(|from| colours.iter().map(|to| if from == to { 0.0 } else { FLUSH / area }).collect())
+        let area = layercraft_motion::disc_area(self.first.motion.filament_diameter);
+        let same = |a: usize, b: usize| {
+            colours.get(a) == colours.get(b) && self.of(a).filament_code == self.of(b).filament_code
+        };
+        (0..colours.len())
+            .map(|from| {
+                (0..colours.len()).map(|to| if same(from, to) { 0.0 } else { FLUSH / area }).collect()
+            })
             .collect()
     }
 }
@@ -281,6 +305,7 @@ pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineErro
         xy_gap: m.number(Process, "support_object_xy_distance")?,
         interface_layers: m.number(Process, "support_interface_top_layers")?.max(0.0) as usize,
         on_plate_only: m.number(Process, "support_on_build_plate_only").unwrap_or(0.0) > 0.0,
+        interface_material: None,
     };
     let (first_bed_key, other_bed_key) = plate_keys(&bed_type);
     let bed_first = m.number(Filament, first_bed_key)?;

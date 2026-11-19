@@ -124,7 +124,8 @@ over the air, anchored on both sides, slowly. What a strand cannot bridge, held 
 stands on columns, always: each a thin shell, one loop stacked layer on layer, spanned at its top
 by lines laid over the air from one side to the other, on which the part rests a gap above, so
 that they come off. A layer that would hang where no column can stand is refused, rather than
-printed into the air.
+printed into the air. `--support-interface N` lays their top in filament N, as PLA under PETG,
+which does not weld to the part and lets the columns come off it by hand.
 
 On the left, an arch at its first layer over the span, strands in brown. On the right, a T whose
 bar stands on columns.
