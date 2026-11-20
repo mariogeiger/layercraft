@@ -212,8 +212,6 @@ pub fn read(
             max_z: printer.max_z,
             max_speed,
             max_speed_z,
-            filament_diameter: material.diameter,
-            max_volumetric_speed: material.max_volumetric_speed,
             toolhead: Toolhead {
                 face_radius: shape.face_diameter / 2.0,
                 flank_slope: shape.flank_degrees.to_radians().tan(),

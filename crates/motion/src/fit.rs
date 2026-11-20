@@ -17,23 +17,11 @@
 //! share `2ε/w` of a bead no larger than `w` by its thickness widens it by at most `2ε`, each
 //! edge by `ε`, as the path strays. The machine's limits come after (`limit`).
 
-use crate::moves::chained;
+use crate::moves::{Point3, chained, end};
+use crate::plane::{dot, norm, sub};
 use crate::{Arc, Move, Program};
+use layercraft_geom::Point;
 use std::f64::consts::TAU;
-
-type P2 = [f64; 2];
-
-fn sub(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn dot(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn norm(a: P2) -> f64 {
-    a[0].hypot(a[1])
-}
 
 /// The way a move from the first vertex to the last of a run of them goes.
 enum Shape {
@@ -47,7 +35,7 @@ enum Shape {
 const MAX_RADIUS: f64 = 1000.0;
 
 /// The arc from the first vertex to the last, if it lies within `eps` of the polyline.
-fn arc(v: &[P2], eps: f64) -> Option<Arc> {
+fn fit_arc(v: &[Point], eps: f64) -> Option<Arc> {
     let (&a, &b) = (v.first()?, v.last()?);
     let chord = sub(b, a);
     let l = norm(chord);
@@ -89,10 +77,9 @@ fn arc(v: &[P2], eps: f64) -> Option<Arc> {
     }
     (turn.abs() < TAU).then_some(Arc { centre, turn })
 }
-type P3 = [f64; 3];
 
 /// The distance from `p` to the segment from `a` to `b`, in space.
-fn distance3(p: P3, a: P3, b: P3) -> f64 {
+fn distance3(p: Point3, a: Point3, b: Point3) -> f64 {
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let q = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
     let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -100,15 +87,15 @@ fn distance3(p: P3, a: P3, b: P3) -> f64 {
     ((q[0] - t * d[0]).powi(2) + (q[1] - t * d[1]).powi(2) + (q[2] - t * d[2]).powi(2)).sqrt()
 }
 
-/// The line from the first vertex to the last, if every vertex lies within `eps` of it.
-fn line3(v: &[P3], eps: f64) -> bool {
+/// Whether the line from the first vertex to the last holds every vertex within `eps`.
+fn fits_line(v: &[Point3], eps: f64) -> bool {
     let (Some(&a), Some(&b)) = (v.first(), v.last()) else { return false };
     v.iter().all(|&p| distance3(p, a, b) <= eps)
 }
 
 /// Whether the vertices' heights lie within `eps` of the helix that climbs evenly along the arc
 /// from the first to the last.
-fn climbs(w: &[P3], arc: &Arc, eps: f64) -> bool {
+fn climbs(w: &[Point3], arc: &Arc, eps: f64) -> bool {
     let (Some(&a), Some(&b)) = (w.first(), w.last()) else { return false };
     let start = (a[1] - arc.centre[1]).atan2(a[0] - arc.centre[0]);
     w.iter().all(|p| {
@@ -134,7 +121,7 @@ struct Piece {
 
 impl Piece {
     /// What a move from `from` lays, if it lays a bead along a line.
-    fn of(from: Option<P3>, m: &Move) -> Option<Piece> {
+    fn of(from: Option<Point3>, m: &Move) -> Option<Piece> {
         let (from, to) = (from?, m.to?);
         let plate = (to[0] - from[0]).hypot(to[1] - from[1]);
         let piece = Piece { e: m.e, plate };
@@ -146,7 +133,7 @@ impl Piece {
 /// starts, and what the move ending at each later vertex lays.
 struct Run {
     first: Move,
-    vertices: Vec<P3>,
+    vertices: Vec<Point3>,
     pieces: Vec<Piece>,
 }
 
@@ -174,12 +161,12 @@ impl Run {
     fn fit(&self, eps: f64, arcs: bool, out: &mut Vec<Move>) {
         let v = &self.vertices;
         let spread = self.first.bead.map_or(0.0, |b| 2.0 * eps / b.width);
-        let shape = |w: &[P3]| {
-            if line3(w, eps) {
+        let shape = |w: &[Point3]| {
+            if fits_line(w, eps) {
                 Some(Shape::Line)
             } else if arcs {
-                let plane: Vec<P2> = w.iter().map(|p| [p[0], p[1]]).collect();
-                arc(&plane, eps).filter(|a| climbs(w, a, eps)).map(Shape::Arc)
+                let plane: Vec<Point> = w.iter().map(|p| [p[0], p[1]]).collect();
+                fit_arc(&plane, eps).filter(|a| climbs(w, a, eps)).map(Shape::Arc)
             } else {
                 None
             }
@@ -207,12 +194,12 @@ pub fn fit(program: &mut Program, resolution: f64, arcs: bool) {
         return;
     }
     let mut at = None;
-    for layer in &mut program.layers {
-        let mut out = Vec::with_capacity(layer.moves.len());
+    for pass in &mut program.passes {
+        let mut out = Vec::with_capacity(pass.moves.len());
         let mut run: Option<Run> = None;
         let start = at;
-        at = layer.moves.iter().rev().find_map(|m| m.to).or(at);
-        for (from, m) in chained(&layer.moves, start) {
+        at = end(&pass.moves, at);
+        for (from, m) in chained(&pass.moves, start) {
             let piece = Piece::of(from, m);
             let joins = match (&run, piece) {
                 (Some(r), Some(_)) => {
@@ -240,6 +227,6 @@ pub fn fit(program: &mut Program, resolution: f64, arcs: bool) {
         if let Some(r) = run.take() {
             r.fit(resolution, arcs, &mut out);
         }
-        layer.moves = out;
+        pass.moves = out;
     }
 }

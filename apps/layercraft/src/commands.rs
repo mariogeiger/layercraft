@@ -35,15 +35,11 @@ enum Command {
     /// Compile a 3MF (or a stage file) into a .gcode.3mf.
     Compile {
         input: Option<PathBuf>,
+        #[command(flatten)]
+        printing: Printing,
+        /// Also write the G-code as plain text.
         #[arg(long)]
-        out: PathBuf,
-        /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = defaults::QUALITY)]
-        quality: String,
-        /// The filaments, one per material, comma separated, the last standing for those past
-        /// them: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = defaults::MATERIAL)]
-        material: String,
+        gcode: Option<PathBuf>,
         /// The filament the supports' interface is laid in, numbered from 1 as the materials
         /// are (default: the column's): one that does not weld to the part, as PLA under PETG,
         /// lets the supports come off it. Give it a colour and a material.
@@ -63,16 +59,6 @@ enum Command {
         /// (default: the 3MF's colours, grey without).
         #[arg(long)]
         colour: Option<String>,
-        /// The plate type, such as "Textured PEI Plate" (default: the printer's).
-        #[arg(long)]
-        bed: Option<String>,
-        /// Also write the G-code as plain text.
-        #[arg(long)]
-        gcode: Option<PathBuf>,
-        /// Vary settings by place: a JSON list of overrides, each `{"within": {"z": [0, 5]},
-        /// "set": {"motion": {"lift_radius": 0.6}}}`; boxes are in plate millimetres.
-        #[arg(long)]
-        tune: Option<PathBuf>,
         /// Keep every layer flat, as a planar slicer does, rather than bend layers to follow
         /// gently sloped tops.
         #[arg(long)]
@@ -87,26 +73,14 @@ enum Command {
     /// stages (.json) and G-code from any slicer (.gcode, .gcode.3mf), each already placed.
     Merge {
         inputs: Vec<PathBuf>,
-        #[arg(long)]
-        out: PathBuf,
-        /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = defaults::QUALITY)]
-        quality: String,
-        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = defaults::MATERIAL)]
-        material: String,
-        /// The filament's colour for the printer's screen.
-        #[arg(long, default_value = COLOUR)]
-        colour: String,
-        /// The plate type, such as "Textured PEI Plate" (default: the printer's).
-        #[arg(long)]
-        bed: Option<String>,
+        #[command(flatten)]
+        printing: Printing,
         /// Also write the G-code as plain text.
         #[arg(long)]
         gcode: Option<PathBuf>,
-        /// Vary the motion settings by place, as for `compile`: cooling, here.
-        #[arg(long)]
-        tune: Option<PathBuf>,
+        /// The filaments' colours for the printer's screen, one per material, comma separated.
+        #[arg(long, default_value = COLOUR)]
+        colour: String,
         /// Write the merged program: program=FILE, as JSON or as a PLY picture (repeatable).
         #[arg(long, value_parser = stage_file)]
         emit: Vec<(Stage, PathBuf)>,
@@ -117,20 +91,11 @@ enum Command {
     View {
         /// A 3MF, or a paths stage file.
         input: PathBuf,
-        #[arg(long)]
-        out: PathBuf,
-        /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = defaults::QUALITY)]
-        quality: String,
-        /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = defaults::MATERIAL)]
-        material: String,
+        #[command(flatten)]
+        printing: Printing,
         /// Only layers FROM..TO (end excluded).
         #[arg(long)]
         layers: Option<String>,
-        /// Vary settings by place, as for `compile`.
-        #[arg(long)]
-        tune: Option<PathBuf>,
         /// Keep every layer flat, as for `compile`.
         #[arg(long)]
         flat: bool,
@@ -138,6 +103,28 @@ enum Command {
         #[arg(long, value_enum)]
         infill: Option<Infill>,
     },
+}
+
+/// What every command takes that compiles or prints: where to write, the printer's quality and
+/// filaments, the plate and the tuning.
+#[derive(clap::Args)]
+struct Printing {
+    #[arg(long)]
+    out: PathBuf,
+    /// The print quality: 0.20 or 0.12, its layer height in mm.
+    #[arg(long, default_value = defaults::QUALITY)]
+    quality: String,
+    /// The filaments, one per material, comma separated, the last standing for those past
+    /// them: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
+    #[arg(long, default_value = defaults::MATERIAL)]
+    material: String,
+    /// The plate type, such as "Textured PEI Plate" (default: the printer's).
+    #[arg(long)]
+    bed: Option<String>,
+    /// Vary settings by place: a JSON list of overrides, each `{"within": {"z": [0, 5]},
+    /// "set": {"motion": {"lift_radius": 0.6}}}`; boxes are in plate millimetres.
+    #[arg(long)]
+    tune: Option<PathBuf>,
 }
 
 /// What sparse areas are filled with.
@@ -217,22 +204,18 @@ pub fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::Compile {
             input,
-            out,
-            quality,
-            material,
+            printing: p,
+            gcode,
             support_interface,
             emit,
             from,
             at,
             colour,
-            bed,
-            gcode,
-            tune,
             flat,
             infill,
         } => {
             let choices = Choices { flat, infill, interface: support_interface };
-            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
+            let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
                 None => plate_centre(&s),
@@ -252,48 +235,43 @@ pub fn run(cli: Cli) -> Result<(), String> {
                     .collect(),
                 None => vec![COLOUR.into()],
             };
-            let delivery = Delivery { setup: &s, colours, object_name, gcode: gcode.as_deref(), out: &out };
+            let delivery = Delivery { setup: &s, colours, object_name, gcode: gcode.as_deref(), out: &p.out };
             println!("{}", deliver(output.program, &delivery)?);
             Ok(())
         }
-        Command::Merge { inputs, out, quality, material, colour, bed, gcode, tune, emit } => {
+        Command::Merge { inputs, printing: p, gcode, colour, emit } => {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
             let choices = Choices { flat: false, infill: None, interface: None };
-            let s = setup(&quality, &material, bed.as_deref(), tune.as_deref(), choices)?;
+            let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
-            if programs.iter().flat_map(|p| &p.layers).any(|l| l.material != 0) {
-                return Err("not supported yet: merging programs printed in several materials".into());
-            }
-            let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed);
+            let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed)
+                .map_err(|e| e.to_string())?;
             let limits = &s.settings.motion.limits;
             pipeline::emit(Stage::Program, &merged, || layercraft_view::program(&merged, limits), &emit)?;
-            let object_name = "plate".into();
             let delivery = Delivery {
                 setup: &s,
                 colours: colours(&colour)?,
-                object_name,
+                object_name: "plate".into(),
                 gcode: gcode.as_deref(),
-                out: &out,
+                out: &p.out,
             };
             println!("{}", deliver(merged, &delivery)?);
             Ok(())
         }
         Command::Compare { ours, theirs } => {
-            let report = crate::compare::report(
-                &crate::compare::read_gcode(&ours)?,
-                &crate::compare::read_gcode(&theirs)?,
-            );
+            let report =
+                crate::compare::report(&pipeline::read_gcode(&ours)?, &pipeline::read_gcode(&theirs)?);
             print!("{report}");
             Ok(())
         }
-        Command::View { input, out, quality, material, layers, tune, flat, infill } => {
-            let paths: layercraft_path::Paths = if input.extension().is_some_and(|e| e == "json") {
+        Command::View { input, printing: p, layers, flat, infill } => {
+            let paths: layercraft_path::Paths = if pipeline::has_extension(&input, "json") {
                 pipeline::read_json(&input)?
             } else {
                 let choices = Choices { flat, infill, interface: None };
-                let s = setup(&quality, &material, None, tune.as_deref(), choices)?;
+                let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
                 let output = pipeline::run(Some(&input), plate_centre(&s), &s, None, &[])?;
                 output.paths.ok_or("no toolpaths")?
             };
@@ -306,8 +284,8 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 None => 0..usize::MAX,
             };
             let script = layercraft_view::solidcraft_script(&paths, range);
-            write_file(&out, script.to_string().as_bytes())?;
-            println!("wrote {}", out.display());
+            write_file(&p.out, script.to_string().as_bytes())?;
+            println!("wrote {}", p.out.display());
             Ok(())
         }
     }

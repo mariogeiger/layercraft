@@ -4,8 +4,8 @@
 use super::*;
 use layercraft_geom::{Carrier, Point, Warp, union_contours};
 use layercraft_mesh::{Body, Mesh};
-use layercraft_motion::{Arc, Bead, Layer as MoveLayer, Limits, Move, Program};
-use layercraft_path::{Path, PathLayer};
+use layercraft_motion::{Arc, Bead, Limits, Move, Pass, Program};
+use layercraft_path::{Path, PathLayer, Paths};
 use layercraft_region::{RegionLayer, Regions};
 use layercraft_section::{Layer, Sections};
 
@@ -278,16 +278,9 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
         mv([20.0, 0.0, 0.6], None, 0.0, 200.0, None),
     ];
     let limits = Limits { max_accel: 10_000.0, jerk: 10.0, max_speed_xy: 500.0, max_speed_z: 20.0 };
-    let layer = MoveLayer {
-        index: 0,
-        z: 0.2,
-        height: 0.2,
-        warp: Default::default(),
-        free: false,
-        moves,
-        material: 0,
-    };
-    let c = program(&Program { carrier: Default::default(), layers: vec![layer] }, &limits).unwrap();
+    let pass =
+        Pass { index: 0, z: 0.2, height: 0.2, warp: Default::default(), free: false, moves, material: 0 };
+    let c = program(&Program { carrier: Default::default(), passes: vec![pass] }, &limits).unwrap();
     let segments = &c.segments.rows;
     // Nothing before the nozzle is known; the bead, the helix's chords, the travel.
     let moves: Vec<f64> = segments.iter().map(|(_, v)| v[1]).collect();
@@ -319,4 +312,80 @@ fn the_program_lays_beads_turns_helices_and_keeps_time() {
     assert!(c.comments.iter().any(|l| l.starts_with("role: 0 outer wall, ")
         && l.ends_with(", 9 sparse infill, 10 support, 11 support interface, -1 none")));
     assert!(c.comments.contains(&"move: 0 extrude, 1 travel, 2 wipe, 3 lift".to_string()));
+}
+
+#[test]
+fn the_thumbnail_shades_a_layer_alike_in_all_its_passes() {
+    let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
+    let pass = |index: usize, material: usize, y: f64| Pass {
+        index,
+        z: 0.2 * (index + 1) as f64,
+        height: 0.2,
+        warp: Default::default(),
+        free: false,
+        moves: vec![
+            Move {
+                to: Some([0.0, y, 0.2]),
+                arc: None,
+                e: 0.0,
+                speed: 100.0,
+                accel: 1000.0,
+                fan: 0.0,
+                bead: None,
+                wait: 0.0,
+            },
+            Move {
+                to: Some([10.0, y, 0.2]),
+                arc: None,
+                e: 0.5,
+                speed: 50.0,
+                accel: 1000.0,
+                fan: 0.0,
+                bead: Some(wall),
+                wait: 0.0,
+            },
+        ],
+        material,
+    };
+    // Layer 0 in two materials, then layer 1: two shades, one a layer, not one a pass.
+    let program = Program {
+        carrier: Default::default(),
+        passes: vec![pass(0, 0, 0.0), pass(0, 1, 5.0), pass(1, 0, 10.0)],
+    };
+    let image = thumbnail(&program, 64);
+    let mut shades: Vec<&[u8]> = image.rgba.chunks(4).filter(|px| px[3] == 255).collect();
+    shades.sort();
+    shades.dedup();
+    assert_eq!(shades.len(), 2, "{shades:?}");
+}
+
+#[test]
+fn the_script_draws_a_sketch_per_layer_and_role_within_the_layers_asked() {
+    let line = |role: Role, y: f64| Path {
+        role,
+        width: 0.42,
+        closed: false,
+        points: vec![[0.0, y], [5.0, y]],
+        travel_crosses: false,
+        overhang: Vec::new(),
+    };
+    let layer = |index: usize| PathLayer {
+        index,
+        top: 0.2 * (index + 1) as f64,
+        height: 0.2,
+        warp: Default::default(),
+        paths: vec![line(Role::OUTER_WALL, 0.0), line(Role::OUTER_WALL, 1.0), line(Role::SPARSE, 2.0)],
+        material: 0,
+    };
+    let p = Paths { carrier: Default::default(), layers: vec![layer(0), layer(1), layer(2)] };
+    let script = solidcraft_script(&p, 1..3);
+    let commands = script["commands"].as_array().unwrap();
+    let names: Vec<&str> = commands.iter().filter_map(|c| c["params"]["name"].as_str()).collect();
+    assert_eq!(names, ["L001 outer wall", "L001 sparse infill", "L002 outer wall", "L002 sparse infill"]);
+    // Each sketch: its lines, then finished; the layer's plane at its top.
+    // Two layers, two roles each: a create and a finish per sketch, three lines a layer.
+    assert_eq!(commands.len(), 2 * (2 * 2 + 3));
+    assert_eq!(commands[0]["params"]["plane"]["origin"][2], 0.4);
+    assert_eq!(commands[1]["command"], "sketch.line");
+    assert_eq!(commands[3]["command"], "sketch.finish");
 }

@@ -40,7 +40,7 @@ fn bent(paths: Vec<Path>) -> Paths {
 
 /// The bead moves of the bent layer, each with where it starts.
 fn beads(program: &Program) -> Vec<([f64; 3], Move)> {
-    chained(&program.layers[1].moves, None)
+    chained(&program.passes[1].moves, None)
         .filter(|(_, m)| m.bead.is_some())
         .map(|(f, m)| (f.unwrap(), m.clone()))
         .collect()
@@ -108,7 +108,7 @@ fn a_travel_across_a_bent_layer_hops_over_its_highest_point_on_the_way() {
         bead(vec![[15.0, 12.5], [16.0, 12.5]]),
     ]);
     let program = compiled(&paths, &params());
-    let moves = &program.layers[1].moves;
+    let moves = &program.passes[1].moves;
     // The highest each travel between beads goes.
     let mut hops = Vec::new();
     let mut top = f64::NEG_INFINITY;
@@ -131,7 +131,7 @@ fn a_travel_across_a_bent_layer_hops_over_its_highest_point_on_the_way() {
 /// The plastic each layer pushes, with the nozzle's face `face_radius` round.
 fn pushed_by_layer(paths: &Paths, face_radius: f64) -> Vec<f64> {
     let program = compiled(paths, &MotionParams { face_radius, ..params() });
-    program.layers.iter().map(|l| l.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.e).sum()).collect()
+    program.passes.iter().map(|l| l.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.e).sum()).collect()
 }
 
 #[test]
@@ -174,13 +174,36 @@ fn what_the_face_takes_off_a_layer_the_next_gets_back() {
 }
 
 #[test]
+fn what_the_face_takes_off_any_pass_of_a_layer_the_next_layer_gets_back() {
+    // The bent layer in two materials: down the ramp in the first, which the face planes, then
+    // up it beside in the second, which it leaves; over them, a layer up the ramp over the first.
+    let mut paths = bent(vec![bead(vec![[8.0, 5.5], [2.0, 5.5]])]);
+    let second = PathLayer {
+        material: 1,
+        paths: vec![bead(vec![[2.0, 15.5], [8.0, 15.5]])],
+        ..paths.layers[1].clone()
+    };
+    let next = PathLayer {
+        index: 2,
+        top: 0.6,
+        paths: vec![bead(vec![[2.0, 5.5], [8.0, 5.5]])],
+        ..paths.layers[1].clone()
+    };
+    paths.layers.extend([second, next]);
+    let (bare, planed) = (pushed_by_layer(&paths, 0.0), pushed_by_layer(&paths, 0.5));
+    assert!(planed[1] < 0.95 * bare[1] && planed[3] > 1.05 * bare[3], "{planed:?} against {bare:?}");
+    let total = |v: &[f64]| v.iter().sum::<f64>();
+    assert!((total(&planed) - total(&bare)).abs() < 1e-12 * total(&bare), "{planed:?} against {bare:?}");
+}
+
+#[test]
 fn bent_programs_merge_on_their_carriers_joined() {
     // A layer bent up a ramp in two programs, the second 30 mm along x: merged, the layer is bent
     // where either is, on their carriers joined. A program on triangles of its own over the
     // first's keeps its bends out.
     let program = |ramp: &Relief| Program {
         carrier: ramp.carrier().clone(),
-        layers: vec![Layer {
+        passes: vec![Pass {
             index: 0,
             z: 0.4,
             height: 0.4,
@@ -190,13 +213,13 @@ fn bent_programs_merge_on_their_carriers_joined() {
             material: 0,
         }],
     };
-    let top = |merged: &Program| merged.carrier.relief(&merged.layers[0].warp).unwrap();
+    let top = |merged: &Program| merged.carrier.relief(&merged.passes[0].warp).unwrap();
     let (near, far) = (ramp_from(0.0), ramp_from(30.0));
-    let both = top(&merge(&[program(&near), program(&far)], 25.0));
+    let both = top(&merge(&[program(&near), program(&far)], 25.0).unwrap());
     for p in [[5.0, 5.0], [35.0, 5.0], [12.0, 3.0], [42.0, 3.0], [25.0, 5.0]] {
         assert!((both.at(p) - (near.at(p) + far.at(p))).abs() < 1e-12, "{p:?}");
     }
-    let kept = top(&merge(&[program(&near), program(&ramp_from(0.5))], 25.0));
+    let kept = top(&merge(&[program(&near), program(&ramp_from(0.5))], 25.0).unwrap());
     for p in [[5.0, 5.0], [12.3, 3.7]] {
         assert!((kept.at(p) - near.at(p)).abs() < 1e-12, "{p:?}");
     }

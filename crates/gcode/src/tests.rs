@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
-use layercraft_motion::{Bead, Layer};
+use layercraft_motion::{Bead, Filament, Limits, Pass, estimate, summarize};
 
 #[test]
 fn numbers_are_short() {
@@ -19,16 +19,23 @@ fn mv(to: Option<[f64; 3]>, arc: Option<Arc>, e: f64, speed: f64, bead: Option<B
 fn header() -> Header {
     Header {
         generator: "layercraft test".into(),
-        filament_diameter: 1.75,
-        filament_density: 1.26,
+        filament_diameters: vec![1.75],
+        filament_densities: vec![1.26],
         settings: vec![("start".into(), "a\nb".into())],
     }
 }
 
 const LIMITS: Limits = Limits { max_accel: 1000.0, jerk: 10.0, max_speed_xy: 1000.0, max_speed_z: 20.0 };
 
-fn frame(layers: &[&str]) -> Frame {
-    Frame { start: "M83".into(), layers: layers.iter().map(|l| l.to_string()).collect(), end: "M400".into() }
+fn frame(passes: &[&str]) -> Frame {
+    Frame { start: "M83".into(), passes: passes.iter().map(|l| l.to_string()).collect(), end: "M400".into() }
+}
+
+/// The G-code of `program` in `frame`, timed by `LIMITS`.
+fn text(program: &Program, frame: &Frame) -> String {
+    let times = estimate(program, &LIMITS);
+    let filament = Filament { diameter: 1.75, max_volumetric_speed: f64::INFINITY };
+    write(program, frame, &summarize(program, &times, &[filament]), &times, &header())
 }
 
 /// The executable block without the printer's progress, which depends on the planner.
@@ -48,7 +55,7 @@ fn moves_name_only_what_changes() {
     ];
     let program = Program {
         carrier: Default::default(),
-        layers: vec![Layer {
+        passes: vec![Pass {
             index: 0,
             z: 0.2,
             height: 0.2,
@@ -58,7 +65,7 @@ fn moves_name_only_what_changes() {
             material: 0,
         }],
     };
-    let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
+    let text = text(&program, &frame(&["; layer"]));
     assert_eq!(
         body(&text),
         vec![
@@ -105,8 +112,8 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
     ];
     let program = Program {
         carrier: Default::default(),
-        layers: vec![
-            Layer {
+        passes: vec![
+            Pass {
                 index: 0,
                 z: 0.2,
                 height: 0.2,
@@ -115,7 +122,7 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
                 moves: first,
                 material: 0,
             },
-            Layer {
+            Pass {
                 index: 1,
                 z: 0.4,
                 height: 0.2,
@@ -126,7 +133,7 @@ fn arcs_are_written_about_their_centre_and_moves_of_nothing_vanish() {
             },
         ],
     };
-    let text = write(&program, &frame(&["; one", "; two"]), &LIMITS, &header());
+    let text = text(&program, &frame(&["; one", "; two"]));
     let lines = body(&text);
     let after = |marker: &str| -> Vec<&str> {
         lines
@@ -191,8 +198,8 @@ fn what_is_written_reads_back() {
     ];
     let program = Program {
         carrier: Default::default(),
-        layers: vec![
-            Layer {
+        passes: vec![
+            Pass {
                 index: 0,
                 z: 0.2,
                 height: 0.2,
@@ -201,7 +208,7 @@ fn what_is_written_reads_back() {
                 moves: first,
                 material: 0,
             },
-            Layer {
+            Pass {
                 index: 1,
                 z: 0.4,
                 height: 0.2,
@@ -212,10 +219,10 @@ fn what_is_written_reads_back() {
             },
         ],
     };
-    let text = write(&program, &frame(&["M991 S0 P0", "M991 S0 P1"]), &LIMITS, &header());
+    let text = text(&program, &frame(&["M991 S0 P0", "M991 S0 P1"]));
     let back = read(&text).unwrap();
-    assert_eq!(back.layers.len(), 2);
-    for (a, b) in program.layers.iter().zip(&back.layers) {
+    assert_eq!(back.passes.len(), 2);
+    for (a, b) in program.passes.iter().zip(&back.passes) {
         assert_eq!((a.z, a.height), (b.z, b.height));
         assert_eq!(a.moves.len(), b.moves.len(), "{:#?}", b.moves);
         for (m, n) in a.moves.iter().zip(&b.moves) {
@@ -256,7 +263,7 @@ fn unknown_commands_and_features_are_errors() {
     for (name, role) in [("Support", Role::SUPPORT), ("Support interface", Role::SUPPORT_INTERFACE)] {
         let program = read(&body(&format!("; FEATURE: {name}\n; LINE_WIDTH: 0.42\nG1 X2 E0.1"))).unwrap();
         let beads: Vec<Role> =
-            program.layers.iter().flat_map(|l| &l.moves).filter_map(|m| m.bead).map(|b| b.role).collect();
+            program.passes.iter().flat_map(|l| &l.moves).filter_map(|m| m.bead).map(|b| b.role).collect();
         assert_eq!(beads, [role], "{name}");
     }
 }
@@ -272,7 +279,7 @@ fn filament_too_fine_to_write_is_carried_not_lost() {
     );
     let program = Program {
         carrier: Default::default(),
-        layers: vec![Layer {
+        passes: vec![Pass {
             index: 0,
             z: 0.2,
             height: 0.2,
@@ -282,7 +289,7 @@ fn filament_too_fine_to_write_is_carried_not_lost() {
             material: 0,
         }],
     };
-    let text = write(&program, &frame(&["; layer"]), &LIMITS, &header());
+    let text = text(&program, &frame(&["; layer"]));
     let written: f64 = text
         .lines()
         .filter_map(|l| l.split_whitespace().find_map(|w| w.strip_prefix('E'))?.parse::<f64>().ok())
@@ -334,7 +341,7 @@ G1 X20 Y20 E.5 F3000
 G1 Z50
 ";
     let program = read(text).unwrap();
-    let [first, second] = program.layers.as_slice() else { panic!("{program:?}") };
+    let [first, second] = program.passes.as_slice() else { panic!("{program:?}") };
     // The start's move is the frame's, not followed; the first layer starts with its pull in
     // place, then its travel, whose height it never named takes the next one it is given.
     assert!(first.moves[0].to.is_none() && first.moves[0].e < 0.0);
@@ -348,14 +355,14 @@ G1 Z50
     assert_eq!(tail[2].to, Some([19.0, 10.0, 0.2]));
     // The new layer starts at its travel; the conditional block's move is not there.
     assert_eq!(second.moves[0].to, Some([10.0, 20.0, 0.6]));
-    assert!(program.layers.iter().flat_map(|l| &l.moves).all(|m| m.to.is_none_or(|p| p[2] < 9.0)));
+    assert!(program.passes.iter().flat_map(|l| &l.moves).all(|m| m.to.is_none_or(|p| p[2] < 9.0)));
     assert_eq!(second.moves.last().and_then(|m| m.bead).map(|b| b.role), Some(Role::OUTER_WALL));
 }
 
 #[test]
 fn a_layer_in_several_passes_is_announced_once_and_its_filaments_listed() {
     let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
-    let pass = |index: usize, material: usize, e: f64| Layer {
+    let pass = |index: usize, material: usize, e: f64| Pass {
         index,
         z: 0.2 * (index + 1) as f64,
         height: 0.2,
@@ -369,9 +376,9 @@ fn a_layer_in_several_passes_is_announced_once_and_its_filaments_listed() {
     };
     let program = Program {
         carrier: Default::default(),
-        layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 0.5)],
+        passes: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 0.5)],
     };
-    let text = write(&program, &frame(&["; layer 0", "; layer 1", "; change to 1"]), &LIMITS, &header());
+    let text = text(&program, &frame(&["; layer 0", "; layer 1", "; change to 1"]));
     assert_eq!(text.matches("; CHANGE_LAYER").count(), 2);
     let body = body(&text);
     let at = |line: &str| body.iter().position(|l| *l == line).unwrap();
@@ -380,4 +387,46 @@ fn a_layer_in_several_passes_is_announced_once_and_its_filaments_listed() {
     assert!(text.contains("; filament: 1,2\n"));
     assert!(text.contains("; filament_density: 1.26,1.26\n"));
     assert!(text.contains("; total layer number: 2\n"));
+}
+
+#[test]
+fn a_filament_change_read_back_starts_a_pass_of_the_filament_it_loads() {
+    let wall = Bead { role: Role::OUTER_WALL, width: 0.42 };
+    let pass = |index: usize, material: usize| Pass {
+        index,
+        z: 0.25 * (index + 1) as f64,
+        height: 0.25,
+        warp: Default::default(),
+        free: false,
+        moves: vec![
+            mv(Some([10.0 + material as f64, 10.0, 0.25 * (index + 1) as f64]), None, 0.0, 300.0, None),
+            mv(Some([20.0, 10.0 + material as f64, 0.25 * (index + 1) as f64]), None, 0.5, 50.0, Some(wall)),
+        ],
+        material,
+    };
+    // The printer's own change, as the frame writes it: the block, then its detectors and heat.
+    let change = |to: usize| {
+        format!(
+            "M620 S{to}A B\nG1 Z3 F1200\nM620.11 P1 L0 I0 E-10\nT{to} H-1\nM621 S{to}A B\nM620.6 I{to} W1\nM109 S230"
+        )
+    };
+    // Layer 1 changes in its middle, layer 2 at its start.
+    let program =
+        Program { carrier: Default::default(), passes: vec![pass(0, 0), pass(1, 0), pass(1, 1), pass(2, 0)] };
+    let mut frame = frame(&["; layer 0", "; layer 1", &change(1), &format!("; layer 2\n{}", change(0))]);
+    frame.start = "M620 S0A B\nT0\nM621 S0A B\nM83".into();
+    let back = read(&text(&program, &frame)).unwrap();
+    let kinds: Vec<(usize, usize)> = back.passes.iter().map(|p| (p.index, p.material)).collect();
+    assert_eq!(kinds, [(0, 0), (1, 0), (1, 1), (2, 0)]);
+    for (a, b) in program.passes.iter().zip(&back.passes) {
+        assert_eq!(
+            a.moves.iter().filter_map(|m| m.bead).count(),
+            b.moves.iter().filter_map(|m| m.bead).count()
+        );
+        assert_eq!(a.moves.last().and_then(|m| m.to), b.moves.last().and_then(|m| m.to));
+    }
+    // A change that names no filament is no change the printer can make.
+    let mut empty = frame.clone();
+    empty.passes[2] = "M620 S1A B\nM621 S1A B".into();
+    assert!(read(&text(&program, &empty)).is_err());
 }

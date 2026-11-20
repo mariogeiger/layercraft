@@ -1,48 +1,27 @@
 //! Pictures of the stages: any stage as an attributed complex written as PLY, for SolidCraft or
-//! any viewer to colour and filter by its properties; the toolpaths as a SolidCraft script, one
-//! sketch per layer and role; and the thumbnail shown on the printer's screen.
+//! any viewer to colour and filter by its properties; the toolpaths as a SolidCraft script
+//! (`script`); and the thumbnail shown on the printer's screen.
 //!
-//! The thumbnail paints the beads from the bottom layer up, seen from above, each layer
-//! lighter than the one below it.
+//! The thumbnail paints the beads from the bottom layer up, seen from above, each layer, all its
+//! passes, lighter than the one below it; an arc as chords within `THUMBNAIL_SAG_MM` of it.
 
 mod ply;
+mod script;
 mod stages;
 #[cfg(test)]
 mod tests;
 
-pub use ply::{Complex, Kind, MAX_POINTS, Property, Table, ViewError, float, int};
+pub use ply::{Complex, MAX_POINTS, Property, PropertyKind, Table, ViewError, float, int};
+pub use script::solidcraft_script;
 pub use stages::{mesh, paths, program, regions, role_name, sections};
 
 use layercraft_motion::{Bead, Program};
 use layercraft_package::Image;
-use layercraft_path::{Paths, Role};
-use serde_json::{Value, json};
+use layercraft_path::Role;
 
-/// A SolidCraft script drawing every bead's centre line, layers `from..to`.
-pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value {
-    let mut commands = Vec::new();
-    for layer in paths.layers.iter().filter(|l| layers.contains(&l.index)) {
-        for role in Role::NAMED {
-            let beads: Vec<_> =
-                layer.paths.iter().filter(|p| p.role == role && p.points.len() >= 2).collect();
-            if beads.is_empty() {
-                continue;
-            }
-            let name = format!("L{:03} {}", layer.index, role_name(role));
-            commands.push(json!({"command": "sketch.create", "params": {
-                "plane": {"origin": [0.0, 0.0, layer.top], "x_dir": [1.0, 0.0, 0.0], "y_dir": [0.0, 1.0, 0.0]},
-                "name": name,
-            }}));
-            for bead in beads {
-                commands.push(json!({"command": "sketch.line", "params": {
-                    "points": bead.points, "closed": bead.closed,
-                }}));
-            }
-            commands.push(json!({"command": "sketch.finish", "params": {}}));
-        }
-    }
-    json!({ "commands": commands })
-}
+/// The farthest a chord of an arc strays from it on the thumbnail, in mm: a tenth of a pixel of the
+/// largest thumbnail across a 250 mm plate.
+const THUMBNAIL_SAG_MM: f64 = 0.05;
 
 /// A role's colour: strands green; walls orange outside, yellow inside; dense lines red on
 /// top, purple elsewhere; sparse lines blue; supports grey, their tops lighter.
@@ -66,22 +45,24 @@ type Stroke = ([f64; 2], [f64; 2], Bead);
 /// The beads of a program as segments across the plate, layer by layer, arcs as chords.
 fn beads(program: &Program) -> Vec<Vec<Stroke>> {
     program
-        .layers
-        .iter()
+        .layers()
         .map(|layer| {
             let mut out = Vec::new();
-            let mut at: Option<[f64; 3]> = None;
-            for m in &layer.moves {
-                if let (Some(from), Some(to), Some(bead)) = (at, m.to, m.bead) {
-                    let n = if m.arc.is_some() { 16 } else { 1 };
-                    let mut a = [from[0], from[1]];
-                    for k in 1..=n {
-                        let p = if k == n { to } else { m.point(from, k as f64 / n as f64) };
-                        out.push((a, [p[0], p[1]], bead));
-                        a = [p[0], p[1]];
+            for pass in layer {
+                // After the machine's own G-code the nozzle may be anywhere.
+                let mut at: Option<[f64; 3]> = None;
+                for m in &pass.moves {
+                    if let (Some(from), Some(to), Some(bead)) = (at, m.to, m.bead) {
+                        let n = m.chords(from, THUMBNAIL_SAG_MM);
+                        let mut a = [from[0], from[1]];
+                        for k in 1..=n {
+                            let p = if k == n { to } else { m.point(from, k as f64 / n as f64) };
+                            out.push((a, [p[0], p[1]], bead));
+                            a = [p[0], p[1]];
+                        }
                     }
+                    at = m.to.or(at);
                 }
-                at = m.to.or(at);
             }
             out
         })

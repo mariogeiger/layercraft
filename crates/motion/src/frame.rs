@@ -1,29 +1,66 @@
-//! The machine's own G-code around the layers, and what a program does, read from its moves.
-//!
-//! The frame is the printer's templates expanded for the program as it stands: the start (the
-//! machine's limits, its start sequence, a prologue, absolute positions and relative extrusion), a
-//! layer change before each layer's first pass, a filament change before each pass of another
-//! material than the one before, and the end. The first layer's extent, the highest layer and the
-//! filaments come from the moves themselves, so a program merged from several, or edited by hand,
-//! gets the frame it needs; the settings, each filament's among them, come in the scope.
+//! The machine's own G-code around the passes: the printer's templates expanded for the program as
+//! it stands, the start (the machine's limits, its start sequence, a prologue, absolute positions
+//! and relative extrusion), a layer change before each layer's first pass, a filament change before
+//! each pass of another material than the one before, and the end. The first layer's extent, the
+//! highest layer and the filaments come from the moves themselves, so a program merged from
+//! several, or edited by hand, gets the frame it needs; the settings, each filament's among them,
+//! come in the scope.
 //!
 //! Between the templates the frame holds the temperatures (`Heat`): the start leaves the first
 //! filament and the bed at their first layer's, so a layer that needs another sets it on its way
 //! up (`M104`, `M140`), the nozzle following the filament loaded; and a change leaves the nozzle
 //! at whatever its cut cooled it to, so the pass after it waits for its own (`M109`).
 
-use crate::moves::chained;
-use crate::time::{Limits, estimate};
-use crate::{Heat, Layer, MotionError, Program, Summary, Templates, disc_area};
+use crate::summary::first_layer_bounds;
+use crate::{MotionError, Program, Templates};
 use layercraft_template::{Scope, Value, expand};
+use serde::{Deserialize, Serialize};
 
-/// The machine's G-code around a program's layers.
+/// The machine's G-code around a program's passes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     pub start: String,
     /// One per pass, before it.
-    pub layers: Vec<String>,
+    pub passes: Vec<String>,
     pub end: String,
+}
+
+/// The temperatures a print holds, in °C, which the slicer sets between the machine's
+/// templates: the start leaves the first layer's, and a filament change leaves the nozzle at no
+/// set temperature.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Heat {
+    /// Each material's nozzle temperature on the first layer, then on the others.
+    pub nozzle: Vec<[f64; 2]>,
+    /// The bed's temperature on the first layer, then on the others.
+    pub bed: [f64; 2],
+}
+
+impl Heat {
+    /// Material `k`'s nozzle temperature on layer `index`.
+    pub fn nozzle_at(&self, k: usize, index: usize) -> Result<f64, MotionError> {
+        let pair = self
+            .nozzle
+            .get(k)
+            .ok_or_else(|| MotionError::BadParams(format!("no temperature for material {k}")))?;
+        on_layer(*pair, index, "nozzle")
+    }
+
+    /// The bed's temperature on layer `index`.
+    pub fn bed_at(&self, index: usize) -> Result<f64, MotionError> {
+        on_layer(self.bed, index, "bed")
+    }
+}
+
+/// The first layer's temperature or the others', checked: one a printer can be asked for,
+/// finite and above zero.
+fn on_layer([first, rest]: [f64; 2], index: usize, what: &str) -> Result<f64, MotionError> {
+    let t = if index == 0 { first } else { rest };
+    if t.is_finite() && t > 0.0 {
+        Ok(t)
+    } else {
+        Err(MotionError::BadParams(format!("a {what} temperature of {t} °C")))
+    }
 }
 
 fn expand_text(which: &str, template: &str, scope: &Scope) -> Result<String, MotionError> {
@@ -39,72 +76,6 @@ fn lines(text: &str) -> String {
     if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") }
 }
 
-/// Grows the box `b` by a bead `r` around its centre point `p`.
-fn grow(b: [[f64; 2]; 2], p: [f64; 3], r: f64) -> [[f64; 2]; 2] {
-    [[b[0][0].min(p[0] - r), b[0][1].min(p[1] - r)], [b[1][0].max(p[0] + r), b[1][1].max(p[1] + r)]]
-}
-
-/// Where the first layer lays plastic, all its passes: its beads' paths grown by their half widths.
-fn first_layer_bounds(program: &Program) -> [[f64; 2]; 2] {
-    let mut b = [[f64::MAX, f64::MAX], [f64::MIN, f64::MIN]];
-    let first = program.layers.first().map(|l| l.index);
-    for layer in program.layers.iter().take_while(|l| Some(l.index) == first) {
-        for (from, m) in chained(&layer.moves, None) {
-            let (Some(from), Some(bead)) = (from, m.bead) else { continue };
-            let swept = m.bounds(from);
-            let r = bead.width / 2.0;
-            b = grow(grow(b, [swept[0][0], swept[0][1], 0.0], r), [swept[1][0], swept[1][1], 0.0], r);
-        }
-    }
-    if b[0][0] > b[1][0] { [[0.0, 0.0], [0.0, 0.0]] } else { b }
-}
-
-/// What a program does, read from its moves: plastic is what the extrusions push, `e` times
-/// the filament's section.
-pub fn finish(program: &Program, limits: &Limits, filament_diameter: f64) -> Summary {
-    let filament_area = disc_area(filament_diameter);
-    let times = estimate(program, limits);
-    let total = times.last().copied().unwrap_or(0.0);
-    let first_index = program.layers.first().map(|l| l.index);
-    // The first layer is all the passes before the second begins.
-    let first_moves: usize =
-        program.layers.iter().take_while(|l| Some(l.index) == first_index).map(|l| l.moves.len()).sum();
-    let first_layer_seconds = if program.layers.iter().any(|l| Some(l.index) != first_index) {
-        first_moves.checked_sub(1).and_then(|i| times.get(i)).copied().unwrap_or(0.0)
-    } else {
-        total
-    };
-    let pushed =
-        |layer: &crate::Layer| layer.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.e).sum::<f64>();
-    let mut by_material: Vec<f64> = Vec::new();
-    let mut volume_per_layer: Vec<f64> = Vec::new();
-    let mut index = None;
-    for layer in &program.layers {
-        let e = pushed(layer);
-        if by_material.len() <= layer.material {
-            by_material.resize(layer.material + 1, 0.0);
-        }
-        if let Some(slot) = by_material.get_mut(layer.material) {
-            *slot += e;
-        }
-        match volume_per_layer.last_mut() {
-            Some(last) if index == Some(layer.index) => *last += e * filament_area,
-            _ => volume_per_layer.push(e * filament_area),
-        }
-        index = Some(layer.index);
-    }
-    Summary {
-        layers: volume_per_layer.len(),
-        max_z: program.layers.iter().map(Layer::highest).fold(0.0, f64::max),
-        filament_mm: by_material.iter().sum(),
-        filament_mm_by_material: by_material,
-        volume_per_layer,
-        motion_seconds: total,
-        first_layer_seconds,
-        first_layer_bounds: first_layer_bounds(program),
-    }
-}
-
 /// The machine's G-code around `program`: `templates` expanded with `scope`, the settings, and
 /// what the program itself tells, at the temperatures `heat` gives.
 pub fn frame(
@@ -117,7 +88,7 @@ pub fn frame(
     let num = Value::Num;
     let pair = |a: f64, b: f64| Value::List(vec![num(a), num(b)]);
     let bounds = first_layer_bounds(program);
-    let max_z = program.layers.iter().map(Layer::highest).fold(0.0, f64::max);
+    let max_z = program.highest();
     scope.insert("first_layer_print_min".into(), pair(bounds[0][0], bounds[0][1]));
     scope.insert(
         "first_layer_print_size".into(),
@@ -126,12 +97,11 @@ pub fn frame(
     scope.insert("max_print_z".into(), num(max_z));
     scope.insert("max_layer_z".into(), num(0.0));
     // The first pass's filament is loaded at the start.
-    let first = program.layers.first().map_or(0, |l| l.material);
+    let first = program.passes.first().map_or(0, |p| p.material);
     for key in ["initial_filament_id", "current_filament_id"] {
         scope.insert(key.into(), num(first as f64));
     }
-    let materials = program.layers.iter().map(|l| l.material).max().map_or(1, |m| m + 1);
-    if materials > 1 && templates.change_filament.trim().is_empty() {
+    if program.materials() > 1 && templates.change_filament.trim().is_empty() {
         return Err(MotionError::BadParams(
             "the machine has no filament change to print several materials".into(),
         ));
@@ -147,36 +117,36 @@ pub fn frame(
     }
     pieces.push("G90\nG21\nM83 ; use relative distances for extrusion\n".into());
     let start = pieces.iter().map(|p| lines(p)).collect();
-    let mut layers = Vec::with_capacity(program.layers.len());
+    let mut passes = Vec::with_capacity(program.passes.len());
     // The highest any layer so far reaches, a bent one above its plane.
     let mut highest = 0.0f64;
     let (mut index, mut material) = (None, first);
     // What the nozzle and the bed are set to: the start brings both to the first layer's.
     let (mut nozzle, mut bed) = (heat.nozzle_at(first, 0)?, heat.bed_at(0)?);
-    for layer in &program.layers {
+    for pass in &program.passes {
         let mut text = String::new();
-        if index != Some(layer.index) {
-            index = Some(layer.index);
-            highest = highest.max(layer.highest());
-            scope.insert("layer_num".into(), num(layer.index as f64));
-            scope.insert("layer_z".into(), num(layer.highest()));
+        if index != Some(pass.index) {
+            index = Some(pass.index);
+            highest = highest.max(pass.highest());
+            scope.insert("layer_num".into(), num(pass.index as f64));
+            scope.insert("layer_z".into(), num(pass.highest()));
             scope.insert("max_layer_z".into(), num(highest));
             text += &lines(&expand_text("layer change", &t.layer_change, &scope)?);
-            let wanted = heat.bed_at(layer.index)?;
+            let wanted = heat.bed_at(pass.index)?;
             if wanted != bed {
                 bed = wanted;
                 text += &format!("M140 S{bed} ; the bed for this layer\n");
             }
             // A pass of another filament sets its own after the change.
-            let wanted = heat.nozzle_at(material, layer.index)?;
-            if layer.material == material && wanted != nozzle {
+            let wanted = heat.nozzle_at(material, pass.index)?;
+            if pass.material == material && wanted != nozzle {
                 nozzle = wanted;
                 text += &format!("M104 S{nozzle} ; the nozzle for this layer\n");
             }
         }
-        if layer.material != material {
-            let (from, to) = (material, layer.material);
-            let (old_temp, new_temp) = (heat.nozzle_at(from, layer.index)?, heat.nozzle_at(to, layer.index)?);
+        if pass.material != material {
+            let (from, to) = (material, pass.material);
+            let (old_temp, new_temp) = (heat.nozzle_at(from, pass.index)?, heat.nozzle_at(to, pass.index)?);
             let change = [
                 ("current_filament_id", num(from as f64)),
                 ("next_filament_id", num(to as f64)),
@@ -194,8 +164,8 @@ pub fn frame(
             nozzle = heat.nozzle_at(to, 0)?;
             text += &format!("M109 S{nozzle} ; wait for the new filament, as hot as on the first layer\n");
         }
-        layers.push(text);
+        passes.push(text);
     }
     let end = lines(&format!("; MACHINE_END_GCODE_START\n{}", expand_text("end", &t.end, &scope)?));
-    Ok(Frame { start, layers, end })
+    Ok(Frame { start, passes, end })
 }

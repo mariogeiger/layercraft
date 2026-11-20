@@ -55,10 +55,31 @@ fn bead_section(role: Role, width: f64, layer_height: f64) -> [f64; 2] {
 /// The farthest a chord of a drawn arc strays from it, in mm: a fortieth of a bead.
 const SAG_MM: f64 = 0.01;
 
-/// Chords for a full turn of radius `r`, each within `SAG_MM` of the arc.
-fn chords(r: f64) -> usize {
-    let n = (std::f64::consts::PI / (1.0 - SAG_MM / r).clamp(-1.0, 1.0).acos()).ceil();
-    if n.is_finite() { n.clamp(3.0, 4096.0) as usize } else { 3 }
+/// What a move does, as the program's `move` property numbers it.
+#[derive(Clone, Copy)]
+enum Motion {
+    Extrude,
+    Travel,
+    Wipe,
+    Lift,
+}
+
+impl Motion {
+    const ALL: [Motion; 4] = [Motion::Extrude, Motion::Travel, Motion::Wipe, Motion::Lift];
+
+    fn name(self) -> &'static str {
+        match self {
+            Motion::Extrude => "extrude",
+            Motion::Travel => "travel",
+            Motion::Wipe => "wipe",
+            Motion::Lift => "lift",
+        }
+    }
+}
+
+fn motion_comment() -> String {
+    let codes: Vec<String> = Motion::ALL.iter().map(|m| format!("{} {}", *m as u8, m.name())).collect();
+    format!("move: {}", codes.join(", "))
 }
 
 /// How far a layer's drawing lies over its plane at each point: a mean of the layer tops' reliefs.
@@ -324,18 +345,18 @@ pub fn program(program: &Program, limits: &Limits) -> Result<Complex<1, 8, 0>, V
     let mut c = Complex::new([float("t")], properties, []);
     // The move lays no plastic: no role.
     c.comments.push(role_comment() + ", -1 none");
-    c.comments.push("move: 0 extrude, 1 travel, 2 wipe, 3 lift".into());
+    c.comments.push(motion_comment());
     c.comments.push("t: seconds since the program started, the machine's own G-code not counted".into());
     let times = estimate(program, limits);
     let mut last = None;
     let mut slot = 0usize;
     let mut t0 = 0.0;
-    for layer in &program.layers {
-        let index = layer.index as f64;
+    for pass in &program.passes {
+        let index = pass.index as f64;
         // After the machine's own G-code the nozzle may be anywhere: nothing is drawn until it
         // is known.
         let mut at: Option<[f64; 3]> = None;
-        for m in &layer.moves {
+        for m in &pass.moves {
             let t1 = times.get(slot).copied().unwrap_or(t0);
             slot += 1;
             let (Some(from), Some(to)) = (at, m.to) else {
@@ -343,24 +364,19 @@ pub fn program(program: &Program, limits: &Limits) -> Result<Complex<1, 8, 0>, V
                 t0 = t1;
                 continue;
             };
-            let kind = match (m.bead, m.e) {
-                (Some(_), _) => 0.0,
-                (None, e) if e < 0.0 => 2.0,
-                _ if m.arc.is_some() || (to[0] == from[0] && to[1] == from[1]) => 3.0,
-                _ => 1.0,
+            let motion = match (m.bead, m.e) {
+                (Some(_), _) => Motion::Extrude,
+                (None, e) if e < 0.0 => Motion::Wipe,
+                _ if m.arc.is_some() || (to[0] == from[0] && to[1] == from[1]) => Motion::Lift,
+                _ => Motion::Travel,
             };
             let (role, [w, h]) = m.bead.map_or((NO_ROLE, [0.0, 0.0]), |b| {
-                (role_code(b.role), bead_section(b.role, b.width, layer.height))
+                (role_code(b.role), bead_section(b.role, b.width, pass.height))
             });
-            let values = [index, kind, role, w, h, m.speed, m.e, m.fan];
+            let values = [index, motion as u8 as f64, role, w, h, m.speed, m.e, m.fan];
             // A bead is drawn along its centre line, half its height under the nozzle.
             let down = h / 2.0;
-            let n = if m.arc.is_some() {
-                let turns = m.arc.map_or(0.0, |a| a.turn.abs() / std::f64::consts::TAU);
-                ((chords(m.radius(from)) as f64 * turns).ceil() as usize).max(1)
-            } else {
-                1
-            };
+            let n = m.chords(from, SAG_MM);
             let shift = |p: [f64; 3]| [p[0], p[1], p[2] - down];
             let mut a = vertex(&mut c, &mut last, shift(from), t0)?;
             for k in 1..=n {

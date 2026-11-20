@@ -12,7 +12,7 @@ use std::io::Write;
 
 /// How a property is written: a label or a count, or a measure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+pub enum PropertyKind {
     Int,
     Float,
 }
@@ -21,17 +21,17 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Property {
     pub name: &'static str,
-    pub kind: Kind,
+    pub kind: PropertyKind,
 }
 
 /// A label or a count.
 pub const fn int(name: &'static str) -> Property {
-    Property { name, kind: Kind::Int }
+    Property { name, kind: PropertyKind::Int }
 }
 
 /// A measure.
 pub const fn float(name: &'static str) -> Property {
-    Property { name, kind: Kind::Float }
+    Property { name, kind: PropertyKind::Float }
 }
 
 /// Elements of one kind, `C` saying where each is, with `A` values each.
@@ -141,8 +141,8 @@ impl<const V: usize, const E: usize, const F: usize> Complex<V, E, F> {
 fn properties(list: &[Property]) -> String {
     list.iter()
         .map(|p| match p.kind {
-            Kind::Int => format!("property int {}\n", p.name),
-            Kind::Float => format!("property double {}\n", p.name),
+            PropertyKind::Int => format!("property int {}\n", p.name),
+            PropertyKind::Float => format!("property double {}\n", p.name),
         })
         .collect()
 }
@@ -151,8 +151,8 @@ fn write_values(w: &mut impl Write, properties: &[Property], values: &[f64]) -> 
     for (p, v) in properties.iter().zip(values) {
         match p.kind {
             // Labels and counts are whole numbers well inside an `int`; `as` saturates otherwise.
-            Kind::Int => w.write_all(&(*v as i32).to_le_bytes())?,
-            Kind::Float => w.write_all(&v.to_le_bytes())?,
+            PropertyKind::Int => w.write_all(&(*v as i32).to_le_bytes())?,
+            PropertyKind::Float => w.write_all(&v.to_le_bytes())?,
         }
     }
     Ok(())

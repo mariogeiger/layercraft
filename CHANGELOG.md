@@ -2,6 +2,45 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.23.0
+
+### Fixed
+
+- A layer printed in several passes cools as one layer: its beads, every pass's, are slowed
+  together to the layer's time, each to its own material's slowest speed, and it waits off the
+  part once, after its last pass. Each pass was cooled as a layer of its own, with the first
+  material's settings: in the USB-C cable support (PETG with a PLA interface) the two layers in
+  two filaments took 16 s of beads each instead of 8, their surfaces slowed too, and the print
+  is 16 s shorter.
+- What the nozzle's face planes off a bent layer is given back to the layer over it from every
+  pass of that layer, and each pass stands on the cuts of the layer below, not of the pass before.
+- `verify` holds each pass to its own filament's melt limit: a print whose first filament melts
+  slower than another (PETG, then PLA) was refused where the second ran faster than the first
+  allows. On a bent layer, a pass of another material may iron the layer's own beads as its
+  first pass may.
+- `merge` keeps each pass's material and free strands: programs of several materials merge (they
+  were refused), and a free layer stays free. A warp that does not fit the joined carrier is an
+  error, no longer a flat layer.
+- G-code read back follows a filament change (`M620 S…` to `M621`): the pass after it prints the
+  filament its `T…` loads, and the frame's temperatures and detectors are known. layercraft's own
+  prints in several filaments read back.
+- The motion parameters are checked whole, each one out of range named: the bridge's speed,
+  every acceleration, the overhang fan, the wipe and the share retracted before it were not.
+
+### Changed
+
+- The program stage is a list of passes, `"passes"` (a file with `"layers"` still reads), each a
+  `Pass` of one material of a layer; `Program::layers()` gives each layer as its passes. A
+  violation names the layer by its index and the pass by its place.
+- In the API: `finish` is `summarize`, from the planner's times and each material's `Filament`
+  (its diameter and melt limit, which was `MoveLimits`); `limit` takes the Z axis's speed apart;
+  `verify` takes each material's filament, which the `Envelope` no longer holds; `merge` returns
+  a `Result`; `layercraft_gcode::write` takes the summary and the times, and its `Header` each
+  material's filament; `layercraft_view::Kind` is `PropertyKind`.
+- `merge --colour` takes one colour per material, as `compile` does; the commands share their
+  `--out`, `--quality`, `--material`, `--bed` and `--tune`, and `view` takes `--bed` too.
+- The thumbnail shades a layer alike in all its passes, and draws arcs as chords within 0.05 mm.
+
 ## 0.22.2
 
 ### Fixed

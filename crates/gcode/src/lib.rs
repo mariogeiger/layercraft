@@ -4,32 +4,46 @@
 //! one per line) and the executable block. Positions are absolute and extrusion relative
 //! (`M83`); a move names only the axes that change and a feed rate only when it changes, and a
 //! move that changes nothing at the precision written is left out. A bead's filament is written
-//! to five decimals with the rounding carried to the next bead, so the total stays exact; a bead
+//! to `FILAMENT_DECIMALS` with the rounding carried to the next bead, so the total stays exact; a bead
 //! too short to be written carries all of its filament on. Each move carries its whole
 //! state; the acceleration (`M204`), the fan (`M106`) and the feature comments are written when
 //! they change, and again after the machine's own G-code. An arc is `G2`/`G3` with its centre
 //! relative to the nozzle, a full turn back over its start `G3 Z… I… J… P1`. The printer's
-//! progress (`M73`) is the planner's time at each layer's start.
-//! `stats` reads G-code back, from layercraft or another slicer, to compare them.
+//! progress (`M73`) is the planner's time at each pass's start. Positions are written to
+//! `POSITION_DECIMALS` (`layercraft_motion`). `stats` reads G-code back, from layercraft or another
+//! slicer, to compare them.
 
 mod read;
-pub mod stats;
+mod stats;
 
 pub use read::{ReadError, read};
+pub use stats::{LayerStats, Stats, stats};
 
-use layercraft_motion::{Arc, Frame, Limits, Move, Program, disc_area, estimate, finish};
+use layercraft_motion::{Arc, Frame, Move, POSITION_DECIMALS, Program, Summary, disc_area};
 use layercraft_path::Role;
 use std::fmt::Write;
+
+/// The decimals a bead's filament is written to, in mm.
+const FILAMENT_DECIMALS: usize = 5;
 
 /// What the header block states besides the program's own summary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Header {
     pub generator: String,
-    pub filament_diameter: f64,
-    /// In g/cm³.
-    pub filament_density: f64,
+    /// Each material's filament diameter, in mm, by material.
+    pub filament_diameters: Vec<f64>,
+    /// Each material's filament density, in g/cm³, by material.
+    pub filament_densities: Vec<f64>,
     /// Settings written to the configuration block, as `key = value`.
     pub settings: Vec<(String, String)>,
+}
+
+impl Header {
+    /// Material `k`'s filament diameter and density, the last given standing for those past them.
+    fn filament(&self, k: usize) -> (f64, f64) {
+        let of = |list: &[f64]| list.get(k).or(list.last()).copied().unwrap_or(0.0);
+        (of(&self.filament_diameters), of(&self.filament_densities))
+    }
 }
 
 /// A number with at most `decimals` decimals and no trailing zeros.
@@ -37,6 +51,16 @@ pub fn number(v: f64, decimals: usize) -> String {
     let text = format!("{v:.decimals$}");
     let text = if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.') } else { &text };
     if text == "-0" { "0".to_string() } else { text.to_string() }
+}
+
+/// `v` as written at `POSITION_DECIMALS`, read back.
+fn written(v: f64) -> Option<f64> {
+    number(v, POSITION_DECIMALS).parse().ok()
+}
+
+/// `v` written as a position.
+fn position(v: f64) -> String {
+    number(v, POSITION_DECIMALS)
 }
 
 fn duration(seconds: f64) -> String {
@@ -88,9 +112,9 @@ impl Writer {
     /// The axes of `to` that differ from where the nozzle is, as written, and records them.
     fn axes(&mut self, to: [f64; 3], words: &mut String) {
         for (axis, (name, v)) in ["X", "Y", "Z"].into_iter().zip(to).enumerate() {
-            let rounded: f64 = number(v, 3).parse().unwrap_or(v);
+            let rounded = written(v).unwrap_or(v);
             if self.at.get(axis).copied().flatten() != Some(rounded) {
-                let _ = write!(words, " {name}{}", number(v, 3));
+                let _ = write!(words, " {name}{}", position(v));
                 if let Some(slot) = self.at.get_mut(axis) {
                     *slot = Some(rounded);
                 }
@@ -103,7 +127,7 @@ impl Writer {
             && self.feature != Some((bead.role, bead.width))
         {
             self.line(&format!("; FEATURE: {}", bead.role.name()));
-            self.line(&format!("; LINE_WIDTH: {}", number(bead.width, 3)));
+            self.line(&format!("; LINE_WIDTH: {}", position(bead.width)));
             self.feature = Some((bead.role, bead.width));
         }
         let fan = (m.fan * 255.0).round();
@@ -120,20 +144,20 @@ impl Writer {
     /// The words of an arc to `to` about `arc` from (`x`, `y`), as written, and records where
     /// it ends: a full turn back over its start is `P1` with no end named.
     fn arc_words(&mut self, to: [f64; 3], arc: Arc, x: f64, y: f64) -> String {
-        let (i, j) = (number(arc.centre[0] - x, 3), number(arc.centre[1] - y, 3));
+        let (i, j) = (position(arc.centre[0] - x), position(arc.centre[1] - y));
         let full = (arc.turn.abs() - std::f64::consts::TAU).abs() < 1e-9;
         let mut words = String::from(if arc.turn > 0.0 { "G3" } else { "G2" });
-        let z: Option<f64> = number(to[2], 3).parse().ok();
+        let z = written(to[2]);
         if full {
-            let _ = write!(words, " Z{} I{i} J{j} P1", number(to[2], 3));
+            let _ = write!(words, " Z{} I{i} J{j} P1", position(to[2]));
         } else {
-            let _ = write!(words, " X{} Y{}", number(to[0], 3), number(to[1], 3));
+            let _ = write!(words, " X{} Y{}", position(to[0]), position(to[1]));
             if self.at[2] != z {
-                let _ = write!(words, " Z{}", number(to[2], 3));
+                let _ = write!(words, " Z{}", position(to[2]));
             }
             let _ = write!(words, " I{i} J{j}");
-            self.at[0] = number(to[0], 3).parse().ok();
-            self.at[1] = number(to[1], 3).parse().ok();
+            self.at[0] = written(to[0]);
+            self.at[1] = written(to[1]);
         }
         self.at[2] = z;
         words
@@ -153,7 +177,7 @@ impl Writer {
     fn write_motion(&mut self, m: &Move) {
         // A bead's filament with what earlier beads carried; the rest carries on.
         let wanted = if m.bead.is_some() { m.e + self.carry } else { m.e };
-        let e = Some(number(wanted, 5)).filter(|e| e != "0");
+        let e = Some(number(wanted, FILAMENT_DECIMALS)).filter(|e| e != "0");
         let words = match (m.to, m.arc, self.at) {
             (None, _, _) => e.as_ref().map(|e| format!("G1 E{e}")),
             // An arc from nowhere known, which `verify` refuses, is never written as one.
@@ -188,10 +212,9 @@ impl Writer {
     }
 }
 
-/// Writes the program, in its frame, as G-code; `limits` time it for the printer's progress.
-pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header) -> String {
-    let s = finish(program, limits, header.filament_diameter);
-    let area = disc_area(header.filament_diameter);
+/// Writes the program, in its frame, as G-code: `summary` is what it does (`summarize`), and
+/// `times` the planner's time at the end of each move (`estimate`), for the printer's progress.
+pub fn write(program: &Program, frame: &Frame, s: &Summary, times: &[f64], header: &Header) -> String {
     let mut w = Writer::default();
     w.line("; HEADER_BLOCK_START");
     w.line(&format!("; {}", header.generator));
@@ -199,20 +222,20 @@ pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header)
     w.line(&format!("; model printing time: {time}; total estimated time: {time}"));
     w.line(&format!("; total layer number: {}", s.layers));
     // One entry per material, as the printer lists its filaments.
-    let each = |f: &dyn Fn(f64) -> String| {
-        let all: Vec<String> = s.filament_mm_by_material.iter().map(|&mm| f(mm)).collect();
-        if all.is_empty() { f(0.0) } else { all.join(",") }
-    };
     let n = s.filament_mm_by_material.len().max(1);
-    let repeated = |v: f64| vec![number(v, 3); n].join(",");
-    w.line(&format!("; total filament length [mm] : {}", each(&|mm| number(mm, 2))));
-    w.line(&format!("; total filament volume [cm^3] : {}", each(&|mm| number(mm * area / 1000.0, 2))));
+    let each = |f: &dyn Fn(usize, f64) -> String| {
+        let mm = |k: usize| s.filament_mm_by_material.get(k).copied().unwrap_or(0.0);
+        (0..n).map(|k| f(k, mm(k))).collect::<Vec<_>>().join(",")
+    };
+    let area = |k: usize| disc_area(header.filament(k).0);
+    w.line(&format!("; total filament length [mm] : {}", each(&|_, mm| number(mm, 2))));
+    w.line(&format!("; total filament volume [cm^3] : {}", each(&|k, mm| number(mm * area(k) / 1000.0, 2))));
     w.line(&format!(
         "; total filament weight [g] : {}",
-        each(&|mm| number(mm * area * header.filament_density / 1000.0, 2))
+        each(&|k, mm| number(mm * area(k) * header.filament(k).1 / 1000.0, 2))
     ));
-    w.line(&format!("; filament_density: {}", repeated(header.filament_density)));
-    w.line(&format!("; filament_diameter: {}", repeated(header.filament_diameter)));
+    w.line(&format!("; filament_density: {}", each(&|k, _| number(header.filament(k).1, 3))));
+    w.line(&format!("; filament_diameter: {}", each(&|k, _| number(header.filament(k).0, 3))));
     w.line(&format!("; max_z_height: {}", number(s.max_z, 2)));
     w.line(&format!("; filament: {}", (1..=n).map(|k| k.to_string()).collect::<Vec<_>>().join(",")));
     w.line("; HEADER_BLOCK_END");
@@ -225,29 +248,29 @@ pub fn write(program: &Program, frame: &Frame, limits: &Limits, header: &Header)
     w.line("");
     w.line("; EXECUTABLE_BLOCK_START");
     w.machine(&frame.start);
-    let times = estimate(program, limits);
     let total = times.last().copied().unwrap_or(0.0);
     let mut done = 0usize;
-    let mut index = None;
-    for (k, layer) in program.layers.iter().enumerate() {
+    let mut texts = frame.passes.iter();
+    for layer in program.layers() {
         // A layer printed in several passes is announced once, before its first.
-        if index != Some(layer.index) {
-            index = Some(layer.index);
+        if let Some(first) = layer.first() {
             w.line("; CHANGE_LAYER");
-            w.line(&format!("; Z_HEIGHT: {}", number(layer.z, 3)));
-            w.line(&format!("; LAYER_HEIGHT: {}", number(layer.height, 3)));
+            w.line(&format!("; Z_HEIGHT: {}", position(first.z)));
+            w.line(&format!("; LAYER_HEIGHT: {}", position(first.height)));
         }
-        if let Some(text) = frame.layers.get(k) {
-            w.machine(text);
+        for pass in layer {
+            if let Some(text) = texts.next() {
+                w.machine(text);
+            }
+            let t = done.checked_sub(1).and_then(|i| times.get(i)).copied().unwrap_or(0.0);
+            let percent = if total > 0.0 { (100.0 * t / total).floor() as u32 } else { 0 };
+            let left = ((total - t) / 60.0).ceil().max(0.0) as u32;
+            w.line(&format!("M73 P{percent} R{left}"));
+            for m in &pass.moves {
+                w.write_move(m);
+            }
+            done += pass.moves.len();
         }
-        let t = done.checked_sub(1).and_then(|i| times.get(i)).copied().unwrap_or(0.0);
-        let percent = if total > 0.0 { (100.0 * t / total).floor() as u32 } else { 0 };
-        let left = ((total - t) / 60.0).ceil().max(0.0) as u32;
-        w.line(&format!("M73 P{percent} R{left}"));
-        for m in &layer.moves {
-            w.write_move(m);
-        }
-        done += layer.moves.len();
     }
     w.machine(&frame.end);
     w.line("M73 P100 R0");

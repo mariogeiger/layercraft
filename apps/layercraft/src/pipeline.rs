@@ -3,7 +3,8 @@
 //! A stage is written as JSON, which reads back, or as PLY when the file name ends in `.ply`:
 //! a picture of the stage to look at (`layercraft_view`), which does not. A tuning varies the
 //! region, path and motion parameters by place (`--tune`). The program stage holds the moves
-//! at full speed, without the machine's own G-code: cooling and the frame come after it.
+//! at full speed, without the machine's own G-code: cooling and the frame come after it. A
+//! program is also read from the G-code of a `.gcode` file or of a `.gcode.3mf`'s plate.
 
 use crate::deliver::Setup;
 use layercraft_mesh::{Mesh, read_3mf};
@@ -15,6 +16,7 @@ use layercraft_tune::{Field, TuneError, Tuning};
 use layercraft_view::{Complex, ViewError};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// A stage whose output can be written and read back.
@@ -79,8 +81,32 @@ pub struct Output {
 /// The largest stage file read back, in bytes.
 const MAX_STAGE_BYTES: u64 = 4 << 30;
 
+/// The largest G-code read, in bytes.
+const MAX_GCODE_BYTES: u64 = 2 << 30;
+
+/// Whether `path`'s name ends in `.ext`, in any case.
+pub fn has_extension(path: &Path, ext: &str) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// The G-code of a `.gcode` file, or of the first plate of a `.gcode.3mf`.
+pub fn read_gcode(path: &Path) -> Result<String, String> {
+    let name = path.display();
+    let file = std::fs::File::open(path).map_err(|e| format!("{name}: {e}"))?;
+    let mut text = String::new();
+    if has_extension(path, "3mf") {
+        let mut zip =
+            zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| format!("{name}: {e}"))?;
+        let entry = zip.by_name("Metadata/plate_1.gcode").map_err(|e| format!("{name}: {e}"))?;
+        entry.take(MAX_GCODE_BYTES).read_to_string(&mut text).map_err(|e| format!("{name}: {e}"))?;
+    } else {
+        file.take(MAX_GCODE_BYTES).read_to_string(&mut text).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(text)
+}
+
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    if is_ply(path) {
+    if has_extension(path, "ply") {
         return Err(format!("{} is a picture of a stage: resume from its JSON", path.display()));
     }
     let len = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
@@ -93,15 +119,11 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 
 /// A program from a file: a program stage (JSON), or the moves of G-code from any slicer.
 pub fn read_program(path: &Path) -> Result<Program, String> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("json")) {
+    if has_extension(path, "json") {
         return read_json(path);
     }
-    let text = crate::compare::read_gcode(path)?;
+    let text = read_gcode(path)?;
     layercraft_gcode::read(&text).map_err(|e| format!("{}: {e}", path.display()))
-}
-
-fn is_ply(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ply"))
 }
 
 /// Writes `stage` to each file `emits` names for it: `value` as JSON, or `view` as PLY.
@@ -115,7 +137,7 @@ pub fn emit<T: Serialize, const V: usize, const E: usize, const F: usize>(
         let file = std::io::BufWriter::new(
             std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
         );
-        if is_ply(path) {
+        if has_extension(path, "ply") {
             view().and_then(|c| c.write(file)).map_err(|e| format!("{s:?}: {e}"))?;
         } else {
             serde_json::to_writer(file, value).map_err(|e| format!("{s:?}: {e}"))?;
@@ -144,13 +166,13 @@ pub fn run(
 ) -> Result<Output, String> {
     let (settings, tuning) = (&setup.settings, &setup.tuning);
     tuning.check_stages(&TUNED).map_err(|e| e.to_string())?;
-    let field = |e: TuneError| e.to_string();
-    let region = Field::new(settings.region.clone(), tuning, "region").map_err(field)?;
-    let path = Field::new(settings.path.clone(), tuning, "path").map_err(field)?;
+    let tune_error = |e: TuneError| e.to_string();
+    let region = Field::new(settings.region.clone(), tuning, "region").map_err(tune_error)?;
+    let path = Field::new(settings.path.clone(), tuning, "path").map_err(tune_error)?;
     // Each filament moves by its own: the first's, then those after it.
     let motion = std::iter::once(settings)
         .chain(&setup.more)
-        .map(|s| Field::new(s.motion.clone(), tuning, "motion").map_err(field))
+        .map(|s| Field::new(s.motion.clone(), tuning, "motion").map_err(tune_error))
         .collect::<Result<Vec<_>, String>>()?;
     let start = from.map(|(s, _)| *s);
     let mesh: Option<Mesh> = match start {

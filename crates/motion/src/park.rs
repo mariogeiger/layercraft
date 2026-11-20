@@ -4,31 +4,12 @@
 //! moved on the plate has its waiting point turned or moved with it. The printable area is the
 //! machine's own box and may cut the choice.
 
-use layercraft_geom::Point;
+use crate::plane::{add_scaled, cross, dot, norm, sub};
+use layercraft_geom::{Point, segment_distance};
 
 /// How far a distance may fall short of the clearance and still count as reaching it, in mm: the
 /// rounding of the candidates, which lie on the clearance exactly in theory.
 const ROUNDING_MM: f64 = 1e-9;
-
-fn sub(a: Point, b: Point) -> Point {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn add_scaled(a: Point, d: Point, t: f64) -> Point {
-    [a[0] + t * d[0], a[1] + t * d[1]]
-}
-
-fn dot(a: Point, b: Point) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn cross(a: Point, b: Point) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn length(a: Point) -> f64 {
-    a[0].hypot(a[1])
-}
 
 /// The convex hull of `points`, anticlockwise, without repeated points: one point or two where
 /// the points are one or collinear.
@@ -66,13 +47,6 @@ fn edges(hull: &[Point]) -> Vec<(Point, Point)> {
     }
 }
 
-/// How far `p` lies from the segment `a`–`b`.
-fn from_segment(p: Point, (a, b): (Point, Point)) -> f64 {
-    let d = sub(b, a);
-    let t = if dot(d, d) > 0.0 { (dot(sub(p, a), d) / dot(d, d)).clamp(0.0, 1.0) } else { 0.0 };
-    length(sub(p, add_scaled(a, d, t)))
-}
-
 /// How far `p` lies from the hull and what it holds: 0 inside.
 fn from_hull(hull: &[Point], p: Point) -> f64 {
     let sides = edges(hull);
@@ -80,8 +54,12 @@ fn from_hull(hull: &[Point], p: Point) -> f64 {
     if inside {
         return 0.0;
     }
-    let near = |q: &Point| length(sub(p, *q));
-    sides.iter().map(|&s| from_segment(p, s)).chain(hull.iter().map(near)).fold(f64::INFINITY, f64::min)
+    let near = |q: &Point| norm(sub(p, *q));
+    sides
+        .iter()
+        .map(|&(a, b)| segment_distance(p, a, b))
+        .chain(hull.iter().map(near))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Where the segment `a`–`b` meets the segment `c`–`d`, as its parameter along `a`–`b`.
@@ -142,7 +120,7 @@ pub fn clear_of(
         .iter()
         .flat_map(|&(a, b)| {
             let d = sub(b, a);
-            let n = [d[1] / length(d), -d[0] / length(d)];
+            let n = [d[1] / norm(d), -d[0] / norm(d)];
             let both = if hull.len() == 2 { vec![n, [-n[0], -n[1]]] } else { vec![n] };
             both.into_iter().map(move |n| (add_scaled(a, n, clearance), add_scaled(b, n, clearance)))
         })
@@ -159,11 +137,7 @@ pub fn clear_of(
     }
     for &v in &hull {
         let away = sub(from, v);
-        let u = if length(away) > ROUNDING_MM {
-            [away[0] / length(away), away[1] / length(away)]
-        } else {
-            heading
-        };
+        let u = if norm(away) > ROUNDING_MM { [away[0] / norm(away), away[1] / norm(away)] } else { heading };
         candidates.push(add_scaled(v, u, clearance));
     }
     // Where the area's walls meet the boundary.
@@ -173,7 +147,7 @@ pub fn clear_of(
         );
         candidates.extend(hull.iter().flat_map(|&v| circle_crossings(a, b, v, clearance)));
     }
-    let near = |p: &Point| length(sub(from, *p));
+    let near = |p: &Point| norm(sub(from, *p));
     candidates.into_iter().filter(|&p| clear(p)).min_by(|a, b| {
         let (da, db) = (near(a), near(b));
         if (da - db).abs() > ROUNDING_MM {

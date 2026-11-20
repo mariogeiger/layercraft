@@ -1,10 +1,11 @@
-//! From a program to the file the printer runs: each layer cooled, each bead held to what the
-//! hot end melts and written as the fewest lines and arcs within the resolution, the machine's
-//! own G-code around the layers, every move verified, then written as G-code and packaged with
-//! the plate's summary and thumbnails. Compiled, read or merged, every program leaves this way.
+//! From a program to the file the printer runs: its beads written as the fewest lines and arcs
+//! within the resolution, each layer cooled, each move held to what the hot end melts of its
+//! filament, the machine's own G-code around the passes, every move verified, then written as
+//! G-code and packaged with the plate's summary and thumbnails. Compiled, read or merged, every
+//! program leaves this way.
 
 use crate::settings::{Filaments, Settings};
-use layercraft_motion::{MoveLimits, Program};
+use layercraft_motion::{Filament, Program, disc_area};
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
@@ -39,35 +40,32 @@ pub struct Delivery<'a> {
 pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let settings = &d.setup.settings;
     let motion = &settings.motion;
-    let materials = program.layers.iter().map(|l| l.material).max().map_or(1, |m| m + 1);
+    let materials = program.materials();
     if d.colours.len() < materials {
         return Err(format!("the program prints {materials} materials; give a colour for each"));
     }
     let colours = d.colours.get(..materials).unwrap_or_default();
     let filaments = d.setup.filaments();
     let scope = filaments.scope(colours);
-    let field = Field::new(motion.clone(), &d.setup.tuning, "motion").map_err(|e| e.to_string())?;
+    let fields = (0..materials)
+        .map(|k| Field::new(filaments.of(k).motion.clone(), &d.setup.tuning, "motion"))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    // Each material's filament, which its passes' moves push and are held to.
+    let fed: Vec<Filament> = (0..materials).map(|k| filaments.of(k).motion.filament()).collect();
     layercraft_motion::fit(&mut program, motion.resolution, motion.arc_fitting);
-    layercraft_motion::cool(&mut program, &field, settings.envelope.area).map_err(|e| e.to_string())?;
+    layercraft_motion::cool(&mut program, &fields, settings.envelope.area).map_err(|e| e.to_string())?;
     // Held to the machine's limits last: slowing only lengthens the layers cooled.
-    let limits: Vec<MoveLimits> = (0..materials)
-        .map(|k| {
-            let own = &filaments.of(k).motion;
-            MoveLimits {
-                max_volumetric_speed: own.max_volumetric_speed,
-                filament_diameter: own.filament_diameter,
-                max_speed_z: own.limits.max_speed_z,
-            }
-        })
-        .collect();
-    let slowed = layercraft_motion::limit(&mut program, &limits);
+    let slowed = layercraft_motion::limit(&mut program, &fed, motion.limits.max_speed_z);
+    let times = layercraft_motion::estimate(&program, &motion.limits);
+    let summary = layercraft_motion::summarize(&program, &times, &fed);
     let heat = filaments.heat(materials);
     let frame =
         layercraft_motion::frame(&program, &motion.templates, &heat, &scope).map_err(|e| e.to_string())?;
-    let violations = layercraft_verify::verify(&program, &settings.envelope);
+    let violations = layercraft_verify::verify(&program, &settings.envelope, &fed);
     if let Some(first) = violations.first() {
         for v in &violations {
-            eprintln!("unsafe: layer {} move {}: {}", v.layer, v.index, v.reason);
+            eprintln!("unsafe: layer {} (pass {}) move {}: {}", v.layer, v.pass, v.index, v.reason);
         }
         return Err(format!(
             "{} unsafe moves, the first: {}; nothing written",
@@ -79,17 +77,18 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     keys.sort();
     let header = layercraft_gcode::Header {
         generator: format!("layercraft {}", env!("CARGO_PKG_VERSION")),
-        filament_diameter: motion.filament_diameter,
-        filament_density: settings.material.density,
+        filament_diameters: fed.iter().map(|f| f.diameter).collect(),
+        filament_densities: (0..materials).map(|k| filaments.of(k).material.density).collect(),
         settings: keys,
     };
-    let text = layercraft_gcode::write(&program, &frame, &motion.limits, &header);
+    let text = layercraft_gcode::write(&program, &frame, &summary, &times, &header);
     if let Some(path) = d.gcode {
         std::fs::write(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
     }
-    let summary = layercraft_motion::finish(&program, &motion.limits, motion.filament_diameter);
-    let filament_area = layercraft_motion::disc_area(motion.filament_diameter);
-    let grams_of = |k: usize, mm: f64| mm * filament_area * filaments.of(k).material.density / 1000.0;
+    let grams_of = |k: usize, mm: f64| {
+        let area = fed.get(k).map_or(0.0, |f| disc_area(f.diameter));
+        mm * area * filaments.of(k).material.density / 1000.0
+    };
     let grams: f64 = summary.filament_mm_by_material.iter().enumerate().map(|(k, &mm)| grams_of(k, mm)).sum();
     let settings_json: serde_json::Map<String, serde_json::Value> = scope
         .iter()

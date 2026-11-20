@@ -9,9 +9,9 @@
 //! the face stands over it afterwards, `F`, cuts `max(0, z − F)` off; a top cut by `c` below
 //! leaves `c` more room. A straight piece pushes its slab's plastic times the room it keeps over
 //! the slab, both sampled at the middles of cells a third of the strip wide, and no longer, tiling
-//! it: a straight pass covers a point while it runs over an interval, which a quadratic bounds,
-//! and stands lowest at one of its ends. A layer that stays level cuts nothing, and over a top uncut leaves every
-//! bead's plastic as it is.
+//! it: a straight stretch covers a point while the nozzle runs over an interval, which a quadratic
+//! bounds, and stands lowest at one of its ends. A layer's cuts are those of all its passes. A
+//! layer that stays level cuts nothing, and over a top uncut leaves every bead's plastic as it is.
 
 use crate::leaf::Leaf;
 use crate::moves::{Point3, chained};
@@ -25,23 +25,23 @@ const CHORDS_PER_TURN: f64 = 16.0;
 const MOST_CELLS: f64 = 4_194_304.0;
 
 /// A straight stretch the nozzle passes, from `a` to `b`, standing lowest at `low`.
-struct Pass {
+struct Stretch {
     a: Point3,
     b: Point3,
     low: f64,
 }
 
-impl Pass {
-    fn new(a: Point3, b: Point3) -> Pass {
-        Pass { a, b, low: a[2].min(b[2]) }
+impl Stretch {
+    fn new(a: Point3, b: Point3) -> Stretch {
+        Stretch { a, b, low: a[2].min(b[2]) }
     }
 
-    /// The nozzle's height the fraction `u` along the pass.
+    /// The nozzle's height the fraction `u` along the stretch.
     fn z(&self, u: f64) -> f64 {
         self.a[2] + u * (self.b[2] - self.a[2])
     }
 
-    /// Whether `p` lies within `r` of the pass across the plate.
+    /// Whether `p` lies within `r` of the stretch across the plate.
     fn within(&self, p: Point, r: f64) -> bool {
         let d = [self.b[0] - self.a[0], self.b[1] - self.a[1]];
         let f = [p[0] - self.a[0], p[1] - self.a[1]];
@@ -51,7 +51,7 @@ impl Pass {
         x * x + y * y <= r * r
     }
 
-    /// The lowest the nozzle stands from the fraction `from` of the pass on, while its face
+    /// The lowest the nozzle stands from the fraction `from` of the stretch on, while its face
     /// `radius` wide covers `p`.
     fn lowest_over(&self, from: f64, p: Point, radius: f64) -> Option<f64> {
         let d = [self.b[0] - self.a[0], self.b[1] - self.a[1]];
@@ -155,38 +155,51 @@ impl<T: Copy> Grid<T> {
     }
 }
 
-/// How deep the face cut into a layer's top, sampled across its beads' strips.
+/// How deep the face cut into a layer's top, sampled across its beads' strips: a grid of samples
+/// for each of its passes that cut any.
 #[derive(Default)]
-pub(crate) struct Cuts(Option<Grid<(Point, f64)>>);
+pub(crate) struct Cuts(Vec<Grid<(Point, f64)>>);
 
 impl Cuts {
-    /// The cut at `p`: that of the nearest point sampled within a cell, which lies in the strip `p`
-    /// lies in; none off the beads.
+    /// The cut at `p`: that of the nearest point sampled within a cell of a grid, which lies in the
+    /// strip `p` lies in; none off the beads.
     fn at(&self, p: Point) -> f64 {
-        let Some(grid) = &self.0 else { return 0.0 };
-        let [i, j] = grid.place(p);
-        let mut nearest = (grid.size * grid.size, 0.0);
-        for di in -1..=1 {
-            for dj in -1..=1 {
-                let Some(c) = grid.cell([i.saturating_add(di), j.saturating_add(dj)]) else { continue };
-                for &(q, cut) in grid.items(c) {
-                    let d = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]);
-                    if d <= nearest.0 {
-                        nearest = (d, cut);
+        let mut nearest: Option<(f64, f64)> = None;
+        for grid in &self.0 {
+            let [i, j] = grid.place(p);
+            let mut own = (grid.size * grid.size, None);
+            for di in -1..=1 {
+                for dj in -1..=1 {
+                    let Some(c) = grid.cell([i.saturating_add(di), j.saturating_add(dj)]) else { continue };
+                    for &(q, cut) in grid.items(c) {
+                        let d = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]);
+                        if d <= own.0 {
+                            own = (d, Some(cut));
+                        }
                     }
                 }
             }
+            if let (d, Some(cut)) = own
+                && nearest.is_none_or(|(n, _)| d < n)
+            {
+                nearest = Some((d, cut));
+            }
         }
-        nearest.1
+        nearest.map_or(0.0, |(_, cut)| cut)
+    }
+
+    /// The cuts of another pass of the same layer, added.
+    pub(crate) fn extend(&mut self, other: Cuts) {
+        self.0.extend(other.0);
     }
 }
 
 /// Every straight stretch the nozzle passes over a layer's `moves`, in order, with the first of
 /// each move's; a helix as chords, a move from where the nozzle is unknown as its end.
-fn passes(moves: &[Move]) -> (Vec<Pass>, Vec<usize>) {
-    let (mut passes, mut first) = (Vec::new(), Vec::with_capacity(moves.len()));
+fn stretches_of(moves: &[Move]) -> (Vec<Stretch>, Vec<usize>) {
+    let (mut stretches, mut first) = (Vec::new(), Vec::with_capacity(moves.len()));
     for (from, m) in chained(moves, None) {
-        first.push(passes.len());
+        first.push(stretches.len());
         let Some(to) = m.to else { continue };
         let from = from.unwrap_or(to);
         let chords =
@@ -195,25 +208,38 @@ fn passes(moves: &[Move]) -> (Vec<Pass>, Vec<usize>) {
         let mut a = from;
         for k in 1..=n {
             let b = if k == n { to } else { m.point(from, k as f64 / n as f64) };
-            passes.push(Pass::new(a, b));
+            stretches.push(Stretch::new(a, b));
             a = b;
         }
     }
-    (passes, first)
+    (stretches, first)
 }
 
-/// The passes that may stand below the layer's top, `highest`, over a grid of cells `size` wide
+/// The stretches that may stand below the layer's top, `highest`, over a grid of cells `size` wide
 /// across `[lo, hi]`: each filed in every cell whose centre lies within its face's `radius` and
-/// half a cell's diagonal of it, so in each cell, in order, every pass whose face may cover a
+/// half a cell's diagonal of it, so in each cell, in order, every stretch whose face may cover a
 /// point of it, with the lowest it and those after it in the cell stand.
-fn file(passes: &[Pass], radius: f64, [lo, hi]: [Point; 2], size: f64, highest: f64) -> Grid<(usize, f64)> {
+fn file(
+    stretches: &[Stretch],
+    radius: f64,
+    [lo, hi]: [Point; 2],
+    size: f64,
+    highest: f64,
+) -> Grid<(usize, f64)> {
     let mut grid = Grid::over(lo, hi, size);
     let reach = radius + grid.size * std::f64::consts::FRAC_1_SQRT_2;
     let (mut filed, mut cells) = (Vec::new(), Vec::new());
-    for (k, pass) in passes.iter().enumerate().filter(|(_, pass)| pass.low < highest) {
-        let at = |u: f64| [pass.a[0] + u * (pass.b[0] - pass.a[0]), pass.a[1] + u * (pass.b[1] - pass.a[1])];
-        // A pass across the plate is cut into pieces a cell long, each looking about itself.
-        let n = ((pass.b[0] - pass.a[0]).hypot(pass.b[1] - pass.a[1]) / grid.size).ceil().clamp(1.0, 1e6);
+    for (k, stretch) in stretches.iter().enumerate().filter(|(_, stretch)| stretch.low < highest) {
+        let at = |u: f64| {
+            [
+                stretch.a[0] + u * (stretch.b[0] - stretch.a[0]),
+                stretch.a[1] + u * (stretch.b[1] - stretch.a[1]),
+            ]
+        };
+        // A stretch across the plate is cut into pieces a cell long, each looking about itself.
+        let n = ((stretch.b[0] - stretch.a[0]).hypot(stretch.b[1] - stretch.a[1]) / grid.size)
+            .ceil()
+            .clamp(1.0, 1e6);
         cells.clear();
         for piece in 0..n as usize {
             let (p, q) = (at(piece as f64 / n), at((piece + 1) as f64 / n));
@@ -221,7 +247,8 @@ fn file(passes: &[Pass], radius: f64, [lo, hi]: [Point; 2], size: f64, highest: 
             let [i1, j1] = grid.place([p[0].max(q[0]) + reach, p[1].max(q[1]) + reach]);
             for j in j0.max(0)..=j1.min(grid.rows as i64 - 1) {
                 for i in i0.max(0)..=i1.min(grid.columns as i64 - 1) {
-                    if let Some(c) = grid.cell([i, j]).filter(|_| pass.within(grid.centre([i, j]), reach)) {
+                    if let Some(c) = grid.cell([i, j]).filter(|_| stretch.within(grid.centre([i, j]), reach))
+                    {
                         cells.push(c);
                     }
                 }
@@ -229,7 +256,7 @@ fn file(passes: &[Pass], radius: f64, [lo, hi]: [Point; 2], size: f64, highest: 
         }
         cells.sort_unstable();
         cells.dedup();
-        filed.extend(cells.iter().map(|&c| (c, (k, pass.low))));
+        filed.extend(cells.iter().map(|&c| (c, (k, stretch.low))));
     }
     grid.fill(&filed);
     for c in 0..grid.columns * grid.rows {
@@ -243,10 +270,10 @@ fn file(passes: &[Pass], radius: f64, [lo, hi]: [Point; 2], size: f64, highest: 
     grid
 }
 
-/// The lowest the face stands over `p` from the fraction `from` of pass `k` on, if lower than
+/// The lowest the face stands over `p` from the fraction `from` of stretch `k` on, if lower than
 /// `z`.
 fn lowest(
-    passes: &[Pass],
+    stretches: &[Stretch],
     index: &Grid<(usize, f64)>,
     k: usize,
     from: f64,
@@ -261,9 +288,9 @@ fn lowest(
         if floor >= low {
             break;
         }
-        let Some(pass) = passes.get(j).filter(|pass| pass.low < low) else { continue };
+        let Some(stretch) = stretches.get(j).filter(|stretch| stretch.low < low) else { continue };
         let from = if j == k { from } else { 0.0 };
-        low = pass.lowest_over(from, p, radius).map_or(low, |z| low.min(z));
+        low = stretch.lowest_over(from, p, radius).map_or(low, |z| low.min(z));
     }
     low
 }
@@ -273,12 +300,12 @@ fn strip(bead: &Bead, height: f64) -> f64 {
     if bead.role.strand() { bead.width } else { bead_spacing(bead.width, height) }
 }
 
-/// Scales the plastic of each bead among a layer's `moves` on `leaf` to the room it keeps, the
+/// Scales the plastic of each bead among a pass's `moves` on `leaf` to the room it keeps, the
 /// face `radius` round passing over it later, on a top cut by `below`: the cuts the face leaves.
 /// A strand, hanging, keeps its plastic, the cuts into it noted all the same.
 pub(crate) fn keep(moves: &mut [Move], leaf: &Leaf, below: &Cuts, radius: f64) -> Cuts {
     let bends = radius > 0.0 && !leaf.warp.is_zero();
-    if !bends && below.0.is_none() {
+    if !bends && below.0.is_empty() {
         return Cuts::default();
     }
     // The beads, and the box their strips lie in.
@@ -301,8 +328,8 @@ pub(crate) fn keep(moves: &mut [Move], leaf: &Leaf, below: &Cuts, radius: f64) -
     if beads.is_empty() || widest <= 0.0 {
         return Cuts::default();
     }
-    let (passes, first) = passes(moves);
-    let index = bends.then(|| file(&passes, radius, bounds, radius.max(widest) / 2.0, leaf.highest()));
+    let (stretches, first) = stretches_of(moves);
+    let index = bends.then(|| file(&stretches, radius, bounds, radius.max(widest) / 2.0, leaf.highest()));
     let mut samples = Vec::new();
     let mut cut_any = false;
     for (i, a, b, s) in beads {
@@ -316,7 +343,8 @@ pub(crate) fn keep(moves: &mut [Move], leaf: &Leaf, below: &Cuts, radius: f64) -
             let (c, z) = ([a[0] + u * d[0], a[1] + u * d[1]], a[2] + u * (b[2] - a[2]));
             for o in [-s / 3.0, 0.0, s / 3.0] {
                 let p = [c[0] + o * across[0], c[1] + o * across[1]];
-                let cut = index.as_ref().map_or(0.0, |index| z - lowest(&passes, index, k, u, p, radius, z));
+                let cut =
+                    index.as_ref().map_or(0.0, |index| z - lowest(&stretches, index, k, u, p, radius, z));
                 let t = leaf.thickness(p);
                 slab += t;
                 room += (t + below.at(p) - cut).max(0.0);
@@ -340,5 +368,5 @@ pub(crate) fn keep(moves: &mut [Move], leaf: &Leaf, below: &Cuts, radius: f64) -
     let filed: Vec<(usize, (Point, f64))> =
         samples.iter().filter_map(|&(p, cut)| Some((grid.cell(grid.place(p))?, (p, cut)))).collect();
     grid.fill(&filed);
-    Cuts(Some(grid))
+    Cuts(vec![grid])
 }

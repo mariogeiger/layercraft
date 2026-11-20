@@ -5,69 +5,21 @@
 //! straight up over the highest the layer reaches on its way: left under pressure, the nozzle
 //! would draw a string behind it, wherever it goes. A shorter one slides along the layer, unless
 //! it crosses a bead laid at this height: that one lifts too, nothing pulled back. The helix is
-//! kept for where the layer is level around the nozzle. A layer starts over its own highest point,
-//! the layer before left at least over its own; done, its beads keep the room the nozzle's face
-//! leaves them (`room`). No move runs faster than the Z axis lets it climb.
+//! kept for where the layer is level around the nozzle. A pass starts over its layer's highest
+//! point, the pass before left at least over its own; done, its beads keep the room the nozzle's
+//! face leaves them over the cuts of the layer below (`room`).
 
 use crate::leaf::Leaf;
 use crate::room::{self, Cuts};
-use crate::{Arc, Bead, Layer, MotionError, MotionParams, Move, Program, RoleMotion, bead_area, disc_area};
+use crate::{Arc, Bead, MotionError, MotionParams, Move, Pass, Program, RoleMotion, bead_area, disc_area};
 use layercraft_geom::{GeomError, Point, Relief, bead_spacing};
 use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
 
-pub(crate) fn check(p: &MotionParams) -> Result<(), MotionError> {
-    let positive = [
-        p.filament_diameter,
-        p.flow_ratio,
-        p.max_volumetric_speed,
-        p.outer_wall.speed,
-        p.inner_wall.speed,
-        p.top_surface.speed,
-        p.solid.speed,
-        p.sparse.speed,
-        p.support.speed,
-        p.support_interface.speed,
-        p.first_layer_wall_speed,
-        p.first_layer_infill_speed,
-        p.travel.speed,
-        p.outer_wall.flow,
-        p.inner_wall.flow,
-        p.top_surface.flow,
-        p.solid.flow,
-        p.sparse.flow,
-        p.bridge.flow,
-        p.support.flow,
-        p.support_interface.flow,
-        p.retract_speed,
-        p.deretract_speed,
-        p.slow_down_min_speed,
-        p.limits.max_accel,
-        p.limits.max_speed_xy,
-        p.limits.max_speed_z,
-    ];
-    if !positive.iter().all(|v| v.is_finite() && *v > 0.0) {
-        return Err(MotionError::BadParams("speeds, sizes and limits must be positive".into()));
-    }
-    if !p.overhang_speeds.iter().all(|v| v.is_finite() && *v >= 0.0) || p.overhang_speeds.len() > 100 {
-        return Err(MotionError::BadParams("overhang speeds must be finite, not negative, and few".into()));
-    }
-    let non_negative = [
-        p.retract_length,
-        p.retract_min_travel,
-        p.z_hop,
-        p.lift_radius,
-        p.face_radius,
-        p.slow_down_layer_time,
-        p.fan_speed,
-    ];
-    let bounded = p.fan_speed <= 1.0 && p.z_hop <= 10.0 && p.lift_radius <= 10.0 && p.face_radius <= 10.0;
-    if !non_negative.iter().all(|v| v.is_finite() && *v >= 0.0) || !bounded {
-        return Err(MotionError::BadParams("retraction, hop, lift, face, cooling out of range".into()));
-    }
-    Ok(())
-}
+/// The sine of the angle from one heading to the next below which they are the same, or
+/// opposite, line: rounding, not a turn.
+const STRAIGHT_ON: f64 = 1e-9;
 
 /// The speed, acceleration and flow a role takes: a strand bridges; otherwise a wall shows
 /// outside or not, a dense line on top or not, a support's line is its top or not.
@@ -170,10 +122,6 @@ fn pushed(p: &MotionParams, path: &Path, height: f64) -> f64 {
     p.flow_ratio * role_motion(p, path.role).flow * section_area(path, height)
 }
 
-/// The sine of the angle from one heading to the next below which they are the same, or
-/// opposite, line: rounding, not a turn.
-const STRAIGHT_ON: f64 = 1e-9;
-
 /// The nozzle as the program is written: where it is, what it does, and the moves so far.
 struct State {
     moves: Vec<Move>,
@@ -267,7 +215,7 @@ impl State {
         self.retracted = total;
     }
 
-    /// Pushes back exactly what was pulled, at this bead's speed.
+    /// Pushes back exactly what was pulled, at the deretraction speed of `p`, the bead's to come.
     fn deretract(&mut self, p: &MotionParams) {
         if self.retracted > 0.0 {
             let e = self.retracted;
@@ -337,68 +285,62 @@ impl State {
         }
     }
 
-    /// Lifts over the layer `leaf` on the way to `start`, travels there and comes down on it.
-    fn hop(
-        &mut self,
-        from: &MotionParams,
-        to: &MotionParams,
-        start: Point,
-        leaf: &Leaf,
-        first_of_layer: bool,
-    ) {
-        self.accel = to.travel.accel;
+    /// Lifts over the layer `leaf` on the way to `start`, travels there and comes down on it:
+    /// leaving with the parameters of the bead left, `leaving`, arriving with `arriving`'s. From
+    /// where the nozzle is not known, it goes over the layer's highest point.
+    fn hop(&mut self, leaving: &MotionParams, arriving: &MotionParams, start: Point, leaf: &Leaf) {
+        self.accel = arriving.travel.accel;
         // Up first: the travel crosses nothing below the hop over the layer on its way.
-        let over = if self.placed && !first_of_layer {
-            leaf.highest_along([self.at[0], self.at[1]], start)
-        } else {
-            leaf.highest()
-        };
-        let hop = over + from.z_hop;
+        let over =
+            if self.placed { leaf.highest_along([self.at[0], self.at[1]], start) } else { leaf.highest() };
+        let hop = over + leaving.z_hop;
         let heading = self.heading_to(start);
-        self.lift(from, hop, heading, leaf);
+        self.lift(leaving, hop, heading, leaf);
         let height = if self.placed { self.at[2].max(hop) } else { hop };
-        self.travel([start[0], start[1], height], to.travel.speed);
-        self.travel([start[0], start[1], leaf.z(start)], to.travel.speed);
+        self.travel([start[0], start[1], height], arriving.travel.speed);
+        self.travel([start[0], start[1], leaf.z(start)], arriving.travel.speed);
     }
 
     /// Moves to `start` on the layer `leaf`: short hops slide along it, or lift over the laid bead
-    /// they `cross`, and longer ones retract and lift. Leaving takes the parameters of the bead left, `from`, whose string it breaks;
-    /// arriving takes those of the bead reached, `to`. From where a layer starts, which is
-    /// unknown, the nozzle goes over the layer's highest point by the hop.
+    /// they `cross`, and longer ones retract and lift. Leaving takes the parameters of the bead
+    /// left, `leaving`, whose string it breaks; arriving takes those of the bead reached,
+    /// `arriving`. From where a pass starts, which is unknown, the nozzle goes over the layer's
+    /// highest point by the hop.
     fn go_to(
         &mut self,
-        from: &MotionParams,
-        to: &MotionParams,
+        leaving: &MotionParams,
+        arriving: &MotionParams,
         start: Point,
         leaf: &Leaf,
-        first_of_layer: bool,
         cross: bool,
     ) {
         let d = (start[0] - self.at[0]).hypot(start[1] - self.at[1]);
-        if first_of_layer || !self.placed || d > from.retract_min_travel {
-            self.retract(from);
-            self.hop(from, to, start, leaf, first_of_layer);
+        if !self.placed || d > leaving.retract_min_travel {
+            self.retract(leaving);
+            self.hop(leaving, arriving, start, leaf);
         } else if cross {
-            self.hop(from, to, start, leaf, false);
+            self.hop(leaving, arriving, start, leaf);
         } else {
-            self.glide(leaf, start, to.travel.speed);
+            self.glide(leaf, start, arriving.travel.speed);
         }
-        self.deretract(to);
+        self.deretract(arriving);
         self.bead.clear();
         self.bead.push(self.at);
     }
 }
 
-/// Turns the beads into the program's moves, layer by layer. Each bead takes the parameters
-/// at its centre. Beads run at their full speeds: cooling is a pass of its own (`cool`), and
-/// the machine's own G-code goes around the layers (`frame`).
+/// Turns the beads into the program's moves, pass by pass. Each bead takes the parameters of its
+/// material (`fields`, the last given standing for those past them) at its centre. Beads run at
+/// their full speeds: cooling is a pass of its own (`cool`), and the machine's own G-code goes
+/// around the passes (`frame`).
 pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program, MotionError> {
-    let first = fields.first().ok_or_else(|| MotionError::BadParams("no material's parameters".into()))?;
+    let (Some(first), Some(last_field)) = (fields.first(), fields.last()) else {
+        return Err(MotionError::BadParams("no material's parameters".into()));
+    };
     for field in fields {
-        check(field.base())?;
+        field.base().check()?;
     }
     let base = first.base();
-    let filament_area = disc_area(base.filament_diameter);
     let mut s = State {
         moves: Vec::new(),
         at: [0.0; 3],
@@ -412,7 +354,7 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
     };
     // The parameters of the bead last laid, which leaving it takes.
     let mut last = Rc::new(base.clone());
-    let mut layers: Vec<Layer> = Vec::with_capacity(paths.layers.len());
+    let mut passes: Vec<Pass> = Vec::with_capacity(paths.layers.len());
     // Each layer's top over its plane, its warp on the paths' carrier.
     let reliefs = paths
         .layers
@@ -425,8 +367,9 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
     // own, not on the pass before it.
     let mut current: Option<(usize, &Relief)> = None;
     let mut previous_leaf: Option<Leaf> = None;
-    // How deep the nozzle's face, one for the whole print, cut into the layer below's top.
-    let mut cuts = Cuts::default();
+    // How deep the nozzle's face, one for the whole print, cut into the top of the layer below the
+    // current one, and into the current one's so far, pass by pass.
+    let (mut cuts_below, mut cuts_here) = (Cuts::default(), Cuts::default());
     // The material of the pass before.
     let mut material: Option<usize> = None;
     for (layer, relief) in paths.layers.iter().zip(&reliefs) {
@@ -434,18 +377,18 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
         // on the first layers, without the fan, so that they melt into it.
         let changed = material.is_some_and(|m| m != layer.material);
         material = Some(layer.material);
-        let cool = |p: &MotionParams| layer.index < p.fan_off_layers || changed;
-        if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
+        if let (Some(previous), Some(left)) = (passes.last_mut(), &previous_leaf) {
             previous.moves = s.close(&last, left);
-            cuts = room::keep(&mut previous.moves, left, &cuts, base.face_radius);
+            cuts_here.extend(room::keep(&mut previous.moves, left, &cuts_below, base.face_radius));
         }
         if let Some((index, warp)) = current
             && index != layer.index
         {
             below = warp;
+            cuts_below = std::mem::take(&mut cuts_here);
         }
         let leaf = Leaf { top: layer.top, height: layer.height, warp: relief, below };
-        layers.push(Layer {
+        passes.push(Pass {
             index: layer.index,
             z: layer.top,
             height: layer.height,
@@ -456,27 +399,26 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
         });
         // After the machine's layer change, the nozzle may be anywhere.
         s.placed = false;
-        for (k, path) in layer.paths.iter().enumerate() {
-            // Each material its own parameters, the last given standing for those past them.
-            let field = fields.get(layer.material).or(fields.last()).unwrap_or(first);
-            let p = field.at(centre(&path.points, layer.top), check)?;
+        let field = fields.get(layer.material).unwrap_or(last_field);
+        for path in &layer.paths {
+            let p = field.at(centre(&path.points, layer.top), MotionParams::check)?;
             let points = path_points(path, p.seam_gap);
             let Some(&start) = points.first() else { continue };
-            let fan = if cool(&p) { 0.0 } else { p.fan_speed };
-            s.fan = fan;
-            s.go_to(&last, &p, start, &leaf, k == 0, path.travel_crosses);
+            let fan_off = layer.index < p.fan_off_layers || changed;
+            s.fan = if fan_off { 0.0 } else { p.fan_speed };
+            s.go_to(&last, &p, start, &leaf, path.travel_crosses);
             s.accel = if layer.index == 0 { p.first_layer_accel } else { role_motion(&p, path.role).accel };
             let speed = bead_speed(&p, path, layer);
-            let per_mm3 = p.flow_ratio * role_motion(&p, path.role).flow / filament_area;
+            let per_mm3 = p.flow_ratio * role_motion(&p, path.role).flow / disc_area(p.filament_diameter);
             let bead = Bead { role: path.role, width: path.width };
             for (i, w) in points.windows(2).enumerate() {
-                let [a, b] = [w.first().copied().unwrap_or(start), w.get(1).copied().unwrap_or(start)];
+                let &[a, b] = w else { continue };
                 if (b[0] - a[0]).hypot(b[1] - a[1]) <= 0.0 {
                     continue;
                 }
                 let u = hanging(path, i);
                 let speed = overhang_speed(&p, u, speed);
-                s.fan = if cool(&p) { fan } else { overhang_fan(&p, path.role, u, fan) };
+                s.fan = if fan_off { 0.0 } else { overhang_fan(&p, path.role, u, p.fan_speed) };
                 let mut from = a;
                 for q in leaf.pieces(a, b) {
                     let l = (q[0] - from[0]).hypot(q[1] - from[1]);
@@ -493,9 +435,9 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
         previous_leaf = Some(leaf);
     }
     // Off the part at once, before the machine's own slow end sequence.
-    if let (Some(previous), Some(left)) = (layers.last_mut(), &previous_leaf) {
+    if let (Some(previous), Some(left)) = (passes.last_mut(), &previous_leaf) {
         previous.moves = s.close(&last, left);
-        room::keep(&mut previous.moves, left, &cuts, base.face_radius);
+        room::keep(&mut previous.moves, left, &cuts_below, base.face_radius);
     }
-    Ok(Program { carrier: paths.carrier.clone(), layers })
+    Ok(Program { carrier: paths.carrier.clone(), passes })
 }

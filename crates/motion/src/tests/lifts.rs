@@ -29,7 +29,7 @@ fn first_helix(lines: &[[Point; 2]]) -> Arc {
     p.lift_radius = 1.0;
     p.wipe_distance = 1.0;
     let program = compiled(&paths, &p);
-    let lift = chained(&program.layers[0].moves, None).find(|(f, m)| climbs(*f, m)).unwrap().1;
+    let lift = chained(&program.passes[0].moves, None).find(|(f, m)| climbs(*f, m)).unwrap().1;
     lift.arc.unwrap()
 }
 

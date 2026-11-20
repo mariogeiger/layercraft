@@ -3,15 +3,16 @@
 //! Only the moves are kept; the machine's own G-code is the frame, which the program gets anew
 //! when it is written: the start before the first layer marker, the end after
 //! `MACHINE_END_GCODE_START`, the printer's conditional blocks (`M622 J…`, `M623`), skippable
-//! blocks (timelapse), and a closed list of machine commands. Any other command is an error.
-//! Positions, filament (absolute or relative), feed, acceleration and fan are followed as the
-//! printer would; an axis the G-code has not named yet takes the next value it is given. A
-//! layer starts at its first travel to a new point or its first extrusion: the wipe,
-//! retraction and lift before it leave the layer below, at its height. An arc keeps its
-//! centre and the angle it turns; `; FEATURE` and `; LINE_WIDTH` name the beads. A dwell
-//! (`G4`, or the printer's `M400` with a time) is a wait where the nozzle is.
+//! blocks (timelapse), filament changes (`M620 S…` to `M621`), and a closed list of machine
+//! commands. Any other command is an error. Positions, filament (absolute or relative), feed,
+//! acceleration and fan are followed as the printer would; an axis the G-code has not named yet
+//! takes the next value it is given. A layer starts at its first travel to a new point or its first
+//! extrusion: the wipe, retraction and lift before it leave the layer below, at its height. A
+//! change's `T…` names the filament of the pass after it. An arc keeps its centre and the angle it
+//! turns; `; FEATURE` and `; LINE_WIDTH` name the beads. A dwell (`G4`, or the printer's `M400`
+//! with a time) is a wait where the nozzle is.
 
-use layercraft_motion::{Arc, Bead, Layer, Move, Program};
+use layercraft_motion::{Arc, Bead, Move, Pass, Program};
 use layercraft_path::Role;
 
 /// Why G-code could not be read.
@@ -22,10 +23,15 @@ pub struct ReadError {
     pub reason: String,
 }
 
-/// Machine commands that belong to the frame: progress, notices, auxiliary fans, chamber,
-/// detectors, power-loss recovery, and the printer's conditional flags.
-const FRAME: [&str; 11] =
-    ["M73", "M991", "M1002", "M622.1", "M971", "M1004", "M1003", "M142", "M981", "M400", "M9711"];
+/// Machine commands that belong to the frame: progress, notices, temperatures, auxiliary fans,
+/// chamber, detectors, power-loss recovery, and the printer's conditional flags.
+const FRAME: [&str; 18] = [
+    "M73", "M991", "M1002", "M622.1", "M971", "M1004", "M1003", "M142", "M981", "M400", "M9711", "M104",
+    "M109", "M140", "M190", "M620.6", "M1015.3", "M1015.4",
+];
+
+/// The filaments a change may load, numbered from 0: past them, `T…` unloads or parks.
+const MAX_FILAMENTS: usize = 255;
 
 /// A move as written, its axes possibly unknown yet.
 struct Raw {
@@ -33,7 +39,8 @@ struct Raw {
     /// Filament pushed or pulled where the nozzle is, naming no axis.
     in_place: bool,
     to: [Option<f64>; 3],
-    arc: Option<(bool, [f64; 2], bool)>,
+    /// Along an arc about this centre, counter-clockwise or not.
+    arc: Option<([f64; 2], bool)>,
     e: f64,
     speed: f64,
     accel: f64,
@@ -51,6 +58,45 @@ fn has(code: &str, letter: char) -> bool {
     code.split_whitespace().skip(1).any(|w| w.starts_with(letter))
 }
 
+/// How the filament axis counts, as the printer follows it: relative (`M83`), or absolute
+/// (`M82`) from where `G92` set it.
+#[derive(Default)]
+pub(crate) struct Extrusion {
+    absolute: bool,
+    last: f64,
+}
+
+impl Extrusion {
+    /// Follows `code` if it sets how the filament counts; whether it does.
+    pub(crate) fn follow(&mut self, head: &str, code: &str) -> bool {
+        match head {
+            "M82" => self.absolute = true,
+            "M83" => self.absolute = false,
+            "G92" => self.last = word(code, 'E').unwrap_or(self.last),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The filament the move `code` pushes, in mm: negative where it pulls.
+    pub(crate) fn pushed(&mut self, code: &str) -> f64 {
+        match word(code, 'E') {
+            Some(v) if self.absolute => {
+                let d = v - self.last;
+                self.last = v;
+                d
+            }
+            Some(v) => v,
+            None => 0.0,
+        }
+    }
+}
+
+/// The filament `T…` loads, if it names one.
+fn filament(head: &str) -> Option<usize> {
+    head.strip_prefix('T')?.parse::<usize>().ok().filter(|&n| n < MAX_FILAMENTS)
+}
+
 /// The angle turned about `c` from `a` to `b`, counter-clockwise when `ccw`, a full turn when
 /// they meet.
 fn turn(a: [f64; 2], b: [f64; 2], c: [f64; 2], ccw: bool) -> f64 {
@@ -64,17 +110,19 @@ fn turn(a: [f64; 2], b: [f64; 2], c: [f64; 2], ccw: bool) -> f64 {
 /// Reads the moves of G-code text into a program.
 pub fn read(text: &str) -> Result<Program, ReadError> {
     let err = |line: usize, reason: String| ReadError { line, reason };
-    let mut layers: Vec<(Layer, Vec<Raw>)> = Vec::new();
+    let mut passes: Vec<(Pass, Vec<Raw>)> = Vec::new();
     // A layer marker read, its height and thickness still to come.
     let mut pending: Option<(f64, f64)> = None;
     let (mut started, mut ended) = (false, false);
     let (mut skipping, mut conditional) = (0usize, 0usize);
-    let (mut absolute, mut absolute_e, mut last_e) = (true, false, 0.0);
+    let (mut absolute, mut extrusion) = (true, Extrusion::default());
     let mut at: [Option<f64>; 3] = [None; 3];
     let (mut feed, mut accel, mut fan) = (None::<f64>, None::<f64>, 0.0);
     let (mut feature, mut width): (Option<String>, Option<f64>) = (None, None);
     // In a new layer's prelude: its moves still leave the layer below.
     let mut prelude = false;
+    // The filament loaded, and, within a change, the one it loads.
+    let (mut loaded, mut changing) = (0usize, None::<Option<usize>>);
     let mut raws: Vec<Raw> = Vec::new();
     for (n, full) in text.lines().enumerate() {
         let line = n + 1;
@@ -103,22 +151,13 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
                 *h = v.trim().parse().map_err(|_| err(line, format!("layer thickness `{v}`")))?;
             }
             if z.is_finite() && h.is_finite() {
-                let index = layers.len();
-                if let Some((_, moves)) = layers.last_mut() {
+                let index = passes.last().map_or(0, |(p, _)| p.index + 1);
+                if let Some((_, moves)) = passes.last_mut() {
                     moves.append(&mut raws);
                 }
-                layers.push((
-                    Layer {
-                        index,
-                        z: *z,
-                        height: *h,
-                        warp: Default::default(),
-                        free: false,
-                        moves: Vec::new(),
-                        material: 0,
-                    },
-                    Vec::new(),
-                ));
+                let (z, height, material) = (*z, *h, loaded);
+                let (warp, free, moves) = (Default::default(), false, Vec::new());
+                passes.push((Pass { index, z, height, material, warp, free, moves }, Vec::new()));
                 prelude = index > 0;
                 pending = None;
             }
@@ -137,15 +176,52 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
         match head {
             "G90" => absolute = true,
             "G91" => absolute = false,
-            "M82" => absolute_e = true,
-            "M83" => absolute_e = false,
-            "G92" => last_e = word(code, 'E').unwrap_or(last_e),
             "M204" => accel = word(code, 'S').or(accel),
             "M106" if !has(code, 'P') => fan = (word(code, 'S').unwrap_or(0.0) / 255.0).clamp(0.0, 1.0),
-            _ => {}
+            _ => {
+                extrusion.follow(head, code);
+            }
         }
         let body = started && !ended;
-        if !body {
+        // A filament change is the frame's, but the pass after it prints the filament it loads.
+        match (head, changing) {
+            ("M620", None) if has(code, 'S') => changing = Some(None),
+            ("M621", Some(next)) => {
+                changing = None;
+                match next {
+                    Some(next) if body && next != loaded => {
+                        if prelude {
+                            if let Some((_, moves)) = passes.iter_mut().rev().nth(1) {
+                                moves.append(&mut raws);
+                            }
+                            prelude = false;
+                        }
+                        match passes.last_mut() {
+                            Some((pass, moves)) if moves.is_empty() && raws.is_empty() => {
+                                pass.material = next
+                            }
+                            Some((pass, moves)) => {
+                                moves.append(&mut raws);
+                                let after = Pass { material: next, moves: Vec::new(), ..pass.clone() };
+                                passes.push((after, Vec::new()));
+                            }
+                            None => {}
+                        }
+                        loaded = next;
+                    }
+                    Some(next) => loaded = next,
+                    None if body => return Err(err(line, "a filament change loading no filament".into())),
+                    None => {}
+                }
+            }
+            (_, Some(_)) => {
+                if let Some(n) = filament(head) {
+                    changing = Some(Some(n));
+                }
+            }
+            _ => {}
+        }
+        if changing.is_some() || head == "M621" || !body {
             continue;
         }
         if let Some(name) = comment.strip_prefix("FEATURE:") {
@@ -182,15 +258,7 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
                 *slot = Some(if absolute { v } else { at.get(k).copied().flatten().unwrap_or(0.0) + v });
             }
         }
-        let e = match word(code, 'E') {
-            Some(v) if absolute_e => {
-                let d = v - last_e;
-                last_e = v;
-                d
-            }
-            Some(v) => v,
-            None => 0.0,
-        };
+        let e = extrusion.pushed(code);
         let arc = if arc {
             let (Some(x), Some(y)) = (at[0], at[1]) else {
                 return Err(err(line, "an arc from where the nozzle is not known".into()));
@@ -198,9 +266,8 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
             if word(code, 'P').is_some_and(|p| p > 1.0) {
                 return Err(err(line, "an arc of more than one turn".into()));
             }
-            let centre = [x + word(code, 'I').unwrap_or(0.0), y + word(code, 'J').unwrap_or(0.0)];
-            let full = has(code, 'P') && named[0].is_none() && named[1].is_none();
-            Some((head == "G3", centre, full))
+            // A full turn (`P1`) names no end: it ends where it starts, which is a full turn.
+            Some(([x + word(code, 'I').unwrap_or(0.0), y + word(code, 'J').unwrap_or(0.0)], head == "G3"))
         } else {
             None
         };
@@ -209,7 +276,7 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
         let extrudes = e > 0.0 && (named[0].is_some() || named[1].is_some() || arc.is_some());
         if prelude && ((moves_xy && e == 0.0 && arc.is_none()) || extrudes) {
             // The new layer's first travel or bead: the prelude leaves the layer below.
-            if let Some((_, moves)) = layers.iter_mut().rev().nth(1) {
+            if let Some((_, moves)) = passes.iter_mut().rev().nth(1) {
                 moves.append(&mut raws);
             }
             prelude = false;
@@ -230,19 +297,19 @@ pub fn read(text: &str) -> Result<Program, ReadError> {
         raws.push(Raw { line, in_place, to, arc, e, speed, accel, fan, bead, wait: 0.0 });
         at = to;
     }
-    if let Some((_, moves)) = layers.last_mut() {
+    if let Some((_, moves)) = passes.last_mut() {
         moves.append(&mut raws);
     }
-    resolve(layers)
+    resolve(passes)
 }
 
 /// Fills each axis not named yet with the next value it is given, and turns raw moves into
 /// the program's: a move that goes nowhere pushes or pulls in place, one that does nothing is
 /// dropped.
-fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
+fn resolve(mut passes: Vec<(Pass, Vec<Raw>)>) -> Result<Program, ReadError> {
     // Backwards, the next value each axis is given.
     let mut next: [Option<f64>; 3] = [None; 3];
-    for (_, moves) in layers.iter_mut().rev() {
+    for (_, moves) in passes.iter_mut().rev() {
         for m in moves.iter_mut().rev().filter(|m| !m.in_place) {
             for (slot, n) in m.to.iter_mut().zip(next.iter_mut()) {
                 match slot {
@@ -253,8 +320,8 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
         }
     }
     let mut at: Option<[f64; 3]> = None;
-    let mut out: Vec<Layer> = Vec::with_capacity(layers.len());
-    for (mut layer, moves) in layers {
+    let mut out: Vec<Pass> = Vec::with_capacity(passes.len());
+    for (mut pass, moves) in passes {
         for m in moves {
             let (to, arc, bead) = if m.in_place {
                 (None, None, None)
@@ -263,14 +330,8 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
                     return Err(ReadError { line: m.line, reason: "a move to an axis never named".into() });
                 };
                 let arc = match (m.arc, at) {
-                    (Some((ccw, centre, full)), Some(from)) => {
-                        let tau = std::f64::consts::TAU;
-                        let t = match (full, ccw) {
-                            (true, true) => tau,
-                            (true, false) => -tau,
-                            (false, _) => turn([from[0], from[1]], [x, y], centre, ccw),
-                        };
-                        Some(Arc { centre, turn: t })
+                    (Some((centre, ccw)), Some(from)) => {
+                        Some(Arc { centre, turn: turn([from[0], from[1]], [x, y], centre, ccw) })
                     }
                     _ => None,
                 };
@@ -280,7 +341,7 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
                 }
                 (goes.then_some([x, y, z]), arc, m.bead)
             };
-            layer.moves.push(Move {
+            pass.moves.push(Move {
                 to,
                 arc,
                 e: m.e,
@@ -292,8 +353,8 @@ fn resolve(mut layers: Vec<(Layer, Vec<Raw>)>) -> Result<Program, ReadError> {
             });
             at = to.or(at);
         }
-        out.push(layer);
+        out.push(pass);
     }
     // G-code tells nothing of how a layer bends: every layer read is flat.
-    Ok(Program { carrier: Default::default(), layers: out })
+    Ok(Program { carrier: Default::default(), passes: out })
 }

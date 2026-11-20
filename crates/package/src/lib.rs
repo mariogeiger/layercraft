@@ -93,7 +93,12 @@ fn escape(text: &str) -> String {
 
 /// `1 1 …`: every filament fed to the first extruder, as the one nozzle prints them all.
 fn filament_maps(plate: &Plate) -> String {
-    vec!["1"; plate.filaments.len().max(1)].join(" ")
+    vec!["1"; plate.filaments.len()].join(" ")
+}
+
+/// The plate's filaments numbered from `from`, joined by `separator`: `0,1,2` or `1 2 3`.
+fn numbered(plate: &Plate, from: usize, separator: &str) -> String {
+    (from..from + plate.filaments.len()).map(|k| k.to_string()).collect::<Vec<_>>().join(separator)
 }
 
 fn slice_info(plate: &Plate) -> String {
@@ -115,7 +120,6 @@ fn slice_info(plate: &Plate) -> String {
             )
         })
         .collect();
-    let list: Vec<String> = (0..plate.filaments.len().max(1)).map(|k| k.to_string()).collect();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <config>
@@ -158,7 +162,7 @@ fn slice_info(plate: &Plate) -> String {
         seconds = plate.seconds.round() as u64,
         weight = plate.filaments.iter().map(|f| f.used_g).sum::<f64>(),
         maps = filament_maps(plate),
-        list = list.join(" "),
+        list = numbered(plate, 0, " "),
     )
 }
 
@@ -174,7 +178,7 @@ fn plate_json(plate: &Plate) -> String {
         json(&plate.object_name),
         json(&plate.bed_type),
         plate.filaments.iter().map(|f| format!("\"{}\"", json(&f.colour))).collect::<Vec<_>>().join(","),
-        (0..plate.filaments.len().max(1)).map(|k| k.to_string()).collect::<Vec<_>>().join(","),
+        numbered(plate, 0, ","),
         plate.first_layer_seconds,
         plate.nozzle_diameter
     )
@@ -186,7 +190,6 @@ pub fn write_package<W: Write + Seek>(plate: &Plate, writer: W) -> Result<(), Pa
         return Err(PackageError("a plate needs a filament".into()));
     }
     let n = plate.filaments.len();
-    let numbers = |from: usize| (from..from + n).map(|k| k.to_string()).collect::<Vec<_>>().join(",");
     let digest = Md5::digest(plate.gcode.as_bytes());
     let md5: String = digest.iter().map(|b| format!("{b:02X}")).collect();
     let thumbnail = png(&plate.thumbnail)?;
@@ -215,7 +218,7 @@ pub fn write_package<W: Write + Seek>(plate: &Plate, writer: W) -> Result<(), Pa
 </model>"#, escape(&plate.generator)).into_bytes()),
         ("Metadata/plate_1.gcode", plate.gcode.as_bytes().to_vec()),
         ("Metadata/plate_1.gcode.md5", md5.into_bytes()),
-        ("Metadata/model_settings.config", r#"<?xml version="1.0" encoding="UTF-8"?>
+        ("Metadata/model_settings.config", format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <config>
   <plate>
     <metadata key="plater_id" value="1"/>
@@ -230,14 +233,14 @@ pub fn write_package<W: Write + Seek>(plate: &Plate, writer: W) -> Result<(), Pa
     <metadata key="top_file" value="Metadata/top_1.png"/>
     <metadata key="pattern_bbox_file" value="Metadata/plate_1.json"/>
   </plate>
-</config>"#.replace("{maps}", &filament_maps(plate)).replace("{volume_maps}", &vec!["0"; n].join(" ")).into_bytes()),
+</config>"#, maps = filament_maps(plate), volume_maps = vec!["0"; n].join(" ")).into_bytes()),
         ("Metadata/_rels/model_settings.config.rels", br#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/Metadata/plate_1.gcode" Id="rel-1" Type="http://schemas.bambulab.com/package/2021/gcode"/>
 </Relationships>"#.to_vec()),
         ("Metadata/slice_info.config", slice_info(plate).into_bytes()),
         ("Metadata/plate_1.json", plate_json(plate).into_bytes()),
-        ("Metadata/filament_sequence.json", format!(r#"{{"plate_1":{{"nozzle_sequence":[0],"optimal_assignment":[{}],"sequence":[{}]}}}}"#, vec!["0"; n].join(","), numbers(1)).into_bytes()),
+        ("Metadata/filament_sequence.json", format!(r#"{{"plate_1":{{"nozzle_sequence":[0],"optimal_assignment":[{}],"sequence":[{}]}}}}"#, vec!["0"; n].join(","), numbered(plate, 1, ",")).into_bytes()),
         ("Metadata/project_settings.config", plate.settings_json.as_bytes().to_vec()),
         ("Metadata/plate_1.png", thumbnail.clone()),
         ("Metadata/plate_no_light_1.png", thumbnail.clone()),

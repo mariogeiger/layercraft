@@ -21,6 +21,11 @@ pub struct Limits {
     pub max_speed_z: f64,
 }
 
+/// The least acceleration, in mm/s², and speed, in mm/s, a move is timed with: one that asks for
+/// none, which `verify` refuses, still takes a finite time.
+const LEAST_ACCEL: f64 = 1.0;
+const LEAST_SPEED: f64 = 1e-3;
+
 struct Segment {
     /// Where this move's finishing time goes in the list of times.
     slot: usize,
@@ -84,8 +89,8 @@ fn run_time(segments: &[Segment], jerk: f64) -> f64 {
         .sum()
 }
 
-/// The time of the program at the end of each move and its wait, layer after layer, in
-/// seconds; the last is the total. The machine's own G-code between layers takes no time here.
+/// The time of the program at the end of each move and its wait, pass after pass, in
+/// seconds; the last is the total. The machine's own G-code between passes takes no time here.
 pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
     let mut times = Vec::new();
     let mut done = 0.0;
@@ -105,10 +110,10 @@ pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
         run.clear();
     };
     let mut at = [0.0; 3];
-    for layer in &program.layers {
-        // The machine's layer change stops the nozzle.
+    for pass in &program.passes {
+        // The machine's layer or filament change stops the nozzle.
         flush(&mut run, &mut times, &mut done);
-        for (from, m) in chained(&layer.moves, Some(at)) {
+        for (from, m) in chained(&pass.moves, Some(at)) {
             let from = from.unwrap_or(at);
             let Some(to) = m.to else {
                 flush(&mut run, &mut times, &mut done);
@@ -124,13 +129,13 @@ pub fn estimate(program: &Program, limits: &Limits) -> Vec<f64> {
                 continue;
             }
             let dir = m.directions(from);
-            let accel = m.accel.min(limits.max_accel).max(1.0);
+            let accel = m.accel.min(limits.max_accel).max(LEAST_ACCEL);
             let mut vmax = m.speed.min(limits.max_speed_xy).min((accel * m.radius(from)).sqrt());
             let climb = dir.0[2].abs().max(dir.1[2].abs());
             if climb > 1e-9 {
                 vmax = vmax.min(limits.max_speed_z / climb);
             }
-            run.push(Segment { slot: times.len(), length, dir, vmax: vmax.max(1e-3), accel });
+            run.push(Segment { slot: times.len(), length, dir, vmax: vmax.max(LEAST_SPEED), accel });
             times.push(done);
             // A wait stops the nozzle at the move's end.
             if m.wait > 0.0 {

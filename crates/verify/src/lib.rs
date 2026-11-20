@@ -8,11 +8,12 @@
 //! height on a flat layer, within a quarter of its thickness on a bent one, whose beads are
 //! written within the printer's resolution; on a free layer, each bead resting on the plate or on
 //! a bead of a layer before, one to two of its heights below its tip; speeds within the machine's
-//! limits, the Z axis's too, accelerations positive; filament flowing no faster than the hot end melts it; wipes
-//! that move; arcs that end on their circle, at most a turn; fan between 0 and 1; waits finite
-//! and not negative. The machine's own G-code between layers is the maker's and is not
-//! interpreted: after it the nozzle may be anywhere, so a layer's first move must be a straight
-//! travel to a named point, checked against the print from where the layer before left it.
+//! limits, the Z axis's too, accelerations positive; filament flowing no faster than the hot end
+//! melts the pass's own (`Filament`); wipes that move; arcs that end on their circle, at most a
+//! turn; fan between 0 and 1; waits finite and not negative. The machine's own G-code between
+//! passes is the maker's and is not interpreted: after it the nozzle may be anywhere, so a pass's
+//! first move must be a straight travel to a named point, checked against the print from where
+//! the pass before left it.
 
 mod beads;
 mod clearance;
@@ -20,7 +21,7 @@ mod clearance;
 use beads::{Allowed, Beads};
 use clearance::intrusion;
 use layercraft_geom::Relief;
-use layercraft_motion::{Layer, Move, Program, disc_area};
+use layercraft_motion::{Filament, Move, POSITION_UNIT, Pass, Program, disc_area};
 use serde::{Deserialize, Serialize};
 
 /// The toolhead's underside, about the nozzle's axis, in mm (`clearance`): the nozzle, a flat
@@ -50,9 +51,6 @@ pub struct Envelope {
     pub max_speed: f64,
     /// The fastest the Z axis moves, in mm/s.
     pub max_speed_z: f64,
-    pub filament_diameter: f64,
-    /// The hot end's melt limit, in mm³/s.
-    pub max_volumetric_speed: f64,
     pub toolhead: Toolhead,
     /// How deep the nozzle's face may iron the beads of the layer it prints, in mm: on a bent
     /// layer it passes over those it laid just before, up the slope.
@@ -64,32 +62,36 @@ pub struct Envelope {
 /// One unsafe move.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Violation {
+    /// The layer's index.
     pub layer: usize,
-    /// The move's place in its layer.
+    /// The pass's place in the program, and the move's in its pass.
+    pub pass: usize,
     pub index: usize,
     pub reason: String,
 }
 
 /// Room for rounding in comparisons, in mm (or mm³/s for flow).
 const SLACK: f64 = 1e-6;
-/// Room for the rounding of positions in G-code, three decimals, in mm.
-const WRITTEN: f64 = 2e-3;
+/// Room for the rounding of positions in G-code, in mm: two units of their last decimal.
+const WRITTEN: f64 = 2.0 * POSITION_UNIT;
 /// The most violations listed.
 const MAX_LISTED: usize = 50;
 /// The most filament pulled or pushed in place, in mm.
 const MAX_IN_PLACE: f64 = 20.0;
 
-/// What is wrong with move `m` from `from` on `layer`, whose top lies `relief` over its plane,
-/// over the lowest layer at `bed`, if anything.
-fn check(
-    m: &Move,
-    from: Option<[f64; 3]>,
-    layer: (usize, &Layer, &Relief),
-    beads: &Beads,
+/// The pass a move is checked on: its top lies `relief` over its plane, the lowest layer at
+/// `bed`, its filament `filament`, within the machine's `envelope`.
+struct On<'a> {
+    pass: &'a Pass,
+    relief: &'a Relief,
     bed: f64,
-    e: &Envelope,
-) -> Option<String> {
-    let (at_layer, layer, relief) = layer;
+    filament: &'a Filament,
+    envelope: &'a Envelope,
+}
+
+/// What is wrong with move `m` from `from` `on` its pass, among `beads`, if anything.
+fn check(m: &Move, from: Option<[f64; 3]>, on: &On, beads: &Beads) -> Option<String> {
+    let On { pass, relief, bed, filament, envelope: e } = *on;
     let finite = m.e.is_finite() && m.speed.is_finite() && m.accel.is_finite() && m.fan.is_finite();
     if !finite || m.speed <= 0.0 || m.accel <= 0.0 {
         return Some(format!("move pushing {} mm at {} mm/s, {} mm/s²", m.e, m.speed, m.accel));
@@ -145,35 +147,35 @@ fn check(
     }
     if m.e > 0.0 {
         let half = m.point(from, 0.5);
-        if layer.free {
+        if pass.free {
             // A free bead rests on the plate or on the beads of the layers before, its tip one
             // bead's height above what it rests on, or up to two where the bead is stretched
             // over a gap.
-            let rest = |p: [f64; 3]| p[2] - beads.support([p[0], p[1]], at_layer).unwrap_or(0.0);
-            let stand = [layer.height - WRITTEN, 2.0 * layer.height + WRITTEN];
+            let rest = |p: [f64; 3]| p[2] - beads.support([p[0], p[1]], pass.index).unwrap_or(0.0);
+            let stand = [pass.height - WRITTEN, 2.0 * pass.height + WRITTEN];
             for p in [to, half] {
                 if !(stand[0]..=stand[1]).contains(&rest(p)) {
                     return Some(format!(
                         "free extrusion at z = {} stands {:.3} mm over what it rests on, not one to two of its {} mm",
                         p[2],
                         rest(p),
-                        layer.height
+                        pass.height
                     ));
                 }
             }
         } else {
-            let on = |p: [f64; 3]| layer.z + relief.at([p[0], p[1]]);
+            let on = |p: [f64; 3]| pass.z + relief.at([p[0], p[1]]);
             // On a flat layer, at its height; on a bent one, within a quarter of the layer's
             // thickness of its top, short of the layer below by far.
-            let stray = if relief.is_zero() { SLACK } else { layer.height / 4.0 };
+            let stray = if relief.is_zero() { SLACK } else { pass.height / 4.0 };
             if (to[2] - on(to)).abs() > stray || (half[2] - on(half)).abs() > stray {
                 return Some(format!("extrusion at z = {} on the layer whose top is at {}", to[2], on(to)));
             }
         }
-        let filament_area = disc_area(e.filament_diameter);
+        let filament_area = disc_area(filament.diameter);
         let flow = if length > 0.0 { m.e * filament_area * m.speed / length } else { f64::INFINITY };
-        if flow > e.max_volumetric_speed + SLACK {
-            return Some(format!("{flow:.2} mm³/s is past the melt limit {}", e.max_volumetric_speed));
+        if flow > filament.max_volumetric_speed + SLACK {
+            return Some(format!("{flow:.2} mm³/s is past the melt limit {}", filament.max_volumetric_speed));
         }
     }
     if m.e < 0.0 && length <= SLACK {
@@ -182,20 +184,21 @@ fn check(
     None
 }
 
-/// Every unsafe move of the program; empty when it may be sent to the machine.
-pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
+/// Every unsafe move of the program, each pass's held to its material's `filaments`; empty when
+/// it may be sent to the machine.
+pub fn verify(program: &Program, envelope: &Envelope, filaments: &[Filament]) -> Vec<Violation> {
     let mut found = Vec::new();
-    let mut note = |layer: usize, index: usize, reason: String| {
+    let mut note = |(k, pass): (usize, &Pass), index: usize, reason: String| {
         if found.len() < MAX_LISTED {
-            found.push(Violation { layer, index, reason });
+            found.push(Violation { layer: pass.index, pass: k, index, reason });
         }
     };
-    let bed = program.layers.iter().map(|l| l.z).fold(f64::INFINITY, f64::min);
-    // The lowest the tip comes on each layer, where a move ends or the layer before left it, and
-    // from each layer on.
+    let bed = program.passes.iter().map(|l| l.z).fold(f64::INFINITY, f64::min);
+    // The lowest the tip comes on each pass, where a move ends or the pass before left it, and
+    // from each pass on.
     let mut last = f64::INFINITY;
     let lows: Vec<f64> = program
-        .layers
+        .passes
         .iter()
         .map(|l| {
             // A free bead may rest on one up to two of its heights below its tip.
@@ -218,48 +221,52 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
     let mut beads = Beads::new();
     // Where the layer before left the nozzle, which the machine's layer change keeps.
     let mut left: Option<[f64; 3]> = None;
-    for (k, layer) in program.layers.iter().enumerate() {
+    for (k, pass) in program.passes.iter().enumerate() {
         if let Some(&low) = lowest.get(k) {
             beads.forget_below(low);
         }
         // The layer's top over its plane, its warp on the program's carrier; a warp that does not
         // fit the carrier leaves the layer's beads nothing to lie on.
-        let relief = program.carrier.relief(&layer.warp).unwrap_or_else(|e| {
-            note(k, 0, format!("the layer's warp: {e}"));
+        let relief = program.carrier.relief(&pass.warp).unwrap_or_else(|e| {
+            note((k, pass), 0, format!("the layer's warp: {e}"));
             Relief::zero()
         });
+        let Some(filament) = filaments.get(pass.material) else {
+            note((k, pass), 0, format!("no filament given for material {}", pass.material));
+            continue;
+        };
         // A bent layer's moves are written within the resolution of its top in space, so in
         // height within that times `√(1 + G²)`, `G` its steepest lean; a flat one's on it.
         let lift =
             if relief.is_zero() { 0.0 } else { envelope.resolution.max(0.0) * relief.steepest().hypot(1.0) };
         let allowed = Allowed {
             head: &envelope.toolhead,
-            layer: k,
+            layer: pass.index,
             lift,
             ironing: envelope.ironing.max(0.0),
             written: WRITTEN,
         };
-        let z = layer.z;
-        if !(z.is_finite() && layer.height.is_finite() && layer.height > 0.0 && z > 0.0) {
-            note(k, 0, format!("layer at z = {z} with height {}", layer.height));
+        let z = pass.z;
+        if !(z.is_finite() && pass.height.is_finite() && pass.height > 0.0 && z > 0.0) {
+            note((k, pass), 0, format!("layer at z = {z} with height {}", pass.height));
         }
         if z > envelope.max_z {
-            note(k, 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
+            note((k, pass), 0, format!("layer at z = {z} is above the printable height {}", envelope.max_z));
         }
         // After the machine's layer change the nozzle may be anywhere.
         let mut at: Option<[f64; 3]> = None;
-        for (i, m) in layer.moves.iter().enumerate() {
+        for (i, m) in pass.moves.iter().enumerate() {
             // A free layer's beads stand one bead's height over the plate at the lowest.
-            let floor = if layer.free { bed.min(layer.height) } else { bed };
-            if let Some(reason) = check(m, at, (k, layer, &relief), &beads, floor, envelope) {
-                note(k, i, reason);
+            let floor = if pass.free { bed.min(pass.height) } else { bed };
+            let on = On { pass, relief: &relief, bed: floor, filament, envelope };
+            if let Some(reason) = check(m, at, &on, &beads) {
+                note((k, pass), i, reason);
             }
             if let Some(from) = at.or(left)
-                && m.to.is_some()
-                && m.to.iter().flatten().all(|v| v.is_finite())
+                && let Some(to) = m.to
+                && to.iter().all(|v| v.is_finite())
             {
                 if let Some((depth, own)) = intrusion(&beads, &allowed, m, from) {
-                    let to = m.to.unwrap_or(from);
                     let what = if own {
                         format!(
                             "the nozzle irons its own layer {depth:.3} mm deeper than the {} allowed",
@@ -268,9 +275,13 @@ pub fn verify(program: &Program, envelope: &Envelope) -> Vec<Violation> {
                     } else {
                         format!("the head comes {depth:.3} mm down into what is printed")
                     };
-                    note(k, i, format!("{what}, moving to ({:.3}, {:.3}, {:.3})", to[0], to[1], to[2]));
+                    note(
+                        (k, pass),
+                        i,
+                        format!("{what}, moving to ({:.3}, {:.3}, {:.3})", to[0], to[1], to[2]),
+                    );
                 }
-                beads.lay(m, from, k, lift);
+                beads.lay(m, from, pass.index, lift);
             }
             if m.to.is_some() {
                 at = m.to;

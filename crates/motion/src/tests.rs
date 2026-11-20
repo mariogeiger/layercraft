@@ -1,6 +1,6 @@
 //! Filament by volume, times against closed forms, the order of a travel, the shape of a lift,
-//! the geometry of an arc, beads fitted as lines and arcs, cooling, the merge of programs and
-//! the frame.
+//! the geometry of an arc, each bead's parameters, the moves held to the machine's limits and the
+//! parameters checked; the other passes have their own files.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -99,16 +99,21 @@ fn compiled(paths: &Paths, p: &MotionParams) -> Program {
     compile(paths, &[Field::uniform(p.clone())]).unwrap()
 }
 
+/// What `program` does, timed as the machine `p` runs it, every material pushing `p`'s filament.
+fn summary_of(program: &Program, p: &MotionParams) -> Summary {
+    summarize(program, &estimate(program, &p.limits), &[p.filament()])
+}
+
 /// Every move of the program, in order.
 fn all(program: &Program) -> Vec<&Move> {
-    program.layers.iter().flat_map(|l| &l.moves).collect()
+    program.passes.iter().flat_map(|l| &l.moves).collect()
 }
 
 /// A program of one layer at 0.2 mm of these moves.
 fn single(moves: Vec<Move>) -> Program {
     Program {
         carrier: Default::default(),
-        layers: vec![Layer {
+        passes: vec![Pass {
             index: 0,
             z: 0.2,
             height: 0.2,
@@ -138,7 +143,7 @@ fn climbs(from: Option<[f64; 3]>, m: &Move) -> bool {
 fn filament_follows_the_bead_volume() {
     let p = params();
     let program = compiled(&line(10.0), &p);
-    let summary = finish(&program, &p.limits, p.filament_diameter);
+    let summary = summary_of(&program, &p);
     let area = (0.4 - 0.2) * 0.2 + std::f64::consts::PI * 0.01;
     let filament_area = std::f64::consts::PI * 0.875 * 0.875;
     let expected = 2.0 * 0.98 * area * 10.0 / filament_area;
@@ -147,7 +152,7 @@ fn filament_follows_the_bead_volume() {
     assert!((summary.volume_per_layer[0] - 0.98 * area * 10.0).abs() < 1e-12);
     let frame = frame(&program, &p.templates, &steady(), &scope()).unwrap();
     assert!(frame.start.starts_with("; start me\n"), "{}", frame.start);
-    assert_eq!(frame.layers.len(), 2);
+    assert_eq!(frame.passes.len(), 2);
 }
 
 #[test]
@@ -172,7 +177,7 @@ fn straight_runs_keep_their_speed_through_joints() {
 #[test]
 fn a_layer_starts_crossing_over_at_the_hop_then_lands() {
     let program = compiled(&line(10.0), &params());
-    let moves = &program.layers[0].moves;
+    let moves = &program.passes[0].moves;
     // From the machine's start, wherever it leaves the nozzle: over at the hop, then down.
     assert!(moves[0].to.is_none() && moves[0].e < 0.0);
     assert_eq!(moves[1].to, Some([10.0, 10.0, 0.6000000000000001]));
@@ -185,55 +190,11 @@ fn a_layer_starts_crossing_over_at_the_hop_then_lands() {
 const PLATE: [[f64; 2]; 2] = [[0.0, 0.0], [256.0, 256.0]];
 
 #[test]
-fn a_layer_too_short_at_its_floor_waits_off_the_part() {
-    let mut p = params();
-    p.slow_down_layer_time = 4.0;
-    let mut program = compiled(&line(10.0), &p);
-    let speeds = |program: &Program| -> Vec<f64> {
-        all(program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect()
-    };
-    assert_eq!(speeds(&program), [50.0, 100.0]);
-    let before = program.clone();
-    cool(&mut program, &Field::uniform(p.clone()), PLATE).unwrap();
-    // 10 mm at 50 mm/s, then at 100 mm/s, is 0.2 s and 0.1 s: held at the 10 mm/s floor.
-    assert_eq!(speeds(&program), [10.0, 10.0]);
-    // At its floor the first layer takes 1 s. Lifted off its bead's end at (20, 10), it goes
-    // 10 mm past the bead the nearest way, along x, and waits the 3 s left.
-    let n = before.layers[0].moves.len();
-    let added = &program.layers[0].moves[n..];
-    assert_eq!(added.len(), 2, "{added:?}");
-    assert_eq!(
-        (added[0].to, added[0].e, added[0].speed),
-        (Some([30.0, 10.0, 0.6000000000000001]), 0.0, 300.0)
-    );
-    assert_eq!((added[1].to, added[1].e, added[1].wait), (None, 0.0, 3.0));
-    // Nothing lands on the last layer: it does not wait.
-    assert_eq!(program.layers[1].moves.len(), before.layers[1].moves.len());
-    // Travels, wipes and lifts keep their speed.
-    let others =
-        |moves: &[Move]| -> Vec<Move> { moves.iter().filter(|m| m.bead.is_none()).cloned().collect() };
-    assert_eq!(others(&program.layers[0].moves[..n]), others(&before.layers[0].moves));
-    assert_eq!(others(&program.layers[1].moves), others(&before.layers[1].moves));
-    // The wait is in the program's time.
-    let (t0, t1) = (finish(&before, &p.limits, 1.75), finish(&program, &p.limits, 1.75));
-    assert!(t1.motion_seconds - t0.motion_seconds > 3.0 + 2.0 * 0.9, "{t0:?} {t1:?}");
-}
-
-#[test]
-fn missing_template_variables_are_named() {
-    let mut p = params();
-    p.templates.end = "M140 S[bed]".into();
-    let program = compiled(&line(1.0), &p);
-    let err = frame(&program, &p.templates, &steady(), &scope()).unwrap_err().to_string();
-    assert!(err.contains("bed"), "{err}");
-}
-
-#[test]
 fn retraction_wipes_back_over_the_bead() {
     let mut p = params();
     p.wipe_distance = 1.0;
     let program = compiled(&line(10.0), &p);
-    let moves = &program.layers[0].moves;
+    let moves = &program.passes[0].moves;
     let wipes: Vec<&Move> = moves.iter().filter(|m| m.to.is_some() && m.e < 0.0).collect();
     // Back from the line's end at x = 20 towards its start, 1 mm, pulling the whole 0.4 mm.
     let last = wipes.last().unwrap();
@@ -243,7 +204,7 @@ fn retraction_wipes_back_over_the_bead() {
     // The filament never moves faster than the retraction speed: 0.4 mm over 1 mm at v ≤ 75 mm/s.
     assert!(wipes.iter().all(|w| w.speed * 0.4 / 1.0 <= p.retract_speed + 1e-9));
     // And the print ends lifted off the part, before the machine's own end.
-    let end = program.layers[1].moves.last().unwrap();
+    let end = program.passes[1].moves.last().unwrap();
     assert!((end.to.unwrap()[2] - 0.8).abs() < 1e-9, "{end:?}");
 }
 
@@ -301,7 +262,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
     let round = std::f64::consts::PI * 0.04;
     let flat = (0.4 - 0.2) * 0.2 + std::f64::consts::PI * 0.01;
     let expected = 0.98 * (2.0 * flat * 39.94 + round * 10.0) / filament_area;
-    let summary = finish(&program, &p.limits, p.filament_diameter);
+    let summary = summary_of(&program, &p);
     assert!((summary.filament_mm - expected).abs() < 1e-9, "{}", summary.filament_mm);
 }
 
@@ -321,7 +282,7 @@ fn a_short_move_slides_and_a_long_one_retracts_and_lifts() {
             }],
         };
         let program = compiled(&paths, &params());
-        let moves = &program.layers[0].moves;
+        let moves = &program.passes[0].moves;
         let after_first = moves.iter().position(|m| m.bead.is_some()).unwrap();
         let between: Vec<Move> = moves[after_first..]
             .iter()
@@ -368,7 +329,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
     p.wipe_distance = 1.0;
     let program = compiled(&paths, &p);
     let lifts: Vec<&Move> =
-        chained(&program.layers[0].moves, None).filter(|(f, m)| climbs(*f, m)).map(|(_, m)| m).collect();
+        chained(&program.passes[0].moves, None).filter(|(f, m)| climbs(*f, m)).map(|(_, m)| m).collect();
     // Off the first line, then off the second at the end; from the start, the nozzle crossed over.
     assert_eq!(lifts.len(), 2, "{lifts:?}");
     // Off the first line, wiped back from (20, 10) to (19, 10), setting off towards the second
@@ -386,7 +347,10 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
 
 mod bent;
 mod cool;
+mod fit;
+mod frame;
 mod lifts;
+mod merge;
 
 #[test]
 fn a_helix_runs_at_its_centripetal_limit() {
@@ -434,7 +398,7 @@ fn each_bead_takes_the_parameters_at_its_place() {
     let field = tuned(r#"[{"within": {"z": [0.3, 1]}, "set": {"motion": {"lift_radius": 1.0}}}]"#);
     let program = compile(&line(10.0), std::slice::from_ref(&field)).unwrap();
     let lifts: Vec<&Move> = program
-        .layers
+        .passes
         .iter()
         .flat_map(|l| chained(&l.moves, None).filter(|(f, m)| climbs(*f, m)).map(|(_, m)| m))
         .collect();
@@ -471,72 +435,22 @@ fn what_is_pulled_back_is_pushed_again() {
 fn an_edited_program_is_summarised_from_its_moves() {
     let p = params();
     let mut program = compiled(&line(10.0), &p);
-    let before = finish(&program, &p.limits, 1.75);
-    for m in program.layers.iter_mut().flat_map(|l| &mut l.moves) {
+    let before = summary_of(&program, &p);
+    for m in program.passes.iter_mut().flat_map(|l| &mut l.moves) {
         if m.bead.is_some() {
             m.e *= 2.0;
             m.speed /= 2.0;
         }
     }
-    let after = finish(&program, &p.limits, 1.75);
+    let after = summary_of(&program, &p);
     assert!((after.filament_mm - 2.0 * before.filament_mm).abs() < 1e-12);
     assert!(after.motion_seconds > before.motion_seconds);
 }
 
 #[test]
-fn programs_merge_layer_by_layer_nearest_first_with_their_filament_as_they_left_it() {
-    let bead = Some(Bead { role: Role::SOLID, width: 0.4 });
-    // Over, down, push back what the layer below pulled, a bead, pull.
-    let piece = |x: f64, pull: f64, first: bool| {
-        vec![
-            travel([x, 0.0, 0.6], 300.0),
-            Move { to: None, e: if first { 0.0 } else { pull }, ..travel([0.0; 3], 30.0) },
-            Move { e: 0.1, bead, ..travel([x + 5.0, 0.0, 0.2], 50.0) },
-            Move { to: None, e: -pull, ..travel([0.0; 3], 30.0) },
-        ]
-    };
-    let program = |x: f64, pull: f64, layers: usize| Program {
-        carrier: Default::default(),
-        layers: (0..layers)
-            .map(|i| Layer {
-                index: i,
-                z: 0.2 * (i + 1) as f64,
-                height: 0.2,
-                warp: Default::default(),
-                free: false,
-                moves: piece(x, pull, i == 0),
-                material: 0,
-            })
-            .collect(),
-    };
-    // A far one pulling 0.4, a near one pulling 0.8 and one layer taller.
-    let merged = merge(&[program(100.0, 0.4, 2), program(10.0, 0.8, 3)], 25.0);
-    assert_eq!(merged.layers.len(), 3);
-    assert_eq!(merged.layers.iter().map(|l| l.z).collect::<Vec<_>>(), vec![0.2, 0.4, 0.6000000000000001]);
-    // At one height, the first given first, then the next nearest to where it ended.
-    let starts: Vec<f64> = merged.layers[1]
-        .moves
-        .iter()
-        .filter(|m| m.bead.is_none() && m.e == 0.0)
-        .filter_map(|m| m.to)
-        .map(|p| p[0])
-        .collect();
-    assert_eq!(starts, vec![10.0, 100.0]);
-    // The filament balances: every push gives back exactly what is pulled before it.
-    let mut pulled = 0.0;
-    for m in all(&merged).into_iter().filter(|m| m.bead.is_none()) {
-        pulled -= m.e;
-        assert!(pulled > -1e-9, "pushed more than was pulled: {pulled}");
-    }
-    // The near one leaves 0.8 pulled; the far one expects 0.4: 0.4 is given back first, at 25 mm/s.
-    let fix = merged.layers[1].moves.iter().find(|m| m.speed == 25.0).unwrap();
-    assert!((fix.e - 0.4).abs() < 1e-12 && fix.to.is_none());
-}
-
-#[test]
 fn moves_are_held_to_what_the_hot_end_melts_and_the_z_axis_moves() {
     let bead = Some(Bead { role: Role::SOLID, width: 0.4 });
-    let limits = MoveLimits { max_volumetric_speed: 24.0, filament_diameter: 1.75, max_speed_z: 20.0 };
+    let filament = Filament { diameter: 1.75, max_volumetric_speed: 24.0 };
     // 1 mm pushing 1 mm of 1.75 mm filament, 2.405 mm³, asks 240 mm³/s at 100 mm/s: held to 24 mm³/s.
     // A travel down 3 mm over 4 across, 5 long, at 300 mm/s drives Z at 180 mm/s: held to 20.
     let mut program = single(vec![
@@ -544,13 +458,13 @@ fn moves_are_held_to_what_the_hot_end_melts_and_the_z_axis_moves() {
         Move { e: 1.0, bead, ..travel([1.0, 0.0, 0.0], 100.0) },
         travel([5.0, 0.0, -3.0], 300.0),
     ]);
-    assert_eq!(limit(&mut program, std::slice::from_ref(&limits)), 1);
+    assert_eq!(limit(&mut program, &[filament], 20.0), 1);
     let area = std::f64::consts::PI * 0.875 * 0.875;
-    assert!((program.layers[0].moves[1].speed - 24.0 / area).abs() < 1e-9);
-    assert!((program.layers[0].moves[2].speed - 20.0 * 5.0 / 3.0).abs() < 1e-9);
+    assert!((program.passes[0].moves[1].speed - 24.0 / area).abs() < 1e-9);
+    assert!((program.passes[0].moves[2].speed - 20.0 * 5.0 / 3.0).abs() < 1e-9);
     // Held already: left alone.
     let held = program.clone();
-    assert_eq!(limit(&mut program, std::slice::from_ref(&limits)), 0);
+    assert_eq!(limit(&mut program, &[filament], 20.0), 0);
     assert_eq!(program, held);
 }
 
@@ -616,239 +530,11 @@ fn the_pass_after_a_filament_change_goes_without_the_fan() {
     p.fan_speed = 0.4;
     let program = compiled(&paths, &p);
     let fans: Vec<Vec<f64>> = program
-        .layers
+        .passes
         .iter()
         .map(|l| l.moves.iter().filter(|m| m.bead.is_some()).map(|m| m.fan).collect())
         .collect();
     assert_eq!(fans, [vec![0.4], vec![0.0], vec![0.4]]);
-}
-
-#[test]
-fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
-    // 10 mm of outer wall and 10 mm of sparse infill at 100 mm/s: 0.2 s, to last 0.5 s. The
-    // infill alone takes the 0.3 s more, at 25 mm/s; the wall keeps its 100 mm/s. To last 1.5 s,
-    // the infill falls to its 10 mm/s floor (1 s), and the wall slows to 20 mm/s for the rest.
-    let line = |role: Role, y: f64| Path {
-        role,
-        width: 0.4,
-        closed: false,
-        points: vec![[10.0, y], [20.0, y]],
-        travel_crosses: false,
-        overhang: Vec::new(),
-    };
-    let paths = Paths {
-        carrier: Default::default(),
-        layers: vec![PathLayer {
-            index: 1,
-            top: 0.4,
-            height: 0.2,
-            warp: Default::default(),
-            paths: vec![line(Role::OUTER_WALL, 10.0), {
-                let mut back = line(Role::SPARSE, 10.5);
-                back.reverse();
-                back
-            }],
-            material: 0,
-        }],
-    };
-    for (goal, expected) in [(0.5, [100.0, 25.0]), (1.5, [20.0, 10.0])] {
-        let p = MotionParams { slow_down_layer_time: goal, ..params() };
-        let mut program = compiled(&paths, &p);
-        cool(&mut program, &Field::uniform(p), PLATE).unwrap();
-        let speeds: Vec<f64> = all(&program).iter().filter(|m| m.bead.is_some()).map(|m| m.speed).collect();
-        assert!(speeds.iter().zip(expected).all(|(s, e)| (s - e).abs() < 1e-6), "goal {goal}: {speeds:?}");
-    }
-}
-
-#[test]
-fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
-    // Three quarters of a circle of 10 mm in 128 chords, then 10 mm straight on along its tangent
-    // in 9 pieces, then a zigzag 0.05 mm high, more than the resolution: one arc, one line, and
-    // the zigzag as it is. Without arcs, the circle takes chords of two pieces, each within
-    // the resolution.
-    let (c, r, eps) = ([50.0, 50.0], 10.0, 0.012);
-    let quarter = std::f64::consts::FRAC_PI_2;
-    let mut points: Vec<[f64; 2]> = (0..=128)
-        .map(|k| 3.0 * quarter * k as f64 / 128.0)
-        .map(|a: f64| [c[0] + r * a.cos(), c[1] + r * a.sin()])
-        .collect();
-    let end = *points.last().unwrap();
-    points.extend((1..=9).map(|k| [end[0] + 10.0 * k as f64 / 9.0, end[1]]));
-    let end = *points.last().unwrap();
-    points.extend((1..=6).map(|k| [end[0] + k as f64, end[1] + 0.05 * (k % 2) as f64]));
-    let wall = Path {
-        role: Role::OUTER_WALL,
-        width: 0.4,
-        closed: false,
-        points: points.clone(),
-        travel_crosses: false,
-        overhang: Vec::new(),
-    };
-    let paths = Paths {
-        carrier: Default::default(),
-        layers: vec![PathLayer {
-            index: 1,
-            top: 0.4,
-            height: 0.2,
-            warp: Default::default(),
-            paths: vec![wall],
-            material: 0,
-        }],
-    };
-    let traced = compiled(&paths, &params());
-    let beads = |program: &Program| -> Vec<(Option<[f64; 3]>, Move)> {
-        chained(&program.layers[0].moves, None)
-            .filter(|(_, m)| m.bead.is_some())
-            .map(|(f, m)| (f, m.clone()))
-            .collect()
-    };
-    let (from, first) = &beads(&traced)[0];
-    let per_mm = first.e / first.length(from.unwrap());
-
-    let mut arcs = traced.clone();
-    fit(&mut arcs, eps, true);
-    let fitted = beads(&arcs);
-    assert_eq!(fitted.len(), 1 + 1 + 6, "{fitted:?}");
-    let arc = fitted[0].1.arc.unwrap();
-    assert!((arc.centre[0] - c[0]).abs() < 1e-9 && (arc.centre[1] - c[1]).abs() < 1e-9, "{arc:?}");
-    assert!((arc.turn - 3.0 * quarter).abs() < 1e-9);
-    assert!((fitted[0].1.e - per_mm * r * 3.0 * quarter).abs() < 1e-12);
-    assert!(fitted[1].1.arc.is_none() && fitted[1].1.to.unwrap()[0] == end[0]);
-    for (f, m) in &fitted {
-        assert!((m.e - per_mm * m.length(f.unwrap())).abs() < 1e-12);
-        assert_eq!((m.speed, m.fan, m.bead), (first.speed, first.fan, first.bead));
-    }
-
-    let mut lines = traced.clone();
-    fit(&mut lines, eps, false);
-    let fitted = beads(&lines);
-    assert_eq!(fitted.len(), 64 + 1 + 6);
-    let ends: Vec<[f64; 2]> = std::iter::once(points[0])
-        .chain(fitted.iter().map(|(_, m)| [m.to.unwrap()[0], m.to.unwrap()[1]]))
-        .collect();
-    let to_polyline = |p: [f64; 2]| {
-        ends.windows(2)
-            .map(|w| {
-                let (a, b) = (w[0], w[1]);
-                let e = [b[0] - a[0], b[1] - a[1]];
-                let s = (((p[0] - a[0]) * e[0] + (p[1] - a[1]) * e[1]) / (e[0] * e[0] + e[1] * e[1]))
-                    .clamp(0.0, 1.0);
-                (p[0] - a[0] - s * e[0]).hypot(p[1] - a[1] - s * e[1])
-            })
-            .fold(f64::INFINITY, f64::min)
-    };
-    assert!(points.iter().all(|&p| to_polyline(p) <= eps));
-
-    // A resolution of nothing leaves the beads as traced.
-    let mut same = traced.clone();
-    fit(&mut same, 0.0, true);
-    assert_eq!(same, traced);
-}
-
-#[test]
-fn chords_of_a_helix_climbing_evenly_are_one_arc_and_of_a_vast_circle_lines() {
-    let bead = Some(Bead { role: Role::OUTER_WALL, width: 0.4 });
-    let chain = |points: Vec<[f64; 3]>| {
-        let mut moves = vec![travel(points[0], 300.0)];
-        moves.extend(points.windows(2).map(|w| {
-            let l = (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]);
-            Move { e: 0.01 * l, bead, ..travel(w[1], 100.0) }
-        }));
-        single(moves)
-    };
-    // Half a turn of radius 10 about (50, 50) in 64 chords, climbing 0.5 mm evenly: one arc
-    // laying 0.01 mm of filament per mm across the plate.
-    let helix: Vec<[f64; 3]> = (0..=64)
-        .map(|k| (PI * k as f64 / 64.0, k as f64 / 64.0))
-        .map(|(a, s)| [50.0 + 10.0 * a.cos(), 50.0 + 10.0 * a.sin(), 1.0 + 0.5 * s])
-        .collect();
-    let mut program = chain(helix.clone());
-    fit(&mut program, 0.012, true);
-    let moves = &program.layers[0].moves;
-    assert_eq!(moves.len(), 2, "{moves:?}");
-    let arc = moves[1].arc.unwrap();
-    assert!((arc.centre[0] - 50.0).abs() < 1e-9 && (arc.centre[1] - 50.0).abs() < 1e-9, "{arc:?}");
-    assert!((arc.turn - PI).abs() < 1e-9 && moves[1].to == Some(helix[64]));
-    assert!((moves[1].e - 0.01 * 10.0 * PI).abs() < 1e-12);
-    // 20 mm of a circle 2 m across, bowing 0.025 mm from its chord, past the resolution: an arc
-    // about a centre that far is lost to the machine's rounding, so lines.
-    let vast: Vec<[f64; 3]> = (0..=40)
-        .map(|k| (k as f64 - 20.0) / 2.0)
-        .map(|x| [100.0 + x, 50.0 + 2000.0 - (2000.0f64 * 2000.0 - x * x).sqrt(), 1.0])
-        .collect();
-    let mut program = chain(vast);
-    fit(&mut program, 0.012, true);
-    let moves = &program.layers[0].moves;
-    assert!(moves.len() > 2 && moves.iter().all(|m| m.arc.is_none()), "{moves:?}");
-}
-
-#[test]
-fn passes_of_other_materials_change_the_filament_between_them() {
-    let p = params();
-    let templates = Templates {
-        layer_change: "; layer [layer_num]\n".into(),
-        change_filament: "; change [current_filament_id] to [next_filament_id], [old_filament_temp] to [new_filament_temp]\n".into(),
-        ..Templates::default()
-    };
-    let bead = |x: f64| Move {
-        e: 0.1,
-        bead: Some(Bead { role: Role::OUTER_WALL, width: 0.4 }),
-        ..travel([x, 0.0, 0.2], 50.0)
-    };
-    let pass = |index: usize, material: usize, x: f64| Layer {
-        index,
-        z: 0.2 * (index + 1) as f64,
-        height: 0.2,
-        warp: Default::default(),
-        free: false,
-        moves: vec![travel([x - 1.0, 0.0, 0.2], 100.0), bead(x)],
-        material,
-    };
-    // Layer 1 in two materials, layer 2 in the second only.
-    let program = Program {
-        carrier: Default::default(),
-        layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 3.0), pass(2, 1, 4.0)],
-    };
-    // Each filament a first layer hotter than the rest, the bed cooler after the first layer.
-    let heat = Heat { nozzle: vec![[250.0, 245.0], [240.0, 235.0]], bed: [70.0, 65.0] };
-    let f = frame(&program, &templates, &heat, &scope()).unwrap();
-    // The start leaves the first layer's temperatures; the second layer sets the others for the
-    // filament loaded; after a change the nozzle waits for the new filament as hot as on its
-    // first layer, for the pass laid on plastic the change left to cool, then on the next layer
-    // takes its own.
-    assert_eq!(
-        f.layers,
-        [
-            "; layer 0\n",
-            "; layer 1\nM140 S65 ; the bed for this layer\nM104 S245 ; the nozzle for this layer\n",
-            "; change 0 to 1, 245 to 235\nM109 S240 ; wait for the new filament, as hot as on the first layer\n",
-            "; layer 2\nM104 S235 ; the nozzle for this layer\n"
-        ]
-    );
-    // A program that keeps its temperatures sets none.
-    let one = Program { carrier: Default::default(), layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0)] };
-    let still = Heat { nozzle: vec![[220.0, 220.0]], bed: [60.0, 60.0] };
-    assert_eq!(frame(&one, &templates, &still, &scope()).unwrap().layers, ["; layer 0\n", "; layer 1\n"]);
-    // The machine's end sees the filament last loaded.
-    let end = Templates { end: "; end [current_filament_id]\n".into(), ..templates.clone() };
-    assert!(frame(&program, &end, &heat, &scope()).unwrap().end.contains("; end 1"));
-    // Without a change in the machine's templates, no frame.
-    let bare = Templates { change_filament: String::new(), ..templates.clone() };
-    assert!(frame(&program, &bare, &heat, &scope()).is_err());
-    // Nor without a temperature for each material, or with one no printer can be asked for.
-    assert!(frame(&program, &templates, &still, &scope()).is_err());
-    for bad in [f64::NAN, f64::INFINITY, 0.0, -10.0] {
-        let hostile = Heat { nozzle: vec![[250.0, 245.0], [240.0, bad]], bed: [70.0, 65.0] };
-        assert!(frame(&program, &templates, &hostile, &scope()).is_err(), "{bad}");
-        let hostile = Heat { bed: [70.0, bad], ..heat.clone() };
-        assert!(frame(&program, &templates, &hostile, &scope()).is_err(), "{bad}");
-    }
-    // Layers are counted once, filament by material, the first layer over its passes.
-    let s = finish(&program, &p.limits, p.filament_diameter);
-    assert_eq!(s.layers, 3);
-    assert_eq!(s.filament_mm_by_material, [0.2, 0.2]);
-    assert!((s.filament_mm - 0.4).abs() < 1e-12);
-    assert_eq!(s.volume_per_layer.len(), 3);
 }
 
 /// A short move inside the part slides along the layer, unless it crosses a laid bead: then it
@@ -880,7 +566,7 @@ fn a_short_move_lifts_over_a_laid_bead_it_crosses() {
         }],
     };
     let highest_between = |program: &Program| {
-        let moves = &program.layers[0].moves;
+        let moves = &program.passes[0].moves;
         let first = moves.iter().position(|m| m.e > 0.0).unwrap();
         let second = moves.iter().rposition(|m| m.e > 0.0).unwrap();
         let (mut z, mut pulled) = (0.0f64, false);
@@ -895,4 +581,29 @@ fn a_short_move_lifts_over_a_laid_bead_it_crosses() {
     assert!((slid - 0.2).abs() < 1e-9, "stays on the layer: {slid}");
     assert!((lifted - (0.2 + p.z_hop)).abs() < 1e-9, "over the bead by the hop: {lifted}");
     assert!(!pulled, "a hidden move keeps its filament");
+}
+
+#[test]
+fn a_parameter_out_of_range_is_refused_by_name() {
+    assert!(params().check().is_ok());
+    let refused = |change: fn(&mut MotionParams), named: &str| {
+        let mut p = params();
+        change(&mut p);
+        let err = compile(&line(10.0), &[Field::uniform(p)]).unwrap_err().to_string();
+        assert!(err.contains(named), "{err}");
+    };
+    // Every role's speed and acceleration, the bridge's too, which strands take.
+    refused(|p| p.bridge.speed = 0.0, "bridge");
+    refused(|p| p.support_interface.accel = f64::NAN, "support interface");
+    refused(|p| p.first_layer_accel = -1.0, "first layer's acceleration");
+    refused(|p| p.overhang_fan_speed = 1.5, "overhang fan");
+    refused(|p| p.retract_before_wipe = 2.0, "retracted before the wipe");
+    refused(|p| p.wipe_distance = -1.0, "wipe");
+    refused(|p| p.z_hop = 11.0, "hop");
+    refused(|p| p.overhang_speeds = vec![-1.0], "overhang speeds");
+}
+
+#[test]
+fn positions_are_written_to_their_unit() {
+    assert_eq!(POSITION_UNIT, 10f64.powi(-(POSITION_DECIMALS as i32)));
 }

@@ -1,29 +1,8 @@
 //! Comparing two G-code files, layer by layer and feature by feature: ours against another
 //! slicer's, as a reference rather than an oracle.
 
-use layercraft_gcode::stats::{Stats, stats};
+use layercraft_gcode::{Stats, stats};
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::path::Path;
-
-/// The largest G-code read, in bytes.
-const MAX_GCODE_BYTES: u64 = 2 << 30;
-
-/// The G-code of a `.gcode` file, or of the first plate of a `.gcode.3mf`.
-pub fn read_gcode(path: &Path) -> Result<String, String> {
-    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let name = path.to_string_lossy();
-    let mut text = String::new();
-    if name.ends_with(".3mf") {
-        let mut zip =
-            zip::ZipArchive::new(std::io::BufReader::new(file)).map_err(|e| format!("{name}: {e}"))?;
-        let entry = zip.by_name("Metadata/plate_1.gcode").map_err(|e| format!("{name}: {e}"))?;
-        entry.take(MAX_GCODE_BYTES).read_to_string(&mut text).map_err(|e| format!("{name}: {e}"))?;
-    } else {
-        file.take(MAX_GCODE_BYTES).read_to_string(&mut text).map_err(|e| format!("{name}: {e}"))?;
-    }
-    Ok(text)
-}
 
 fn totals(s: &Stats) -> (BTreeMap<String, f64>, BTreeMap<String, f64>, f64) {
     let mut filament = BTreeMap::new();
