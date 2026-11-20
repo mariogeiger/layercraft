@@ -2,6 +2,21 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.22.2
+
+### Fixed
+
+- A 3MF transform with a word that is not a number is refused. Before, the word was dropped and
+  the other numbers shifted one place: 13 words with one bad word still made the 12 numbers a
+  transform needs, and the object was placed wrong without a warning.
+- A section that stops at more than 1024 cracks is now an error: the mesh is broken. Before, those
+  chains were dropped from the layer, and the warning still said each had been joined.
+
+### Changed
+
+- The sections' stage file names the mesh triangles the leaves could not cut `unsplit_triangles`.
+  Files that still say `unsplit_cells` read as before.
+
 ## 0.22.1
 
 ### Changed
