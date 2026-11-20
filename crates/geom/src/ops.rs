@@ -31,7 +31,7 @@ use std::f64::consts::{PI, SQRT_2, TAU};
 /// step, and the distance under which CAD programs such as SolidCraft weld points.
 pub const GRID_MM: f64 = 1e-6;
 /// Lattice steps per millimetre.
-const STEPS: f64 = 1e6;
+pub(crate) const STEPS: f64 = 1e6;
 /// The thinnest contour a result keeps, in mm: a micrometre, a printer's finest step, far above
 /// the few steps that rounding debris reaches and far below anything a bead can fill.
 pub const RESOLUTION_MM: f64 = 1e-3;
@@ -39,9 +39,22 @@ pub const RESOLUTION_MM: f64 = 1e-3;
 /// The smallest interior angle kept sharp by an offset; sharper corners are clipped (radians).
 const MITER_MIN_ANGLE: f64 = 0.1;
 
-type Lattice = IntPoint<i64>;
+/// How far one stage of a disc offset goes, in mm. The edges of a contour moved past what it
+/// bounds all cross: an erosion deep past a thin band, the common case, costs the square of its
+/// edges. The disc's erosions and dilations add up, `E(E(A, a), b) = E(A, a + b)`, so that stages
+/// reach the same set with the crossings local, what is thin gone early, and an end at empty. A
+/// stage is under a bead's half-width, so that a band of a few beads dies within a stage or two;
+/// on a Benchy, 0.25 mm spends 9 s in here where 1 mm spent 50 s.
+const DISC_STAGE_MM: f64 = 0.25;
 
-fn to_lattice(p: &Point) -> Lattice {
+/// The most chords one arc of a disc offset is cut into.
+const MAX_CHORDS: f64 = 65_536.0;
+
+/// A point of the lattice, in steps.
+pub(crate) type Lattice = IntPoint<i64>;
+
+/// The lattice point nearest `p`.
+pub(crate) fn to_lattice(p: &Point) -> Lattice {
     // Checked inputs are within LIMIT_MM, so the steps fit an i64 with room to spare.
     IntPoint::new((p[0] * STEPS).round() as i64, (p[1] * STEPS).round() as i64)
 }
@@ -50,7 +63,7 @@ pub(crate) fn from_lattice(q: &Lattice) -> Point {
     [q.x as f64 / STEPS, q.y as f64 / STEPS]
 }
 
-fn contours_to_lattice(contours: &[Vec<Point>]) -> Vec<Vec<Lattice>> {
+pub(crate) fn contours_to_lattice(contours: &[Vec<Point>]) -> Vec<Vec<Lattice>> {
     contours.iter().map(|c| c.iter().map(to_lattice).collect()).collect()
 }
 
@@ -58,15 +71,17 @@ pub(crate) fn region_to_lattice(region: &Region) -> Vec<Vec<Vec<Lattice>>> {
     region.iter().map(|shape| contours_to_lattice(shape)).collect()
 }
 
+pub(crate) fn from_lattice_shapes(shapes: &[Vec<Vec<Lattice>>]) -> Region {
+    shapes.iter().map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect()).collect()
+}
+
+/// The region of lattice shapes, without their slivers.
 fn region_from_lattice(shapes: Vec<Vec<Vec<Lattice>>>) -> Region {
-    without_slivers(shapes)
-        .iter()
-        .map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect())
-        .collect()
+    from_lattice_shapes(&without_slivers(shapes))
 }
 
 fn check_region(region: &Region) -> Result<(), GeomError> {
-    check_points(region.iter().flatten())
+    check_points(region.iter().flatten().flatten())
 }
 
 /// The region covered by contours under the even-odd rule: a closed loop of any orientation
@@ -82,7 +97,7 @@ pub fn winding_region(contours: &[Vec<Point>]) -> Result<Region, GeomError> {
 }
 
 fn fill(contours: &[Vec<Point>], rule: FillRule) -> Result<Region, GeomError> {
-    check_points(contours)?;
+    check_points(contours.iter().flatten())?;
     let empty: Vec<Vec<Lattice>> = Vec::new();
     Ok(region_from_lattice(contours_to_lattice(contours).overlay(&empty, OverlayRule::Subject, rule)))
 }
@@ -204,10 +219,6 @@ fn disc_stages(mut shapes: Vec<Vec<Vec<Lattice>>>, total: i64, chord: f64) -> Ve
     shapes
 }
 
-fn from_lattice_shapes(shapes: &[Vec<Vec<Lattice>>]) -> Region {
-    shapes.iter().map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect()).collect()
-}
-
 /// One stage of a disc offset, `steps` of the lattice long, its arcs cut into chords of `chord`.
 fn disc_offset_stage(region: &[Vec<Vec<Lattice>>], steps: f64, chord: f64) -> Vec<Vec<Vec<Lattice>>> {
     let empty: Vec<Vec<Lattice>> = Vec::new();
@@ -232,17 +243,6 @@ fn disc_offset_stage(region: &[Vec<Vec<Lattice>>], steps: f64, chord: f64) -> Ve
     without_slivers(parts.overlay(&empty, OverlayRule::Subject, FillRule::Positive))
 }
 
-/// How far one stage of a disc offset goes, in mm. The edges of a contour moved past what it
-/// bounds all cross: an erosion deep past a thin band, the common case, costs the square of its
-/// edges. The disc's erosions and dilations add up, `E(E(A, a), b) = E(A, a + b)`, so that stages
-/// reach the same set with the crossings local, what is thin gone early, and an end at empty. A
-/// stage is under a bead's half-width, so that a band of a few beads dies within a stage or two;
-/// on a Benchy, 0.25 mm spends 9 s in here where 1 mm spent 50 s.
-const DISC_STAGE_MM: f64 = 0.25;
-
-/// The most chords one arc of a disc offset is cut into.
-const MAX_CHORDS: f64 = 65_536.0;
-
 /// Twice a lattice contour's signed area, positive counterclockwise.
 fn doubled_area(contour: &[Lattice]) -> i128 {
     let n = contour.len();
@@ -264,8 +264,9 @@ struct MovedCorner {
     parting: bool,
     /// How much of each edge crossing cuts off, zero where they part.
     trim: f64,
-    /// The turn's sine and cosine, times the edges' lengths.
+    /// The turn's sine, times the edges' lengths.
     turn: f64,
+    /// The turn's cosine, times the edges' lengths.
     along: f64,
 }
 
@@ -369,13 +370,11 @@ pub fn disc_opening(region: &Region, r: f64) -> Result<Region, GeomError> {
 /// its perimeter: the width of a strip, half the radius of a disc.
 fn resolved(contour: &[Lattice]) -> bool {
     let n = contour.len();
-    let (mut doubled_area, mut perimeter) = (0i128, 0.0f64);
-    for (i, a) in contour.iter().enumerate() {
-        let Some(b) = contour.get((i + 1) % n) else { continue };
-        doubled_area += a.x as i128 * b.y as i128 - b.x as i128 * a.y as i128;
-        perimeter += ((b.x - a.x) as f64).hypot((b.y - a.y) as f64);
-    }
-    doubled_area.unsigned_abs() as f64 >= perimeter * RESOLUTION_MM * STEPS
+    let perimeter: f64 = (0..n)
+        .filter_map(|i| Some((contour.get(i)?, contour.get((i + 1) % n)?)))
+        .map(|(a, b)| ((b.x - a.x) as f64).hypot((b.y - a.y) as f64))
+        .sum();
+    doubled_area(contour).unsigned_abs() as f64 >= perimeter * RESOLUTION_MM * STEPS
 }
 
 /// The shapes without the contours thinner than `RESOLUTION_MM`: rounding debris.
@@ -395,7 +394,7 @@ fn without_slivers(shapes: Vec<Vec<Vec<Lattice>>>) -> Vec<Vec<Vec<Lattice>>> {
 /// runs inside: a piece ends where its line ends, meets the region's boundary or crosses a line.
 /// A line that ends where it starts is a ring, which goes on through its start.
 pub fn clip_lines(lines: &[Polyline], region: &Region) -> Result<Vec<Polyline>, GeomError> {
-    check_points(lines)?;
+    check_points(lines.iter().flatten())?;
     check_region(region)?;
     if lines.is_empty() || region.is_empty() {
         return Ok(Vec::new());
@@ -498,19 +497,20 @@ pub fn triangulate(region: &Region) -> Result<(Vec<Point>, Vec<[u32; 3]>), GeomE
 /// neighbours share their corners.
 pub fn slice(region: &Region, segments: &[[Point; 2]]) -> Result<Region, GeomError> {
     check_region(region)?;
-    check_points(&[segments.iter().flatten().copied().collect::<Vec<Point>>()])?;
+    check_points(segments.iter().flatten())?;
     let paths: Vec<Vec<Lattice>> = segments.iter().map(|s| s.iter().map(to_lattice).collect()).collect();
-    let shapes = region_to_lattice(region);
-    let mut overlay = StringOverlay::from_shape_custom(&shapes, IntOverlayOptions::keep_all_points());
-    overlay.add_string_source(&paths);
-    let faces = overlay
+    Ok(from_lattice_shapes(&sliced(&region_to_lattice(region), &paths)))
+}
+
+/// The faces lattice paths cut lattice shapes into, all from one pass, every point kept, so that
+/// neighbours share every corner.
+pub(crate) fn sliced(shapes: &[Vec<Vec<Lattice>>], paths: &[Vec<Lattice>]) -> Vec<Vec<Vec<Lattice>>> {
+    let mut overlay = StringOverlay::from_shape_custom(shapes, IntOverlayOptions::keep_all_points());
+    overlay.add_string_source(paths);
+    overlay
         .build_graph_view(FillRule::NonZero)
         .map(|graph| graph.extract_shapes_custom(StringRule::Slice, IntOverlayOptions::keep_all_points()))
-        .unwrap_or_default();
-    Ok(faces
-        .iter()
-        .map(|shape| shape.iter().map(|c| c.iter().map(from_lattice).collect()).collect())
-        .collect())
+        .unwrap_or_default()
 }
 
 /// The area of a region: outer contours count positive, holes negative.

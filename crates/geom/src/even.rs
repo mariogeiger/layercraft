@@ -16,22 +16,30 @@
 //! inner points toward their neighbourhoods' centroids would even the band out, but the
 //! relaxation at hand depends on the order it visits them in.)
 
-use crate::ops::{from_lattice, region_to_lattice};
-use crate::{GRID_MM, GeomError, MAX_POINTS, Moments, Point, RESOLUTION_MM, Region, check_value};
+use crate::ops::{Lattice, contours_to_lattice, from_lattice, from_lattice_shapes, sliced, to_lattice};
+use crate::sets::{DisjointSets, chains as graph_chains};
+use crate::{
+    Buckets, GRID_MM, GeomError, MAX_POINTS, Moments, Point, RESOLUTION_MM, Region, check_points,
+    check_value, edges, encloses, segment_distance,
+};
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::IntOverlayOptions;
 use i_overlay::i_float::int::point::IntPoint;
-use i_overlay::string::overlay::StringOverlay;
-use i_overlay::string::rule::StringRule;
 use i_triangle::int::custom::IntCustomTriangulatable;
 use i_triangle::int::validation::Validation;
 use std::collections::{HashMap, HashSet};
 
-type Lattice = IntPoint<i64>;
-
-/// How close to a cell's edge, in spacings, no lattice point is kept: half a row of the lattice,
+/// How far apart the rows of an equilateral lattice lie, in spacings: `√3/2`.
+const ROW: f64 = 0.866_025_403_784_438_6;
+/// How close to a face's edge, in spacings, no lattice point is kept: half a row of the lattice,
 /// so that the band between an edge and the first row kept is a row wide, give or take half.
-const KEEP_OFF: f64 = 0.433_012_701_892_219_3;
+const KEEP_OFF: f64 = ROW / 2.0;
+/// The widest spacing taken, in mm. A face's corners lie within four spacings of each other where
+/// `cocircular` asks, and its exact in-circle determinant, about `1536 r⁴` in lattice steps for a
+/// circle of radius `r`, would pass `i128` past 580 mm.
+const MAX_SPACING_MM: f64 = 100.0;
+/// The most buckets an edge's box is searched in; a longer edge looks at every corner instead.
+const MAX_BUCKETS_SEARCHED: i64 = 4096;
 /// How much longer than it is the debris at both its ends can make a straight edge, in steps.
 const ROUNDED_ENDS: f64 = 2.0 * ON_EDGE_STEPS;
 
@@ -42,7 +50,7 @@ const ROUNDED_ENDS: f64 = 2.0 * ON_EDGE_STEPS;
 pub struct Triangles {
     pub points: Vec<Point>,
     pub triangles: Vec<[u32; 3]>,
-    pub cells: Vec<u32>,
+    pub faces: Vec<u32>,
     pub inside: Vec<Point>,
     pub filled: usize,
 }
@@ -120,8 +128,7 @@ impl Corners {
             self.key(IntPoint::new(a.x.max(b.x), a.y.max(b.y))),
         );
         let mut found: Vec<Lattice> = Vec::new();
-        // An edge whose box spans many buckets looks at every corner instead.
-        if (k1.0 - k0.0 + 1).saturating_mul(k1.1 - k0.1 + 1) > 4096 {
+        if (k1.0 - k0.0 + 1).saturating_mul(k1.1 - k0.1 + 1) > MAX_BUCKETS_SEARCHED {
             for list in self.buckets.values() {
                 found.extend(list.iter().copied().filter(|&p| between(a, b, p)));
             }
@@ -254,48 +261,22 @@ fn chains(lines: &[Vec<Lattice>], steps: f64) -> Vec<Vec<Lattice>> {
             }
         }
     }
-    let mut order: Vec<Key> = next.keys().copied().collect();
-    order.sort_unstable();
-    let mut walked_edges: HashSet<(Key, Key)> = HashSet::with_capacity(seen.len());
-    let mut out = Vec::new();
-    // From each junction along each edge not yet walked; then what is left, rings of two-edge
-    // corners, from wherever each is met.
-    for rings in [false, true] {
-        for &from in &order {
-            let around = next.get(&from).map_or(&[][..], Vec::as_slice);
-            if !rings && around.len() == 2 {
-                continue;
-            }
-            for &first in around {
-                if !walked_edges.insert(pair(from, (first.x, first.y))) {
-                    continue;
-                }
-                let mut chain = vec![IntPoint::new(from.0, from.1), first];
-                let mut at = first;
-                loop {
-                    let here = (at.x, at.y);
-                    let around = next.get(&here).map_or(&[][..], Vec::as_slice);
-                    if around.len() != 2 {
-                        break;
-                    }
-                    let Some(&on) = around.iter().find(|p| !walked_edges.contains(&pair(here, (p.x, p.y))))
-                    else {
-                        break;
-                    };
-                    walked_edges.insert(pair(here, (on.x, on.y)));
-                    chain.push(on);
-                    at = on;
-                }
-                if rings {
-                    chain.pop();
-                    out.push(opened(&chain));
-                } else {
-                    out.push(chain);
-                }
-            }
-        }
-    }
-    out
+    // The corners in order, each with its neighbours by index; a ring opened at its own corner.
+    let mut keys: Vec<Key> = next.keys().copied().collect();
+    keys.sort_unstable();
+    let index: HashMap<Key, usize> = keys.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+    let neighbours: Vec<Vec<usize>> = keys
+        .iter()
+        .map(|k| next.get(k).into_iter().flatten().filter_map(|p| index.get(&(p.x, p.y)).copied()).collect())
+        .collect();
+    let point = |i: usize| keys.get(i).map(|&(x, y)| IntPoint::new(x, y));
+    graph_chains(&neighbours)
+        .into_iter()
+        .map(|(ids, closed)| {
+            let chain: Vec<Lattice> = ids.into_iter().filter_map(point).collect();
+            if closed { opened(&chain) } else { chain }
+        })
+        .collect()
 }
 
 /// How far a corner can lie from where it should, along each axis, in steps: half a step for its
@@ -341,24 +322,12 @@ fn cocircular(a: Lattice, b: Lattice, c: Lattice, d: Lattice, largest: f64) -> b
 
 /// The triangles with each set of neighbours whose corners lie on one circle, between which
 /// Delaunay's rule cannot choose and the triangulation chose by the order it met them, fanned
-/// from their corners' centroid instead, a corner added: the same triangles however the cell
-/// is turned or mirrored. Only circles of the cell's own size are looked for.
+/// from their corners' centroid instead, a corner added: the same triangles however the face
+/// is turned or mirrored, in the order of their least triangles. Only circles of the face's own
+/// size are looked for.
 fn canonical(points: &mut Vec<Lattice>, triangles: &[[u32; 3]], steps: f64) -> Vec<[u32; 3]> {
     let at = |points: &[Lattice], i: u32| points.get(i as usize).copied();
-    let mut parent: Vec<usize> = (0..triangles.len()).collect();
-    let find = |parent: &mut Vec<usize>, mut i: usize| {
-        while let Some(&p) = parent.get(i) {
-            if p == i {
-                break;
-            }
-            let up = parent.get(p).copied().unwrap_or(p);
-            if let Some(slot) = parent.get_mut(i) {
-                *slot = up;
-            }
-            i = up;
-        }
-        i
-    };
+    let mut sets = DisjointSets::new(triangles.len());
     let mut holder: HashMap<(u32, u32), usize> = HashMap::with_capacity(3 * triangles.len());
     for (k, &[a, b, c]) in triangles.iter().enumerate() {
         for (p, q) in [(a, b), (b, c), (c, a)] {
@@ -369,25 +338,14 @@ fn canonical(points: &mut Vec<Lattice>, triangles: &[[u32; 3]], steps: f64) -> V
                     (at(points, a), at(points, b), at(points, c), at(points, far))
                 && cocircular(pa, pb, pc, pd, steps)
             {
-                let (x, y) = (find(&mut parent, k), find(&mut parent, other));
-                if let Some(slot) = parent.get_mut(x) {
-                    *slot = y;
-                }
+                sets.unite(k, other);
             }
             holder.insert((p, q), k);
         }
     }
-    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-    for k in 0..triangles.len() {
-        let root = find(&mut parent, k);
-        groups.entry(root).or_default().push(k);
-    }
-    let mut roots: Vec<usize> = groups.keys().copied().collect();
-    roots.sort_unstable();
     let mut out = Vec::with_capacity(triangles.len());
-    for root in roots {
-        let members: Vec<[u32; 3]> =
-            groups.get(&root).into_iter().flatten().filter_map(|&k| triangles.get(k).copied()).collect();
+    for class in sets.classes() {
+        let members: Vec<[u32; 3]> = class.iter().filter_map(|&k| triangles.get(k).copied()).collect();
         if let Some(fan) = fanned(points, &members) {
             out.extend(fan);
         } else {
@@ -441,7 +399,7 @@ const FRAME_STEPS: i64 = 1000;
 
 /// The faces `lines` cut the plate into, all from one pass: neighbours share every corner, and
 /// every corner of a line is a corner of the faces along it. The face around them all is left in.
-fn faces(lines: &[Vec<Lattice>], steps: f64) -> Vec<Vec<Vec<Lattice>>> {
+fn subdivision(lines: &[Vec<Lattice>], steps: f64) -> Vec<Vec<Vec<Lattice>>> {
     let paths: Vec<Vec<Lattice>> = chains(lines, steps).iter().map(|c| walked(c, steps)).collect();
     let (mut lo, mut hi) = ((i64::MAX, i64::MAX), (i64::MIN, i64::MIN));
     for p in paths.iter().flatten() {
@@ -455,12 +413,7 @@ fn faces(lines: &[Vec<Lattice>], steps: f64) -> Vec<Vec<Vec<Lattice>>> {
         IntPoint::new(x1, y1),
         IntPoint::new(x0, y1),
     ]]];
-    let mut overlay = StringOverlay::from_shape_custom(&frame, IntOverlayOptions::keep_all_points());
-    overlay.add_string_source(&paths);
-    overlay
-        .build_graph_view(FillRule::NonZero)
-        .map(|graph| graph.extract_shapes_custom(StringRule::Slice, IntOverlayOptions::keep_all_points()))
-        .unwrap_or_default()
+    sliced(&frame, &paths)
 }
 
 /// A point inside a face triangulated as `indices` over `corners`: the centre of the largest of
@@ -485,12 +438,12 @@ fn validation() -> Validation<i64> {
 }
 
 /// A face of the subdivision: its contours on the lattice and as a region, a point inside it,
-/// whether it takes inner points, and its area.
+/// whether it is filled with inner points, and its area.
 struct Face {
     contours: Vec<Vec<Vec<Lattice>>>,
     region: Region,
     point: Point,
-    full: bool,
+    filled: bool,
     area: f64,
 }
 
@@ -504,52 +457,50 @@ pub fn triangulate_evenly(
     filled: &dyn Fn(Point) -> bool,
     spacing: f64,
 ) -> Result<Triangles, GeomError> {
-    if check_value(spacing)? <= GRID_MM * 1e3 {
+    if check_value(spacing)? <= RESOLUTION_MM || spacing > MAX_SPACING_MM {
         return Err(GeomError::OutOfRange(spacing));
     }
-    crate::check_points(outline.iter().flatten())?;
-    crate::check_points(lines)?;
+    check_points(outline.iter().flatten().flatten())?;
+    check_points(lines.iter().flatten())?;
     let steps = spacing / GRID_MM;
     let closed = |ring: &Vec<Point>| -> Vec<Point> { ring.iter().chain(ring.first()).copied().collect() };
     let mut all: Vec<Vec<Point>> = outline.iter().flatten().map(closed).collect();
-    let rim: Vec<(Point, Point)> = all
-        .iter()
-        .flat_map(|ring| ring.windows(2).filter_map(|w| Some((*w.first()?, *w.get(1)?))).collect::<Vec<_>>())
-        .collect();
+    let rim: Vec<(Point, Point)> = outline.iter().flatten().flat_map(|ring| edges(ring)).collect();
     all.extend(lines.iter().cloned());
-    let on_lattice: Vec<Vec<Lattice>> = region_to_lattice(&vec![all]).into_iter().flatten().collect();
-    let mut cells: Vec<Face> = Vec::new();
-    for shape in faces(&on_lattice, steps) {
+    let on_lattice = contours_to_lattice(&all);
+    let mut faces: Vec<Face> = Vec::new();
+    for shape in subdivision(&on_lattice, steps) {
         let contours = vec![shape];
         let plain = contours
             .custom_triangulate_with_steiner_points(&Vec::new(), validation())
             .into_delaunay()
             .into_raw();
         let Some(point) = inside(plain.points(), &plain.triangle_indices::<u32>()) else { continue };
-        if !crate::encloses(rim.iter().copied(), point) {
+        if !encloses(rim.iter().copied(), point) {
             continue;
         }
-        let region: Region = contours
-            .iter()
-            .map(|s| s.iter().map(|ring| ring.iter().map(from_lattice).collect()).collect())
-            .collect();
+        let region = from_lattice_shapes(&contours);
         let area = crate::area(&region);
-        cells.push(Face { contours, region, point, full: filled(point), area });
+        faces.push(Face { contours, region, point, filled: filled(point), area });
     }
     // Filled faces first, the largest first in each: the order does not depend on how they lie.
-    cells.sort_by(|a, b| b.full.cmp(&a.full).then(b.area.total_cmp(&a.area)));
+    faces.sort_by(|a, b| b.filled.cmp(&a.filled).then(b.area.total_cmp(&a.area)));
     let mut out = Triangles::default();
     // Each boundary point's index, shared by every face it bounds.
     let mut shared: HashMap<(i64, i64), u32> = HashMap::new();
-    for (index, Face { contours, region, point, full, .. }) in cells.iter().enumerate() {
-        out.inside.push(*point);
-        let inner = if *full { fill(region, contours, spacing)? } else { Vec::new() };
-        let raw =
-            contours.custom_triangulate_with_steiner_points(&inner, validation()).into_delaunay().into_raw();
+    for (index, face) in faces.iter().enumerate() {
+        out.inside.push(face.point);
+        let inner = if face.filled { lattice_inside(&face.region, spacing)? } else { Vec::new() };
+        let raw = face
+            .contours
+            .custom_triangulate_with_steiner_points(&inner, validation())
+            .into_delaunay()
+            .into_raw();
         let mut local: Vec<Lattice> = raw.points().clone();
         let indices: Vec<u32> = raw.triangle_indices::<u32>();
         let triangles = canonical(&mut local, indices.as_chunks::<3>().0, steps);
-        let boundary: HashSet<(i64, i64)> = contours.iter().flatten().flatten().map(|p| (p.x, p.y)).collect();
+        let boundary: HashSet<(i64, i64)> =
+            face.contours.iter().flatten().flatten().map(|p| (p.x, p.y)).collect();
         let mut ids = Vec::with_capacity(local.len());
         for p in &local {
             let key = (p.x, p.y);
@@ -571,8 +522,8 @@ pub fn triangulate_evenly(
             let corner = |i: u32| ids.get(i as usize).copied();
             if let (Some(a), Some(b), Some(c)) = (corner(t[0]), corner(t[1]), corner(t[2])) {
                 out.triangles.push([a, b, c]);
-                out.cells.push(index as u32);
-                if *full {
+                out.faces.push(index as u32);
+                if face.filled {
                     out.filled += 1;
                 }
             }
@@ -581,45 +532,27 @@ pub fn triangulate_evenly(
     Ok(out)
 }
 
-/// The points of an equilateral lattice `spacing` apart along the cell's own axes through its
+/// The points of an equilateral lattice `spacing` apart along the face's own axes through its
 /// centroid that lie inside it, at least `KEEP_OFF` spacings from its edges.
-fn fill(region: &Region, contours: &[Vec<Vec<Lattice>>], spacing: f64) -> Result<Vec<Lattice>, GeomError> {
+fn lattice_inside(region: &Region, spacing: f64) -> Result<Vec<Lattice>, GeomError> {
     let Some(moments) = Moments::of(region.iter().map(|s| (s.as_slice(), 1.0))) else {
         return Ok(Vec::new());
     };
     let first = moments.axes.map_or([1.0, 0.0], |a| a.first);
     let (u, v) = (
         [spacing * first[0], spacing * first[1]],
-        [
-            spacing * (0.5 * first[0] - 0.75f64.sqrt() * first[1]),
-            spacing * (0.75f64.sqrt() * first[0] + 0.5 * first[1]),
-        ],
+        [spacing * (0.5 * first[0] - ROW * first[1]), spacing * (ROW * first[0] + 0.5 * first[1])],
     );
-    let edges: Vec<([f64; 2], [f64; 2])> = contours
-        .iter()
-        .flatten()
-        .flat_map(|ring| {
-            ring.iter().zip(ring.iter().cycle().skip(1)).map(|(a, b)| (from_lattice(a), from_lattice(b)))
-        })
-        .collect();
+    let edges: Vec<(Point, Point)> = region.iter().flatten().flat_map(|ring| edges(ring)).collect();
     let Some([lo, hi]) = crate::bounds(region) else { return Ok(Vec::new()) };
     // Edges filed by buckets a spacing wide, for the distance test.
-    let key =
-        |p: [f64; 2]| (((p[0] - lo[0]) / spacing).floor() as i64, ((p[1] - lo[1]) / spacing).floor() as i64);
-    let mut near: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (k, (a, b)) in edges.iter().enumerate() {
-        let (k0, k1) = (key([a[0].min(b[0]), a[1].min(b[1])]), key([a[0].max(b[0]), a[1].max(b[1])]));
-        for i in k0.0..=k1.0 {
-            for j in k0.1..=k1.1 {
-                near.entry((i, j)).or_default().push(k);
-            }
-        }
-    }
+    let boxes: Vec<Option<[Point; 2]>> = edges.iter().map(|(a, b)| crate::bounds_of([a, b])).collect();
+    let near = Buckets::of_boxes(&boxes, spacing);
     let c = moments.centroid;
     let reach = (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
-    let n = (reach / (spacing * 0.75f64.sqrt())).ceil() as i64 + 2;
+    let n = (reach / (spacing * ROW)).ceil() as i64 + 2;
     if (2 * n + 1).saturating_mul(2 * n + 1) as usize > 4 * MAX_POINTS {
-        return Err(GeomError::Engine(format!("a cell {reach} mm across is too large to triangulate")));
+        return Err(GeomError::Engine(format!("a face {reach} mm across is too large to triangulate")));
     }
     let keep = KEEP_OFF * spacing;
     let mut out = Vec::new();
@@ -629,21 +562,15 @@ fn fill(region: &Region, contours: &[Vec<Vec<Lattice>>], spacing: f64) -> Result
             if p[0] < lo[0] + keep || p[0] > hi[0] - keep || p[1] < lo[1] + keep || p[1] > hi[1] - keep {
                 continue;
             }
-            if !crate::encloses(edges.iter().copied(), p) {
+            if !encloses(edges.iter().copied(), p) {
                 continue;
             }
-            let (ki, kj) = key(p);
-            let close = (ki - 1..=ki + 1).any(|a| {
-                (kj - 1..=kj + 1).any(|b| {
-                    near.get(&(a, b)).is_some_and(|list| {
-                        list.iter().any(|&e| {
-                            edges.get(e).is_some_and(|&(x, y)| crate::segment_distance(p, x, y) < keep)
-                        })
-                    })
-                })
+            let mut close = false;
+            near.visit([p[0] - keep, p[1] - keep], [p[0] + keep, p[1] + keep], |e| {
+                close |= edges.get(e as usize).is_some_and(|&(x, y)| segment_distance(p, x, y) < keep);
             });
             if !close {
-                out.push(IntPoint::new((p[0] / GRID_MM).round() as i64, (p[1] / GRID_MM).round() as i64));
+                out.push(to_lattice(&p));
             }
         }
     }

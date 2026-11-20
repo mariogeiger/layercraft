@@ -218,12 +218,12 @@ fn a_segment_lies_in_a_region_along_its_edge_but_not_across_its_hole() {
     assert!(bands.holds([3.0, 7.0], [5.0, 7.0]), "touching the hole's corner");
 }
 
-/// The vertex `(i, j)` of the grid the sampled fields lie on.
+/// The vertex `(i, j)` of the grid the sampled reliefs lie on.
 fn vertex(i: i64, j: i64) -> Point {
     [0.3 + 0.5 * i as f64, -0.7 + 0.5 * j as f64]
 }
 
-/// A field from a function sampled at every vertex of a block of a regular grid, each square
+/// A relief from a function sampled at every vertex of a block of a regular grid, each square
 /// split by its diagonal, as stage files from before reliefs had triangles of their own held it.
 fn sampled(f: impl Fn(Point) -> f64) -> Relief {
     let values: Vec<f64> =
@@ -232,7 +232,7 @@ fn sampled(f: impl Fn(Point) -> f64) -> Relief {
 }
 
 #[test]
-fn a_field_is_linear_on_each_triangle_and_continuous() {
+fn a_relief_is_linear_on_each_triangle_and_continuous() {
     // A plane is reproduced exactly inside the block.
     let plane = sampled(|p| 0.2 * p[0] - 0.1 * p[1] + 0.05);
     for p in [[0.31, 0.2], [-1.0, -1.5], [1.1, 0.9], [0.8, 0.8 + 1e-12]] {
@@ -298,7 +298,7 @@ fn irregular(shift: f64) -> Relief {
 }
 
 #[test]
-fn a_field_is_linear_between_its_breaks() {
+fn a_relief_is_linear_between_its_breaks() {
     let bump = sampled(|p| (1.0 - p[0].hypot(p[1]) / 2.0).max(0.0) * 0.7);
     for field in [bump, irregular(0.0)] {
         for (a, b) in [([-3.0, -2.2], [2.7, 1.9]), ([-1.0, 1.0], [4.0, 1.0]), ([2.2, 2.9], [0.9, -1.6])] {
@@ -454,7 +454,7 @@ fn reliefs_on_one_carrier_behave_as_their_own_triangles_alone() {
 }
 
 #[test]
-fn a_fields_range_over_a_box_is_exact() {
+fn a_reliefs_range_over_a_box_is_exact() {
     // A plane reaches its extremes at the box's corners.
     let plane = sampled(|p| 0.2 * p[0] - 0.1 * p[1]);
     let [lo, hi] = plane.range_over([-1.0, -1.0], [1.0, 0.5]);
@@ -860,4 +860,39 @@ fn cells_sharing_edges_are_cut_into_even_triangles_that_meet() {
             .fold(0.0, f64::max);
         assert!(far < 1e-4, "{angle}°: a corner {far} mm from where it turned to");
     }
+}
+
+#[test]
+fn a_spacing_too_wide_for_the_exact_in_circle_test_is_refused() {
+    // Past `MAX_SPACING_MM` the in-circle determinant of a face's corners could pass `i128`.
+    let outline = union_contours(&[square(0.0, 0.0, 2000.0)]).unwrap();
+    assert!(triangulate_evenly(&outline, &[], &|_| true, 1000.0).is_err());
+    assert!(triangulate_evenly(&outline, &[], &|_| false, 50.0).is_ok());
+}
+
+#[test]
+fn the_hull_keeps_the_corners_only_counterclockwise() {
+    let points =
+        [[0.0, 0.0], [2.0, 0.0], [1.0, 0.0], [2.0, 2.0], [1.0, 1.0], [0.0, 2.0], [0.0, 2.0], [f64::NAN, 1.0]];
+    assert_eq!(convex_hull(&points), vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]);
+    assert_eq!(convex_hull(&[[1.0, 1.0], [0.0, 0.0]]), vec![[0.0, 0.0], [1.0, 1.0]]);
+}
+
+#[test]
+fn lists_sets_and_chains_hold_what_they_were_given() {
+    let lists = Lists::from_pairs(3, [(2, 'c'), (0, 'a'), (9, 'x'), (2, 'd')].into_iter());
+    assert_eq!(
+        (lists.get(0), lists.get(1), lists.get(2), lists.get(3)),
+        (&['a'][..], &[][..], &['c', 'd'][..], &[][..])
+    );
+    assert_eq!(lists.span(0, 2), &['a', 'c', 'd']);
+    let mut sets = DisjointSets::new(5);
+    sets.unite(4, 1);
+    sets.unite(3, 4);
+    assert_eq!(sets.classes(), vec![vec![0], vec![1, 3, 4], vec![2]]);
+    // A path 0–1–2 with a loop 2–3–4–2 hanging off the junction 2, and a ring 5–6–7.
+    let neighbours =
+        vec![vec![1], vec![0, 2], vec![1, 3, 4], vec![2, 4], vec![3, 2], vec![6, 7], vec![5, 7], vec![6, 5]];
+    let found = crate::sets::chains(&neighbours);
+    assert_eq!(found, vec![(vec![0, 1, 2], false), (vec![2, 3, 4, 2], false), (vec![5, 6, 7], true)]);
 }

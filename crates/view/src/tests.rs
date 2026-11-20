@@ -73,7 +73,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         }],
         open_chains: 0,
         widest_crack: 0.0,
-        unsplit_cells: 0,
+        unsplit_triangles: 0,
     };
     let c = sections(&s).unwrap();
     assert!(close(area(&c), 64.0));
@@ -132,7 +132,7 @@ fn a_bent_layer_is_drawn_on_its_bend() {
         layers: vec![layer(0, 0.2, &flat), layer(1, 0.4, &warp), layer(2, 0.6, &warp)],
         open_chains: 0,
         widest_crack: 0.0,
-        unsplit_cells: 0,
+        unsplit_triangles: 0,
     };
     let c = sections(&s).unwrap();
     // Layer 1 stands on a flat top, layer 2 on layer 1's: its middle bends half as much, then all.

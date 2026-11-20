@@ -10,7 +10,7 @@
 //! segment passes from a triangle to the next come in their true order however close they lie,
 //! the same for every triangle of the mesh that has the segment as an edge.
 
-use layercraft_geom::{Buckets, GeomError, Point, orientation};
+use layercraft_geom::{Buckets, GeomError, Lists, Point, orientation};
 use std::cmp::Ordering::{self, Equal, Greater, Less};
 use std::collections::HashMap;
 
@@ -66,9 +66,8 @@ pub(crate) struct Net<'a> {
     triangles: &'a [[u32; 3]],
     /// The triangle holding each edge, directed counterclockwise round it.
     left: HashMap<(u32, u32), u32>,
-    /// The triangles at corner `v`: `around[starts[v]..starts[v + 1]]`.
-    starts: Vec<usize>,
-    around: Vec<u32>,
+    /// The triangles at each corner.
+    around: Lists<u32>,
     /// Buckets over runs of triangles of about one size, each with the first of its run.
     buckets: Vec<(u32, Buckets)>,
 }
@@ -86,7 +85,6 @@ impl<'a> Net<'a> {
     pub fn new(points: &'a [Point], triangles: &'a [[u32; 3]], split: usize) -> Result<Net<'a>, GeomError> {
         let refuse = |what: &str| Err(GeomError::Engine(format!("the leaves' triangles {what}")));
         let mut left = HashMap::with_capacity(3 * triangles.len());
-        let mut starts = vec![0usize; points.len() + 1];
         for (k, &[a, b, c]) in triangles.iter().enumerate() {
             let (Some(&pa), Some(&pb), Some(&pc)) =
                 (points.get(a as usize), points.get(b as usize), points.get(c as usize))
@@ -101,30 +99,10 @@ impl<'a> Net<'a> {
                     return refuse("use an edge twice the same way");
                 }
             }
-            for v in [a, b, c] {
-                if let Some(s) = starts.get_mut(v as usize + 1) {
-                    *s += 1;
-                }
-            }
         }
-        for v in 0..points.len() {
-            let before = starts.get(v).copied().unwrap_or(0);
-            if let Some(s) = starts.get_mut(v + 1) {
-                *s += before;
-            }
-        }
-        let mut fill = starts.clone();
-        let mut around = vec![0u32; starts.last().copied().unwrap_or(0)];
-        for (k, t) in triangles.iter().enumerate() {
-            for &v in t {
-                if let Some(slot) = fill.get_mut(v as usize)
-                    && let Some(item) = around.get_mut(*slot)
-                {
-                    *item = k as u32;
-                    *slot += 1;
-                }
-            }
-        }
+        let corners_at =
+            triangles.iter().enumerate().flat_map(|(k, t)| t.iter().map(move |&v| (v as usize, k as u32)));
+        let around = Lists::from_pairs(points.len(), corners_at);
         let corners = |t: usize| -> Option<[Point; 3]> {
             let [a, b, c] = *triangles.get(t)?;
             Some([*points.get(a as usize)?, *points.get(b as usize)?, *points.get(c as usize)?])
@@ -134,7 +112,7 @@ impl<'a> Net<'a> {
             (0, Buckets::over(split, corners)),
             (split as u32, Buckets::over(triangles.len() - split, |t| corners(t + split))),
         ];
-        Ok(Net { points, triangles, left, starts, around, buckets })
+        Ok(Net { points, triangles, left, around, buckets })
     }
 
     pub fn point(&self, v: u32) -> Option<Point> {
@@ -165,10 +143,7 @@ impl<'a> Net<'a> {
     }
 
     fn star(&self, v: u32) -> &[u32] {
-        match (self.starts.get(v as usize), self.starts.get(v as usize + 1)) {
-            (Some(&a), Some(&b)) => self.around.get(a..b).unwrap_or(&[]),
-            _ => &[],
-        }
+        self.around.get(v as usize)
     }
 
     /// Where `p` lies on the triangles, exactly.

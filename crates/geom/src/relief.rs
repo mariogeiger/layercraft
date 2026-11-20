@@ -12,7 +12,9 @@
 
 use crate::locate::Buckets;
 use crate::orient::orientation;
-use crate::{GRID_MM, GeomError, LIMIT_MM, Point, check_value};
+use crate::{
+    GRID_MM, GeomError, LIMIT_MM, Point, RESOLUTION_MM, barycentric, bounds_of, check_points, check_value,
+};
 use serde::de::{Error as _, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
@@ -137,25 +139,6 @@ fn corners_of(points: &[Point], &[i, j, k]: &[u32; 3]) -> Option<[Point; 3]> {
     Some([*points.get(i as usize)?, *points.get(j as usize)?, *points.get(k as usize)?])
 }
 
-/// The box from the lowest to the highest coordinates of the corners.
-fn bounds(c: [Point; 3]) -> (Point, Point) {
-    (
-        [c[0][0].min(c[1][0]).min(c[2][0]), c[0][1].min(c[1][1]).min(c[2][1])],
-        [c[0][0].max(c[1][0]).max(c[2][0]), c[0][1].max(c[1][1]).max(c[2][1])],
-    )
-}
-
-/// The barycentric coordinates of `p` in the triangle, when it has an area.
-fn barycentric([a, b, c]: [Point; 3], p: Point) -> Option<[f64; 3]> {
-    let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-    if !(det.is_finite() && det.abs() > f64::MIN_POSITIVE) {
-        return None;
-    }
-    let l1 = ((p[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (p[1] - a[1])) / det;
-    let l2 = ((b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])) / det;
-    Some([1.0 - l1 - l2, l1, l2])
-}
-
 /// The gradient of the linear function taking `v` at the corners, when they span an area.
 fn gradient_of([a, b, c]: [Point; 3], v: [f64; 3]) -> Option<[f64; 2]> {
     let (e1, e2) = ([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]);
@@ -203,10 +186,7 @@ impl Carrier {
                 triangles.len()
             )));
         }
-        for p in &points {
-            check_value(p[0])?;
-            check_value(p[1])?;
-        }
+        check_points(&points)?;
         if triangles.iter().flatten().any(|&i| i as usize >= points.len()) {
             return Err(GeomError::Engine("a carrier names a corner it does not hold".into()));
         }
@@ -273,18 +253,25 @@ impl Carrier {
         let bends = |i: u32| warps.iter().any(|w| w.values.get(i as usize).is_some_and(|&v| v != 0.0));
         let kept: Vec<[u32; 3]> =
             tiling.triangles.iter().copied().filter(|t| t.iter().any(|&i| bends(i))).collect();
-        let mut renumber = vec![u32::MAX; tiling.points.len()];
+        // Each kept corner's new index, in the corners' order.
+        let mut used = vec![false; tiling.points.len()];
         for &i in kept.iter().flatten() {
-            if let Some(slot) = renumber.get_mut(i as usize) {
-                *slot = 0;
+            if let Some(slot) = used.get_mut(i as usize) {
+                *slot = true;
             }
         }
-        let mut points = Vec::new();
-        for (slot, p) in renumber.iter_mut().zip(&tiling.points).filter(|(slot, _)| **slot == 0) {
-            *slot = points.len() as u32;
-            points.push(*p);
-        }
-        let at = |i: u32| renumber.get(i as usize).copied().unwrap_or(0);
+        let mut next = 0u32;
+        let renumber: Vec<Option<u32>> = used
+            .iter()
+            .map(|&u| {
+                u.then(|| {
+                    next += 1;
+                    next - 1
+                })
+            })
+            .collect();
+        let points = tiling.points.iter().zip(&renumber).filter_map(|(p, to)| to.map(|_| *p)).collect();
+        let at = |i: u32| renumber.get(i as usize).copied().flatten().unwrap_or(0);
         let triangles = kept.iter().map(|t| t.map(at)).collect();
         let carrier = Carrier::new(points, triangles)?;
         let count = carrier.0.points.len();
@@ -292,8 +279,8 @@ impl Carrier {
             .iter()
             .map(|w| {
                 let mut values = vec![0.0; if w.is_zero() { 0 } else { count }];
-                for (&to, &v) in renumber.iter().zip(w.values.iter()) {
-                    if let Some(slot) = values.get_mut(to as usize) {
+                for (to, &v) in renumber.iter().zip(w.values.iter()) {
+                    if let Some(slot) = to.and_then(|to| values.get_mut(to as usize)) {
                         *slot = v;
                     }
                 }
@@ -319,6 +306,12 @@ impl Carrier {
             s
         };
         let own: HashSet<[u32; 3]> = triangles.iter().map(|&t| sorted(t)).collect();
+        let intern = |index: &mut HashMap<(u64, u64), u32>, points: &mut Vec<Point>, p: Point| {
+            *index.entry(key(&p)).or_insert_with(|| {
+                points.push(p);
+                (points.len() - 1) as u32
+            })
+        };
         for tri in &b.triangles {
             let Some(corners) = corners_of(&b.points, tri) else { continue };
             if let [Some(x), Some(y), Some(z)] = corners.map(|p| index.get(&key(&p)).copied())
@@ -326,7 +319,7 @@ impl Carrier {
             {
                 continue;
             }
-            let (lo, hi) = bounds(corners);
+            let Some([lo, hi]) = bounds_of(&corners) else { continue };
             let meets = |s: u32| {
                 a.triangles
                     .get(s as usize)
@@ -336,22 +329,9 @@ impl Carrier {
             if a.buckets.within(lo, hi).into_iter().any(meets) {
                 return Err(GeomError::Engine("carriers whose triangles overlap".into()));
             }
-            let mut ids = [0u32; 3];
-            for (slot, p) in ids.iter_mut().zip(corners) {
-                *slot = *index.entry(key(&p)).or_insert_with(|| {
-                    points.push(p);
-                    (points.len() - 1) as u32
-                });
-            }
-            triangles.push(ids);
+            triangles.push(corners.map(|p| intern(&mut index, &mut points, p)));
         }
-        let mut places = Vec::with_capacity(b.points.len());
-        for p in &b.points {
-            places.push(*index.entry(key(p)).or_insert_with(|| {
-                points.push(*p);
-                (points.len() - 1) as u32
-            }));
-        }
+        let places = b.points.iter().map(|&p| intern(&mut index, &mut points, p)).collect();
         Ok((Carrier::new(points, triangles)?, places))
     }
 }
@@ -405,7 +385,9 @@ impl Relief {
 
     /// The relief with `values`, row after row, on the block of `size` vertices from `start` of
     /// the grid whose vertex `(i, j)` lies at `origin + cell·(i, j)`, zero a square past the
-    /// block, each square split by its diagonal from `(i, j)` to `(i + 1, j + 1)`.
+    /// block, each square split by its diagonal from `(i, j)` to `(i + 1, j + 1)`. It is the
+    /// layout tests take as their reference, as stage files held reliefs before they had
+    /// triangles of their own; laid on the plate's axes, it is no print's.
     pub fn from_grid(
         origin: Point,
         cell: f64,
@@ -415,7 +397,7 @@ impl Relief {
     ) -> Result<Relief, GeomError> {
         check_value(origin[0])?;
         check_value(origin[1])?;
-        if check_value(cell)? < 1e-3 {
+        if check_value(cell)? < RESOLUTION_MM {
             return Err(GeomError::OutOfRange(cell));
         }
         let count = size[0].checked_mul(size[1]).filter(|&n| n <= MAX_POINTS);
@@ -573,7 +555,7 @@ impl Relief {
     /// The lowest and highest values over the box from `lo` to `hi`, exactly: a linear function
     /// on each triangle, zero past them, the relief reaches them at the box's corners, where its
     /// sides cross the triangles' edges, or at corners inside it.
-    pub fn range_over(&self, lo: Point, hi: Point) -> [f64; 2] {
+    pub(crate) fn range_over(&self, lo: Point, hi: Point) -> [f64; 2] {
         if self.is_zero() {
             return [0.0, 0.0];
         }

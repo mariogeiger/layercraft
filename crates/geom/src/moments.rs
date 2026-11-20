@@ -137,7 +137,7 @@ impl Moments {
     }
 
     /// `∫∫ (p·u)³` about the centroid: how far the region skews along the unit `u`.
-    pub fn skew(&self, u: [f64; 2]) -> f64 {
+    fn skew(&self, u: [f64; 2]) -> f64 {
         let ([a, b, c, d], [x, y]) = (self.third, u);
         a * x * x * x + 3.0 * b * x * x * y + 3.0 * c * x * y * y + d * y * y * y
     }

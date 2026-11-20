@@ -19,12 +19,12 @@
 //! it agrees with those held, `A_p − A_q ≤ δ(q, p)` by a bound never above `δ`. A patch rising
 //! more than `max_rise` is followed in bands, each on a leaf of its own.
 
-use crate::SectionError;
 use crate::envelope::{Bounds, Graph};
 use crate::face::{Corners, Laps, reach};
-use crate::patches::{Facet, patches};
-use crate::triangulation::{Triangulation, hull, triangulation};
-use layercraft_geom::{GRID_MM, Point};
+use crate::patches::{Facet, Patch, patches};
+use crate::triangulation::{Triangulation, triangulation};
+use crate::{MAX_LAYER_MM, SectionError};
+use layercraft_geom::{GRID_MM, Point, convex_hull};
 use layercraft_mesh::Mesh;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -59,6 +59,20 @@ const SLACK: f64 = 1e-9;
 const MAX_BANDS: usize = 8;
 /// A pin this close to its leaf's plane, in mm, asks no bend: half the lattice step.
 const ON_PLANE_MM: f64 = GRID_MM / 2.0;
+/// The steepest top surface the leaves may follow, in degrees.
+const MAX_SLOPE_DEG: f64 = 60.0;
+/// The most a leaf may rise, in mm.
+const MAX_RISE_MM: f64 = 100.0;
+/// The narrowest and the widest the triangles the leaves bend on may be, in mm.
+const CELL_MM: [f64; 2] = [0.05, 5.0];
+/// The most layers that may keep a followed surface's shape.
+const MAX_PARALLEL_LAYERS: usize = 50;
+/// The farthest the nozzle's face may reach, in mm.
+const MAX_FACE_REACH_MM: f64 = 10.0;
+/// A slope under this, a tangent, bends no leaf.
+const FLAT_SLOPE: f64 = 1e-3;
+/// A slab's give under this, in mm, lets no value change across leaves.
+const NO_GIVE_MM: f64 = 1e-6;
 
 /// The leaves: the triangles they are linear on, and each leaf's value at their corners, `None`
 /// where it is flat.
@@ -99,14 +113,15 @@ impl Metric {
         far
     }
 
-    fn vert(&self, from: usize, to: usize) -> f64 {
+    /// The most `d` may change from leaf `from` to leaf `to` straight up or down.
+    fn vertical(&self, from: usize, to: usize) -> f64 {
         if to >= from { (to - from) as f64 * self.up } else { (from - to) as f64 * self.down }
     }
 
     /// The most `d` may change from `from` to `to`, at least: a path crossing `m` leaves down and
     /// `m − n` up costs `down` and `up` each and, sideways, `m · fall(r / m)` across the leaves,
     /// `fall` convex, or the slope along a leaf, or the rise.
-    fn dist(&self, from: (usize, Point), to: (usize, Point)) -> f64 {
+    fn distance(&self, from: (usize, Point), to: (usize, Point)) -> f64 {
         let r = (from.1[0] - to.1[0]).hypot(from.1[1] - to.1[1]);
         let (falls, rises) = (from.0.saturating_sub(to.0), to.0.saturating_sub(from.0));
         let sideways = |m: usize| {
@@ -137,40 +152,52 @@ struct Held {
     value: f64,
 }
 
-/// The pins accepted so far, filed by place for the consistency test.
+/// The pins accepted so far, filed by place for the consistency test, and what they are accepted
+/// by.
 struct Accepted<'a> {
     metric: &'a Metric,
-    /// Pins farther apart than this, or `leaves` leaves apart, cannot disagree.
-    bucket: f64,
-    leaves: usize,
-    cells: HashMap<[i64; 2], Vec<Held>>,
+    /// The flat layers' tops, and the height of every layer but the first.
+    tops: &'a [f64],
+    layer_height: f64,
+    /// The widest band of heights one leaf follows.
+    band: f64,
+    /// The most a pin's value may be: every value within it keeps every leaf within the rise.
+    bound: f64,
+    /// The leaves that keep a followed surface's shape, its own included.
+    parallel: usize,
+    /// Pins farther apart than this, or `leaves_apart` leaves apart, cannot disagree.
+    apart: f64,
+    leaves_apart: usize,
+    buckets: HashMap<[i64; 2], Vec<Held>>,
     all: Vec<Held>,
 }
 
 impl Accepted<'_> {
-    fn cell(&self, at: Point) -> [i64; 2] {
-        [(at[0] / self.bucket).floor() as i64, (at[1] / self.bucket).floor() as i64]
+    fn bucket(&self, at: Point) -> [i64; 2] {
+        [(at[0] / self.apart).floor() as i64, (at[1] / self.apart).floor() as i64]
     }
 
     /// Whether `d = value` at `at` on `leaf` agrees with the flat first leaf and every pin held.
     fn fits(&self, leaf: usize, at: Point, value: f64) -> bool {
         let m = self.metric;
-        if value > m.vert(0, leaf) + SLACK || -value > m.vert(leaf, 0) + SLACK {
+        if value > m.vertical(0, leaf) + SLACK || -value > m.vertical(leaf, 0) + SLACK {
             return false;
         }
-        let [ci, cj] = self.cell(at);
+        let [ci, cj] = self.bucket(at);
         // Sideways `d` changes no slower than this: pins that differ by less over their
         // distance agree, whatever leaves they lie on.
         let rate = m.laps.rate();
         for dj in -1..=1 {
             for di in -1..=1 {
-                for q in self.cells.get(&[ci + di, cj + dj]).into_iter().flatten() {
+                for q in self.buckets.get(&[ci + di, cj + dj]).into_iter().flatten() {
                     let (dx, dy, dv) = (q.at[0] - at[0], q.at[1] - at[1], q.value - value);
-                    if q.leaf.abs_diff(leaf) > self.leaves || dv * dv <= rate * rate * (dx * dx + dy * dy) {
+                    if q.leaf.abs_diff(leaf) > self.leaves_apart
+                        || dv * dv <= rate * rate * (dx * dx + dy * dy)
+                    {
                         continue;
                     }
-                    if value - q.value > m.dist((q.leaf, q.at), (leaf, at)) + SLACK
-                        || q.value - value > m.dist((leaf, at), (q.leaf, q.at)) + SLACK
+                    if value - q.value > m.distance((q.leaf, q.at), (leaf, at)) + SLACK
+                        || q.value - value > m.distance((leaf, at), (q.leaf, q.at)) + SLACK
                     {
                         return false;
                     }
@@ -181,34 +208,117 @@ impl Accepted<'_> {
     }
 
     fn hold(&mut self, held: Held) {
-        let cell = self.cell(held.at);
-        self.cells.entry(cell).or_default().push(held);
+        let bucket = self.bucket(held.at);
+        self.buckets.entry(bucket).or_default().push(held);
         self.all.push(held);
+    }
+
+    /// Accepts a patch's pins band by band, at most `MAX_BANDS`: each band the densest of
+    /// `band` among the heights left, on the leaf nearest its middle, its pins nearest that
+    /// leaf's plane first, each with its copies on the leaves below when they all fit.
+    fn follow(&mut self, mut remaining: Vec<Pin>, at: &dyn Fn(u32) -> Point) {
+        let (metric, tops, layer_height, bound) = (self.metric, self.tops, self.layer_height, self.bound);
+        for _ in 0..MAX_BANDS {
+            let mut heights: Vec<f64> = remaining.iter().map(|q| q.height).collect();
+            heights.sort_by(f64::total_cmp);
+            let Some([low, high]) = densest(&heights, self.band) else { break };
+            let Some(leaf) = nearest_leaf(tops, (low + high) / 2.0) else { break };
+            let z = tops.get(leaf).copied().unwrap_or(0.0);
+            let (mut inside, mut rest): (Vec<Pin>, Vec<Pin>) = remaining
+                .into_iter()
+                .partition(|q| q.height >= low - layer_height && q.height <= high + layer_height);
+            // Nearest the plane first.
+            inside.sort_by(|a, b| {
+                (a.height - z).abs().total_cmp(&(b.height - z).abs()).then(a.corner.cmp(&b.corner))
+            });
+            let mut took = false;
+            for q in inside {
+                let (point, mut value) = (at(q.corner), q.height - z);
+                if value.abs() <= ON_PLANE_MM {
+                    value = 0.0;
+                }
+                if value.abs() > bound {
+                    rest.push(q);
+                    continue;
+                }
+                // Each copy a slab lower, as much thicker than a layer as the face asks of
+                // parallel slabs on the pin's slope; none where no slab can be that thick.
+                let thicker = metric.laps.parallel(q.slope);
+                let depth = if thicker <= metric.up + SLACK { self.parallel } else { 1 };
+                let copies = (0..depth)
+                    .filter_map(|j| Some((leaf.checked_sub(j)?, value - j as f64 * thicker)))
+                    .filter(|&(k, _)| k >= 1);
+                // Every value within the bound keeps every leaf within the rise.
+                if copies.clone().all(|(k, v)| v.abs() <= bound && self.fits(k, point, v)) {
+                    for (k, value) in copies {
+                        self.hold(Held { leaf: k, corner: q.corner, at: point, value });
+                    }
+                    took = true;
+                } else if q.height < low || q.height > high {
+                    rest.push(q);
+                }
+            }
+            remaining = rest;
+            if !took || remaining.is_empty() {
+                break;
+            }
+        }
     }
 }
 
+/// The corners `on` a patch's facets no steeper than `slope`, each at the highest of their heights
+/// there and the steepest of their slopes, in the corners' order.
+fn patch_pins(patch: &Patch, on: &[(u32, usize)], slope: f64, at: &dyn Fn(u32) -> Point) -> Vec<Pin> {
+    let mut pins: HashMap<u32, Pin> = HashMap::new();
+    for &(corner, f) in on {
+        let Some(facet) = patch.facets.get(f) else { continue };
+        if facet.slope() > slope + SLACK {
+            continue;
+        }
+        let (height, steep) = (facet.height(at(corner)), facet.slope());
+        let pin = pins.entry(corner).or_insert(Pin { corner, height, slope: steep });
+        if height > pin.height {
+            pin.height = height;
+        }
+        pin.slope = pin.slope.max(steep);
+    }
+    let mut pins: Vec<Pin> = pins.into_values().collect();
+    pins.sort_by_key(|q| q.corner);
+    pins
+}
+
 fn check(p: &Foliation, layer_height: f64) -> Result<(), SectionError> {
-    let bad = |what: &str| Err(SectionError::BadLayering(format!("foliation: {what}")));
-    if !(p.max_slope.is_finite() && (0.0..60.0).contains(&p.max_slope)) {
-        return bad("the steepest slope must be 0 to 60 degrees");
+    let bad = |what: String| Err(SectionError::BadLayering(format!("foliation: {what}")));
+    if !(p.max_slope.is_finite() && (0.0..MAX_SLOPE_DEG).contains(&p.max_slope)) {
+        return bad(format!("the steepest slope must be 0 to {MAX_SLOPE_DEG} degrees"));
     }
     if !(p.min_layer_height.is_finite() && p.min_layer_height > 0.0 && p.min_layer_height <= layer_height) {
-        return bad("the thinnest slab must be above 0 and at most the layer height");
+        return bad("the thinnest slab must be above 0 and at most the layer height".into());
     }
-    if !(p.max_layer_height.is_finite() && p.max_layer_height >= layer_height && p.max_layer_height <= 2.0) {
-        return bad("the thickest slab must be at least the layer height and at most 2 mm");
+    if !(p.max_layer_height.is_finite()
+        && p.max_layer_height >= layer_height
+        && p.max_layer_height <= MAX_LAYER_MM)
+    {
+        return bad(format!(
+            "the thickest slab must be at least the layer height and at most {MAX_LAYER_MM} mm"
+        ));
     }
-    if !(p.max_rise.is_finite() && (0.0..=100.0).contains(&p.max_rise)) {
-        return bad("the rise must be 0 to 100 mm");
+    if !(p.max_rise.is_finite() && (0.0..=MAX_RISE_MM).contains(&p.max_rise)) {
+        return bad(format!("the rise must be 0 to {MAX_RISE_MM} mm"));
     }
-    if !(p.cell.is_finite() && (0.05..=5.0).contains(&p.cell)) || p.parallel_layers > 50 {
-        return bad("the cell must be 0.05 to 5 mm, and parallel layers at most 50");
+    let [narrowest, widest] = CELL_MM;
+    if !(p.cell.is_finite() && (narrowest..=widest).contains(&p.cell))
+        || p.parallel_layers > MAX_PARALLEL_LAYERS
+    {
+        return bad(format!(
+            "the cell must be {narrowest} to {widest} mm, and parallel layers at most {MAX_PARALLEL_LAYERS}"
+        ));
     }
-    if !(p.face_reach.is_finite() && (0.0..=10.0).contains(&p.face_reach)) {
-        return bad("the nozzle's face must reach 0 to 10 mm");
+    if !(p.face_reach.is_finite() && (0.0..=MAX_FACE_REACH_MM).contains(&p.face_reach)) {
+        return bad(format!("the nozzle's face must reach 0 to {MAX_FACE_REACH_MM} mm"));
     }
     if !(p.ironing.is_finite() && p.ironing >= 0.0) {
-        return bad("the ironing must be finite and not negative");
+        return bad("the ironing must be finite and not negative".into());
     }
     Ok(())
 }
@@ -257,7 +367,7 @@ pub(crate) fn foliate(
     check(p, layer_height)?;
     let flat = Leaves { triangulation: Triangulation::default(), values: vec![None; tops.len()] };
     let steepest = p.max_slope.to_radians().tan();
-    if steepest < 1e-3 {
+    if steepest < FLAT_SLOPE {
         return Ok(flat);
     }
     let (up, down) = (p.max_layer_height - layer_height, layer_height - p.min_layer_height);
@@ -299,7 +409,7 @@ pub(crate) fn foliate(
     }
     let shadow: Vec<Point> =
         mesh.bodies.iter().flat_map(|b| b.vertices.iter().map(|v| [v[0], v[1]])).collect();
-    let t = triangulation(&all, p.cell, margin, &hull(&shadow))?;
+    let t = triangulation(&all, p.cell, margin, &convex_hull(&shadow))?;
     let inner = t.triangles.get(..t.inner).unwrap_or(&[]);
     if inner.is_empty() {
         return Ok(flat);
@@ -308,19 +418,22 @@ pub(crate) fn foliate(
     let corners = Corners::new(&t.points, inner, p.face_reach);
     let metric = metric(if p.face_reach > 0.0 { corners.coarsest() } else { 0.0 }, corners.farthest());
     let slope = metric.slope;
-    if slope < 1e-3 {
+    if slope < FLAT_SLOPE {
         return Ok(flat);
     }
     let least = metric.up.min(metric.down);
-    let leaves_apart = if least > 1e-6 { (2.0 * bound / least).ceil() as usize } else { tops.len() };
     let mut accepted = Accepted {
         metric: &metric,
-        bucket: (2.0 * bound / metric.laps.rate()).max(p.cell),
-        leaves: leaves_apart,
-        cells: HashMap::new(),
+        tops,
+        layer_height,
+        band,
+        bound,
+        parallel: p.parallel_layers.max(1),
+        apart: (2.0 * bound / metric.laps.rate()).max(p.cell),
+        leaves_apart: if least > NO_GIVE_MM { (2.0 * bound / least).ceil() as usize } else { tops.len() },
+        buckets: HashMap::new(),
         all: Vec::new(),
     };
-    let parallel = p.parallel_layers.max(1);
     // The corners on each patch's facets.
     let mut on_patch: HashMap<usize, Vec<(u32, usize)>> = HashMap::new();
     for (corner, on) in t.on.iter().enumerate() {
@@ -329,67 +442,8 @@ pub(crate) fn foliate(
         }
     }
     for (k, patch) in all.iter().enumerate() {
-        // The corners on the patch's facets, each at the highest of their heights there.
-        let mut pins: HashMap<u32, Pin> = HashMap::new();
-        for &(corner, f) in on_patch.get(&k).into_iter().flatten() {
-            let Some(facet) = patch.facets.get(f) else { continue };
-            if facet.slope() > slope + SLACK {
-                continue;
-            }
-            let (height, steep) = (facet.height(at(corner)), facet.slope());
-            let pin = pins.entry(corner).or_insert(Pin { corner, height, slope: steep });
-            if height > pin.height {
-                pin.height = height;
-            }
-            pin.slope = pin.slope.max(steep);
-        }
-        let mut remaining: Vec<Pin> = pins.into_values().collect();
-        remaining.sort_by_key(|q| q.corner);
-        for _ in 0..MAX_BANDS {
-            let mut heights: Vec<f64> = remaining.iter().map(|q| q.height).collect();
-            heights.sort_by(f64::total_cmp);
-            let Some([low, high]) = densest(&heights, band) else { break };
-            let Some(leaf) = nearest_leaf(tops, (low + high) / 2.0) else { break };
-            let z = tops.get(leaf).copied().unwrap_or(0.0);
-            let (mut inside, mut rest): (Vec<Pin>, Vec<Pin>) = remaining
-                .into_iter()
-                .partition(|q| q.height >= low - layer_height && q.height <= high + layer_height);
-            // Nearest the plane first.
-            inside.sort_by(|a, b| {
-                (a.height - z).abs().total_cmp(&(b.height - z).abs()).then(a.corner.cmp(&b.corner))
-            });
-            let mut took = false;
-            for q in inside {
-                let (point, mut value) = (at(q.corner), q.height - z);
-                if value.abs() <= ON_PLANE_MM {
-                    value = 0.0;
-                }
-                if value.abs() > bound {
-                    rest.push(q);
-                    continue;
-                }
-                // Each copy a slab lower, as much thicker than a layer as the face asks of
-                // parallel slabs on the pin's slope; none where no slab can be that thick.
-                let thicker = metric.laps.parallel(q.slope);
-                let depth = if thicker <= metric.up + SLACK { parallel } else { 1 };
-                let copies = (0..depth)
-                    .filter_map(|j| Some((leaf.checked_sub(j)?, value - j as f64 * thicker)))
-                    .filter(|&(k, _)| k >= 1);
-                // Every value within the bound keeps every leaf within the rise.
-                if copies.clone().all(|(k, v)| v.abs() <= bound && accepted.fits(k, point, v)) {
-                    for (k, value) in copies {
-                        accepted.hold(Held { leaf: k, corner: q.corner, at: point, value });
-                    }
-                    took = true;
-                } else if q.height < low || q.height > high {
-                    rest.push(q);
-                }
-            }
-            remaining = rest;
-            if !took || remaining.is_empty() {
-                break;
-            }
-        }
+        let on = on_patch.get(&k).map_or(&[][..], Vec::as_slice);
+        accepted.follow(patch_pins(patch, on, slope, &at), &at);
     }
     let graph = Graph::new(&t.points, inner, &corners, slope, (p.face_reach > 0.0).then_some(p.ironing));
     let bounds = Bounds { graph: &graph, corners: &corners, laps: metric.laps, up, count: tops.len() };

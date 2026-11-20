@@ -13,14 +13,13 @@
 
 use crate::SectionError;
 use crate::face::{Corners, Laps};
-use layercraft_geom::Point;
+use layercraft_geom::{Lists, Point};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap};
 
 /// The bounds along one leaf: each corner's neighbours, and how far `d` may change to each.
 pub(crate) struct Graph {
-    starts: Vec<usize>,
-    edges: Vec<(u32, f64)>,
+    neighbours: Lists<(u32, f64)>,
 }
 
 /// The costs a search from one corner reached, reset between searches.
@@ -83,7 +82,7 @@ impl Graph {
             }
         }
         // The pairs under the face that the paths along the leaf do not bind tightly enough.
-        let along = Graph::packed(&lists);
+        let along = Graph { neighbours: Lists::from_lists(&lists) };
         let mut ball = Ball { best: vec![f64::INFINITY; n], reached: Vec::new() };
         let mut extra: Vec<(u32, u32, f64)> = Vec::new();
         if let Some(depth) = ironing.filter(|&i| i.is_finite() && i > 0.0 && slope > 0.0) {
@@ -108,25 +107,11 @@ impl Graph {
         for (v, w, cost) in extra {
             link(&mut lists, v, w, cost);
         }
-        Graph::packed(&lists)
-    }
-
-    fn packed(lists: &[Vec<(u32, f64)>]) -> Graph {
-        let mut starts = Vec::with_capacity(lists.len() + 1);
-        let mut edges = Vec::with_capacity(lists.iter().map(Vec::len).sum());
-        for list in lists {
-            starts.push(edges.len());
-            edges.extend_from_slice(list);
-        }
-        starts.push(edges.len());
-        Graph { starts, edges }
+        Graph { neighbours: Lists::from_lists(&lists) }
     }
 
     fn neighbours(&self, v: u32) -> &[(u32, f64)] {
-        match (self.starts.get(v as usize), self.starts.get(v as usize + 1)) {
-            (Some(&a), Some(&b)) => self.edges.get(a..b).unwrap_or(&[]),
-            _ => &[],
-        }
+        self.neighbours.get(v as usize)
     }
 
     /// The cost of the cheapest path from `v` to each corner it reaches for at most `limit`, in

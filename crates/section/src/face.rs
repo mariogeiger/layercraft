@@ -15,7 +15,7 @@
 //! that mean square, `R`, so with every such pair on one leaf bound by `(i/R)|w − v|` no leaf
 //! rises more than `i` within the face's reach: the face irons no deeper than `i`.
 
-use layercraft_geom::Point;
+use layercraft_geom::{Buckets, Point, RESOLUTION_MM, bounds_of};
 
 /// The root mean square distance between the corners of two triangles holding points at most
 /// `rho` apart, at most, when their spreads are at most `v` and `w` (`variance`).
@@ -52,13 +52,8 @@ pub(crate) struct Corners<'a> {
     spread: Vec<f64>,
     rho: f64,
     widest: f64,
-    origin: Point,
-    size: f64,
-    columns: usize,
-    rows: usize,
-    /// Bucket `k` holds `items[starts[k]..starts[k + 1]]`.
-    starts: Vec<usize>,
-    items: Vec<u32>,
+    /// The triangles' corners, each as the box of its one point.
+    buckets: Buckets,
 }
 
 impl<'a> Corners<'a> {
@@ -80,68 +75,16 @@ impl<'a> Corners<'a> {
         }
         let widest = longest.iter().copied().fold(0.0, f64::max);
         // Only the triangles' corners: points of none bind nothing.
-        let corners: Vec<u32> =
-            (0..points.len() as u32).filter(|&v| longest.get(v as usize).is_some_and(|&l| l > 0.0)).collect();
-        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-        for p in corners.iter().map(|&v| at(v)) {
-            (lo, hi) = ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]);
-        }
+        let boxes: Vec<Option<[Point; 2]>> = (0..points.len())
+            .map(|v| longest.get(v).is_some_and(|&l| l > 0.0).then(|| [at(v as u32); 2]))
+            .collect();
+        let count = boxes.iter().flatten().count();
         // No more buckets than corners, about.
-        let extent = (hi[0] - lo[0]).max(0.0) * (hi[1] - lo[1]).max(0.0);
+        let extent = bounds_of(boxes.iter().flatten().flatten())
+            .map_or(0.0, |[lo, hi]| (hi[0] - lo[0]).max(0.0) * (hi[1] - lo[1]).max(0.0));
         let fine = (rho + 2.0 * widest) / BUCKETS_PER_REACH;
-        let size = fine.max((extent / corners.len().max(1) as f64).sqrt()).max(1e-3);
-        let side = |e: f64| if e.is_finite() && e >= 0.0 { (e / size) as usize + 1 } else { 1 };
-        let (columns, rows) = (side(hi[0] - lo[0]), side(hi[1] - lo[1]));
-        let mut out = Corners {
-            points,
-            longest,
-            spread,
-            rho,
-            widest,
-            origin: if lo[0].is_finite() { lo } else { [0.0; 2] },
-            size,
-            columns,
-            rows,
-            starts: Vec::new(),
-            items: Vec::new(),
-        };
-        let cell = |out: &Corners, v: u32| {
-            let [i, j] = out.cell(at(v));
-            j * out.columns + i
-        };
-        let mut starts = vec![0usize; columns * rows + 1];
-        for &v in &corners {
-            if let Some(s) = starts.get_mut(cell(&out, v) + 1) {
-                *s += 1;
-            }
-        }
-        for k in 0..columns * rows {
-            let before = starts.get(k).copied().unwrap_or(0);
-            if let Some(s) = starts.get_mut(k + 1) {
-                *s += before;
-            }
-        }
-        let mut fill = starts.clone();
-        let mut items = vec![0u32; corners.len()];
-        for &v in &corners {
-            if let Some(slot) = fill.get_mut(cell(&out, v))
-                && let Some(item) = items.get_mut(*slot)
-            {
-                *item = v;
-                *slot += 1;
-            }
-        }
-        (out.starts, out.items) = (starts, items);
-        out
-    }
-
-    /// The bucket column and row of `p`, clamped into the grid.
-    fn cell(&self, p: Point) -> [usize; 2] {
-        let at = |v: f64, o: f64, n: usize| {
-            let k = ((v - o) / self.size).floor();
-            if k.is_nan() || k < 0.0 { 0 } else { (k as usize).min(n.saturating_sub(1)) }
-        };
-        [at(p[0], self.origin[0], self.columns), at(p[1], self.origin[1], self.rows)]
+        let size = fine.max((extent / count.max(1) as f64).sqrt()).max(RESOLUTION_MM);
+        Corners { points, longest, spread, rho, widest, buckets: Buckets::of_boxes(&boxes, size) }
     }
 
     /// The longest pair of corners that can meet within the face.
@@ -177,25 +120,15 @@ impl<'a> Corners<'a> {
             return;
         }
         let radius = (self.rho + lv + self.widest).min(limit);
-        let ([i0, j0], [i1, j1]) =
-            (self.cell([p[0] - radius, p[1] - radius]), self.cell([p[0] + radius, p[1] + radius]));
-        for j in j0..=j1 {
-            let (Some(&a), Some(&b)) =
-                (self.starts.get(j * self.columns + i0), self.starts.get(j * self.columns + i1 + 1))
-            else {
-                continue;
+        self.buckets.visit([p[0] - radius, p[1] - radius], [p[0] + radius, p[1] + radius], |w| {
+            let (Some(&q), Some(&lw)) = (self.points.get(w as usize), self.longest.get(w as usize)) else {
+                return;
             };
-            for &w in self.items.get(a..b).unwrap_or(&[]) {
-                let (Some(&q), Some(&lw)) = (self.points.get(w as usize), self.longest.get(w as usize))
-                else {
-                    continue;
-                };
-                let d = (p[0] - q[0]).hypot(p[1] - q[1]);
-                if d <= self.rho + lv + lw && d < limit {
-                    f(w, d);
-                }
+            let d = (p[0] - q[0]).hypot(p[1] - q[1]);
+            if d <= self.rho + lv + lw && d < limit {
+                f(w, d);
             }
-        }
+        });
     }
 }
 

@@ -17,7 +17,7 @@
 //! triangles, so that a leaf's value there is the sum of its values at their corners.
 
 use crate::trace::{Event, Net, Piece, Spot, Trace};
-use layercraft_geom::{GRID_MM, Point, orientation};
+use layercraft_geom::{GRID_MM, Point, barycentric, orientation, projection};
 use layercraft_mesh::{Body, Mesh, Vertex};
 use std::cmp::Ordering::{Equal, Greater, Less};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -95,27 +95,12 @@ fn lerp(a: Vertex, b: Vertex, t: f64) -> Vertex {
     [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])]
 }
 
-/// How far along from `a` to `b` the point of their line nearest `p` lies, from 0 to 1.
-fn along(a: Point, b: Point, p: Point) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let l2 = d[0] * d[0] + d[1] * d[1];
-    if l2 > 0.0 { (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 }
-}
-
 /// How far along each segment two crossing segments cross, from 0 to 1.
-fn crossing(a: Point, b: Point, u: Point, v: Point) -> (f64, f64) {
+fn crossing_fractions(a: Point, b: Point, u: Point, v: Point) -> (f64, f64) {
     let (d, e, w) = ([b[0] - a[0], b[1] - a[1]], [v[0] - u[0], v[1] - u[1]], [u[0] - a[0], u[1] - a[1]]);
     let det = d[0] * e[1] - d[1] * e[0];
     let (t, s) = ((w[0] * e[1] - w[1] * e[0]) / det, (w[0] * d[1] - w[1] * d[0]) / det);
     if t.is_finite() && s.is_finite() { (t.clamp(0.0, 1.0), s.clamp(0.0, 1.0)) } else { (0.5, 0.5) }
-}
-
-/// The barycentric coordinates of `p` in the triangle, when it has an area.
-fn barycentric([a, b, c]: [Point; 3], p: Point) -> Option<[f64; 3]> {
-    let det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]);
-    let l1 = ((p[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (p[1] - a[1])) / det;
-    let l2 = ((b[0] - a[0]) * (p[1] - a[1]) - (p[0] - a[0]) * (b[1] - a[1])) / det;
-    (l1.is_finite() && l2.is_finite()).then_some([1.0 - l1 - l2, l1, l2])
 }
 
 /// The place of the point `p`, lying at `spot`.
@@ -123,7 +108,7 @@ fn place(net: &Net, spot: Spot, p: Point) -> Place {
     match spot {
         Spot::Corner(w) => Place::at(w),
         Spot::Edge(u, v) => match (net.point(u), net.point(v)) {
-            (Some(pu), Some(pv)) => Place::between(u, v, along(pu, pv, p)),
+            (Some(pu), Some(pv)) => Place::between(u, v, projection(p, pu, pv)),
             _ => Place::default(),
         },
         Spot::Inside(t) => match net.triangle(t) {
@@ -134,24 +119,24 @@ fn place(net: &Net, spot: Spot, p: Point) -> Place {
     }
 }
 
-/// Whether the triangle's box meets `area` on the plate and `heights` up.
-fn meets([a, b, c]: [Vertex; 3], area: [Point; 2], heights: [f64; 2]) -> bool {
+/// Whether the triangle's box meets `extent`, a box of the plate, and `heights` up.
+fn meets([a, b, c]: [Vertex; 3], extent: [Point; 2], heights: [f64; 2]) -> bool {
     let lo = [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1]), a[2].min(b[2]).min(c[2])];
     let hi = [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1]), a[2].max(b[2]).max(c[2])];
-    let [[x0, y0], [x1, y1]] = area;
+    let [[x0, y0], [x1, y1]] = extent;
     hi[2] >= heights[0] && lo[2] <= heights[1] && hi[0] >= x0 && lo[0] <= x1 && hi[1] >= y0 && lo[1] <= y1
 }
 
-/// The mesh with its triangles over `area`, a box of the plate, and within `heights` cut along
+/// The mesh with its triangles over `extent`, a box of the plate, and within `heights` cut along
 /// the triangles of `net`.
-pub(crate) fn refine(mesh: &Mesh, net: &Net, area: [Point; 2], heights: [f64; 2]) -> Refined {
+pub(crate) fn refine(mesh: &Mesh, net: &Net, extent: [Point; 2], heights: [f64; 2]) -> Refined {
     let mut refined = Refined {
         mesh: Mesh { bodies: Vec::new(), materials: mesh.materials.clone() },
         ..Refined::default()
     };
     for body in &mesh.bodies {
         let mut cutter = Cutter::new(body, net);
-        let (body, places) = cutter.run(body, area, heights);
+        let (body, places) = cutter.run(body, extent, heights);
         refined.mesh.bodies.push(body);
         refined.places.push(places);
         refined.unsplit += cutter.unsplit;
@@ -184,9 +169,12 @@ impl<'a> Cutter<'a> {
         }
     }
 
-    fn run(&mut self, body: &Body, area: [Point; 2], heights: [f64; 2]) -> (Body, Vec<Place>) {
-        let chosen: Vec<bool> =
-            body.triangles.iter().map(|t| body.corners(t).is_some_and(|c| meets(c, area, heights))).collect();
+    fn run(&mut self, body: &Body, extent: [Point; 2], heights: [f64; 2]) -> (Body, Vec<Place>) {
+        let chosen: Vec<bool> = body
+            .triangles
+            .iter()
+            .map(|t| body.corners(t).is_some_and(|c| meets(c, extent, heights)))
+            .collect();
         let mut located = vec![false; body.vertices.len()];
         for (tri, _) in body.triangles.iter().zip(&chosen).filter(|(_, c)| **c) {
             for &i in tri {
@@ -262,11 +250,11 @@ impl<'a> Cutter<'a> {
             let (at, place) = match *event {
                 Event::Corner(w) => {
                     let pw = self.net.point(w)?;
-                    let s = along(pa, pb, pw);
+                    let s = projection(pw, pa, pb);
                     ([pw[0], pw[1], va[2] + s * (vb[2] - va[2])], Place::at(w))
                 }
                 Event::Crossing(u, v) => {
-                    let (t, s) = crossing(pa, pb, self.net.point(u)?, self.net.point(v)?);
+                    let (t, s) = crossing_fractions(pa, pb, self.net.point(u)?, self.net.point(v)?);
                     (lerp(va, vb, t), Place::between(u, v, s))
                 }
             };

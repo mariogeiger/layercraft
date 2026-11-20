@@ -69,7 +69,7 @@ fn a_cube_cuts_into_squares() {
     for layer in &sections.layers {
         assert!((area(&layer.region) - 100.0).abs() < 1e-9, "{}", area(&layer.region));
     }
-    let loops = section_loops(&mesh, |_| 1.0).loops;
+    let loops = section_loops(&mesh, |_| 1.0).unwrap().loops;
     assert!(loops.iter().all(|l| signed_area(l) > 0.0), "loops must be counterclockwise");
 }
 
@@ -84,7 +84,7 @@ fn a_plane_through_vertices_still_closes() {
         ],
         ..Mesh::default()
     };
-    let cut = section_loops(&mesh, |_| 1.0);
+    let cut = section_loops(&mesh, |_| 1.0).unwrap();
     assert_eq!(cut.open, 0);
     assert!((area(&winding_region(&cut.loops).unwrap()) - 16.0).abs() < 1e-9);
 }
@@ -132,10 +132,27 @@ fn a_hole_in_the_mesh_is_counted_and_closed_across() {
     let mut body = cuboid("c", [0.0; 3], [1.0; 3]);
     body.triangles
         .retain(|t| !(body.vertices[t[0] as usize][0] == 1.0 && body.vertices[t[1] as usize][0] == 1.0));
-    let cut = section_loops(&Mesh { bodies: vec![body], ..Mesh::default() }, |_| 0.5);
+    let cut = section_loops(&Mesh { bodies: vec![body], ..Mesh::default() }, |_| 0.5).unwrap();
     assert!(cut.open > 0);
     assert!(cut.widest_gap <= 1.0 + 1e-12);
     assert!((area(&winding_region(&cut.loops).unwrap()) - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_section_stopping_at_more_cracks_than_a_crack_explains_is_an_error() {
+    // Loose upright triangles, each cut into a chain of its own that no other closes: past
+    // `MAX_JOINED` of them the section was dropped and reported as joined.
+    let mut body = layercraft_mesh::Body::default();
+    for k in 0..=crate::cut::MAX_JOINED as u32 {
+        let x = 2.0 * k as f64;
+        body.vertices.extend([[x, 0.0, 0.0], [x + 1.0, 0.0, 0.0], [x, 0.0, 1.0]]);
+        body.triangles.push([3 * k, 3 * k + 1, 3 * k + 2]);
+    }
+    let mesh = Mesh { bodies: vec![body], ..Mesh::default() };
+    assert!(
+        matches!(section_loops(&mesh, |_| 0.5), Err(SectionError::Broken(n)) if n > crate::cut::MAX_JOINED)
+    );
+    assert!(matches!(section(&mesh, &LAYERING), Err(SectionError::Broken(_))));
 }
 
 /// The regular `n`-gon of circumradius `r`, a vertex on each axis when `n` is a multiple of four.
@@ -173,7 +190,7 @@ fn a_crack_between_two_tessellations_keeps_the_hole() {
         ],
         ..Mesh::default()
     };
-    let cut = section_loops(&mesh, |v| 1.0 + 0.05 * v[0]);
+    let cut = section_loops(&mesh, |v| 1.0 + 0.05 * v[0]).unwrap();
     let region = winding_region(&cut.loops).unwrap();
     let half = |n: usize, r: f64| n as f64 * r * r * (std::f64::consts::TAU / n as f64).sin() / 4.0;
     let exact = half(24, 8.0) + half(16, 8.0) - half(12, 2.0) - half(20, 2.0);
@@ -314,7 +331,7 @@ fn bent_layers_follow_a_sloped_top_exactly() {
             Mesh { bodies: vec![height_field(name, [0.0, 0.0], [10.0, 8.0], 10, top)], ..Mesh::default() };
         assert!((mesh.volume() - volume).abs() < 1e-9, "{name}: {}", mesh.volume());
         let sections = section(&mesh, &bent()).unwrap();
-        assert_eq!((sections.open_chains, sections.unsplit_cells), (0, 0), "{name}");
+        assert_eq!((sections.open_chains, sections.unsplit_triangles), (0, 0), "{name}");
         assert!(sections.layers.iter().any(|l| !l.warp.is_zero()), "{name}: nothing bent");
         // Stored, the stage holds its carrier once and each layer's warp on it.
         let stored = serde_json::to_string(&sections).unwrap();
@@ -369,7 +386,7 @@ fn turned_or_mirrored_the_leaves_turn_with_the_solid() {
         };
         let other = section(&turned(&mesh, angle.to_radians(), mirror), &bent()).unwrap();
         assert_eq!(other.layers.len(), sections.layers.len());
-        assert_eq!(other.unsplit_cells, 0);
+        assert_eq!(other.unsplit_triangles, 0);
         // Every leaf, at every point, its slope of 0.15 times what the corners of its triangles,
         // along an outline offset from the solid's, slide apart at most: a micrometre's rounding.
         let mut worst = 0.0f64;
@@ -624,7 +641,7 @@ fn facets_overlapping_on_the_plate_tile_it_whichever_way_it_lies() {
             turned.bodies.iter().flat_map(|b| b.vertices.iter().map(|v| [v[0], v[1]])).collect();
         let patches = crate::patches::patches(&turned, 20f64.to_radians().tan()).unwrap();
         let t =
-            crate::triangulation::triangulation(&patches, 0.25, 2.0, &crate::triangulation::hull(&shadow))
+            crate::triangulation::triangulation(&patches, 0.25, 2.0, &layercraft_geom::convex_hull(&shadow))
                 .unwrap();
         let inner = &t.triangles[..t.inner];
         assert!(!inner.is_empty());

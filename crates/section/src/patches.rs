@@ -7,7 +7,7 @@
 //! facet and bends along the creases, so that it meets `S` exactly once the triangles the leaves
 //! bend on have every facet's edges among theirs (`triangulation`).
 
-use layercraft_geom::{GRID_MM, GeomError, Point, Region, winding_region};
+use layercraft_geom::{DisjointSets, GRID_MM, GeomError, Point, Region, winding_region};
 use layercraft_mesh::{Mesh, Vertex};
 use std::collections::HashMap;
 
@@ -59,44 +59,6 @@ fn gradient(t: [Vertex; 3]) -> Option<[f64; 2]> {
     (n[2] > 0.0 && n[2].is_finite()).then(|| [-n[0] / n[2], -n[1] / n[2]])
 }
 
-fn find(parent: &mut [usize], mut i: usize) -> usize {
-    while let Some(&p) = parent.get(i) {
-        if p == i {
-            break;
-        }
-        let up = parent.get(p).copied().unwrap_or(p);
-        if let Some(slot) = parent.get_mut(i) {
-            *slot = up;
-        }
-        i = up;
-    }
-    i
-}
-
-fn join(parent: &mut [usize], a: usize, b: usize) {
-    let (ra, rb) = (find(parent, a), find(parent, b));
-    if let Some(slot) = parent.get_mut(ra) {
-        *slot = rb;
-    }
-}
-
-/// The groups `parent` makes of `0..n`, numbered by their first member, members in order.
-fn classes(parent: &mut [usize]) -> Vec<Vec<usize>> {
-    let mut number: HashMap<usize, usize> = HashMap::new();
-    let mut out: Vec<Vec<usize>> = Vec::new();
-    for id in 0..parent.len() {
-        let root = find(parent, id);
-        let k = *number.entry(root).or_insert(out.len());
-        if k == out.len() {
-            out.push(Vec::new());
-        }
-        if let Some(group) = out.get_mut(k) {
-            group.push(id);
-        }
-    }
-    out
-}
-
 /// The up-facing triangles no steeper than `max_slope` (tangent), grouped into patches, each
 /// split into its facets, in the mesh's order.
 fn groups(mesh: &Mesh, max_slope: f64) -> Vec<Vec<Vec<[Vertex; 3]>>> {
@@ -127,24 +89,23 @@ fn groups(mesh: &Mesh, max_slope: f64) -> Vec<Vec<Vec<[Vertex; 3]>>> {
             }
         }
     }
-    let mut patch = (0..triangles.len()).collect::<Vec<_>>();
-    let mut facet = patch.clone();
+    let mut patch = DisjointSets::new(triangles.len());
+    let mut facet = DisjointSets::new(triangles.len());
     for &(a, b, far) in &shared {
-        join(&mut patch, a, b);
+        patch.unite(a, b);
         // The same facet when the neighbour's far corner lies on this triangle's plane.
         let Some(t) = triangles.get(a).copied() else { continue };
         let Some(g) = gradient(t) else { continue };
         let on = t[0][2] + g[0] * (far[0] - t[0][0]) + g[1] * (far[1] - t[0][1]);
         if (far[2] - on).abs() <= COPLANAR_MM {
-            join(&mut facet, a, b);
+            facet.unite(a, b);
         }
     }
-    let facets = classes(&mut facet);
     let mut by_patch: HashMap<usize, Vec<Vec<[Vertex; 3]>>> = HashMap::new();
     let mut order: Vec<usize> = Vec::new();
-    for members in facets {
+    for members in facet.classes() {
         let Some(&head) = members.first() else { continue };
-        let root = find(&mut patch, head);
+        let root = patch.root(head);
         if !by_patch.contains_key(&root) {
             order.push(root);
         }

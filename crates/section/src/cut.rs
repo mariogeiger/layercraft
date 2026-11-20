@@ -3,17 +3,18 @@
 //! Each vertex lies above the surface or not by the sign of its height over it, `z − level`, a
 //! number of the vertex alone. Where that height is linear over a triangle, as for a plane or
 //! for a leaf over a mesh refined along the leaves' triangles (`refine`), the surface cuts the
-//! triangle along the segment between the points where it crosses two of its edges. A mesh with cracks, where
-//! the two faces along a seam are cut into different edges, leaves chains that stop at the crack;
-//! they are joined end to start across it, the shortest gaps first.
+//! triangle along the segment between the points where it crosses two of its edges. A mesh with
+//! cracks, where the two faces along a seam are cut into different edges, leaves chains that stop
+//! at the crack; they are joined end to start across it, the shortest gaps first.
 
+use crate::SectionError;
 use layercraft_geom::{GRID_MM, Point};
 use layercraft_mesh::{Body, Mesh, Vertex};
 use std::collections::HashMap;
 
 /// The most open chains one section joins across cracks: matching every end to every start costs
 /// their number squared, and a mesh with more is broken beyond what a crack explains.
-const MAX_JOINED: usize = 1024;
+pub(crate) const MAX_JOINED: usize = 1024;
 
 /// A section's loops, and the chains that did not close by themselves.
 #[derive(Debug, Clone, Default)]
@@ -87,14 +88,16 @@ fn crossing(body: &Body, over: &[f64], a: u32, b: u32) -> Option<Point> {
 }
 
 /// Where the surface `z = level(vertex)` cuts the mesh.
-pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> Cut {
+pub fn section_loops(mesh: &Mesh, level: impl Fn(Vertex) -> f64) -> Result<Cut, SectionError> {
     let over: Vec<Vec<f64>> =
         mesh.bodies.iter().map(|b| b.vertices.iter().map(|&v| v[2] - level(v)).collect()).collect();
     section_over(mesh.bodies.iter().zip(over.iter().map(Vec::as_slice)))
 }
 
 /// Where a surface cuts the bodies, each given with its vertices' heights over it.
-pub(crate) fn section_over<'a>(bodies: impl IntoIterator<Item = (&'a Body, &'a [f64])>) -> Cut {
+pub(crate) fn section_over<'a>(
+    bodies: impl IntoIterator<Item = (&'a Body, &'a [f64])>,
+) -> Result<Cut, SectionError> {
     // For each crossing edge: the point, and the segments leaving it.
     let mut points: HashMap<EdgeKey, Point> = HashMap::new();
     let mut next: HashMap<EdgeKey, Vec<EdgeKey>> = HashMap::new();
@@ -135,7 +138,10 @@ pub(crate) fn section_over<'a>(bodies: impl IntoIterator<Item = (&'a Body, &'a [
 }
 
 /// The loops the segments `next` chain into, the chains that stop at a crack joined across it.
-fn stitch(points: &HashMap<EdgeKey, Point>, mut next: HashMap<EdgeKey, Vec<EdgeKey>>) -> Cut {
+fn stitch(
+    points: &HashMap<EdgeKey, Point>,
+    mut next: HashMap<EdgeKey, Vec<EdgeKey>>,
+) -> Result<Cut, SectionError> {
     let mut cut = Cut::default();
     let mut chains = Vec::new();
     let mut starts: Vec<EdgeKey> = next.keys().copied().collect();
@@ -162,20 +168,20 @@ fn stitch(points: &HashMap<EdgeKey, Point>, mut next: HashMap<EdgeKey, Vec<EdgeK
         }
     }
     cut.open = chains.len();
+    if chains.len() > MAX_JOINED {
+        return Err(SectionError::Broken(chains.len()));
+    }
     let (joined, widest_gap) = join(chains);
     cut.loops.extend(joined);
     cut.widest_gap = widest_gap;
     cut.loops = cut.loops.into_iter().map(straightened).filter(|l| l.len() >= 3).collect();
-    cut
+    Ok(cut)
 }
 
 /// Open chains joined into loops, each end to the start nearest it, the shortest gaps first,
 /// and the widest gap closed. Every chain has one end and one start, so every end finds a start
 /// and the joins close into cycles.
 fn join(chains: Vec<Vec<Point>>) -> (Vec<Vec<Point>>, f64) {
-    if chains.len() > MAX_JOINED {
-        return (Vec::new(), 0.0);
-    }
     let gap = |a: Point, b: Point| (b[0] - a[0]).hypot(b[1] - a[1]);
     let mut pairs = Vec::with_capacity(chains.len() * chains.len());
     for (i, from) in chains.iter().enumerate() {

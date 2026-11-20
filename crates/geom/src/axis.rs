@@ -17,15 +17,16 @@
 //! frame choosing among the lines a symmetric shape leaves open.
 
 use crate::ops::{from_lattice, region_to_lattice};
+use crate::sets::{DisjointSets, chains};
 use crate::{
-    Contour, GeomError, Moments, Point, RESOLUTION_MM, Region, check_points, check_value, edges, encloses,
-    segment_distance,
+    Contour, GeomError, Moments, Point, RESOLUTION_MM, Region, bounds_of, check_points, check_value, edges,
+    encloses, segment_distance,
 };
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::IntOverlayOptions;
 use i_overlay::core::simplify::Simplify;
 use i_triangle::int::unchecked::IntUncheckedTriangulatable;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// A centre line of a region and how thick the region is along it.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,8 +38,9 @@ pub struct Centreline {
     pub closed: bool,
 }
 
-/// The most pieces one edge is cut into, and the most edges walked from one corner.
+/// The most pieces one edge is cut into.
 const MAX_PIECES: f64 = 1e6;
+/// The most edges walked from one corner.
 const MAX_WALK: usize = 100_000;
 
 /// The vertices of a closed contour that keep it within `tolerance` of itself, by Douglas and
@@ -100,9 +102,42 @@ struct Boundary {
     next: HashMap<usize, Vec<usize>>,
 }
 
+/// How far a ray from `p` along `d` runs before it meets the segment from `a` to `b`, in units
+/// of `d`, when it does.
+fn ray_hit(p: Point, d: [f64; 2], a: Point, b: Point) -> Option<f64> {
+    let cross = |x: [f64; 2], y: [f64; 2]| x[0] * y[1] - x[1] * y[0];
+    // p + u·d = a + v·(b − a), with u ≥ 0 and v in [0, 1].
+    let (e, f) = ([b[0] - a[0], b[1] - a[1]], [a[0] - p[0], a[1] - p[1]]);
+    let den = cross(d, e);
+    if den.abs() > 0.0 {
+        let (u, v) = (cross(f, e) / den, cross(f, d) / den);
+        (u >= 0.0 && (0.0..=1.0).contains(&v)).then_some(u)
+    } else {
+        None
+    }
+}
+
 impl Boundary {
     fn at(&self, i: usize) -> Point {
         self.points.get(i).copied().unwrap_or([0.0, 0.0])
+    }
+
+    /// Calls `visit` with each edge walked from corner `from` both ways along the boundary, until
+    /// `budget` is walked or the walk comes back to `from`.
+    fn walk(&self, from: usize, budget: f64, mut visit: impl FnMut(Point, Point)) {
+        for &first in self.next.get(&from).into_iter().flatten() {
+            let (mut prev, mut cur, mut walked) = (from, first, 0.0);
+            for _ in 0..MAX_WALK {
+                let (a, b) = (self.at(prev), self.at(cur));
+                visit(a, b);
+                walked += (b[0] - a[0]).hypot(b[1] - a[1]);
+                let next = self.next.get(&cur).and_then(|l| l.iter().find(|&&m| m != prev)).copied();
+                match next {
+                    Some(n) if walked <= budget && cur != from => (prev, cur) = (cur, n),
+                    _ => break,
+                }
+            }
+        }
     }
 
     /// The distance from `p` to the boundary, walked from each corner `from` as far as twice its
@@ -111,20 +146,9 @@ impl Boundary {
         let mut best = f64::INFINITY;
         for &s in from {
             let q = self.at(s);
-            let budget = 2.0 * (q[0] - p[0]).hypot(q[1] - p[1]);
-            for &first in self.next.get(&s).into_iter().flatten() {
-                let (mut prev, mut cur, mut walked) = (s, first, 0.0);
-                for _ in 0..MAX_WALK {
-                    let (a, b) = (self.at(prev), self.at(cur));
-                    best = best.min(segment_distance(p, a, b));
-                    walked += (b[0] - a[0]).hypot(b[1] - a[1]);
-                    let next = self.next.get(&cur).and_then(|l| l.iter().find(|&&m| m != prev)).copied();
-                    match next {
-                        Some(n) if walked <= budget && cur != s => (prev, cur) = (cur, n),
-                        _ => break,
-                    }
-                }
-            }
+            self.walk(s, 2.0 * (q[0] - p[0]).hypot(q[1] - p[1]), |a, b| {
+                best = best.min(segment_distance(p, a, b))
+            });
         }
         best
     }
@@ -133,41 +157,34 @@ impl Boundary {
     /// `reach`: the edges walked from each corner `from` as far as twice its distance to `p`
     /// and `reach` together, beyond which no edge within `reach` of `p` lies.
     fn hit(&self, p: Point, d: [f64; 2], from: &[usize], reach: f64) -> Option<f64> {
-        let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
         let mut best: Option<f64> = None;
         for &s in from {
             let q = self.at(s);
-            let budget = 2.0 * ((q[0] - p[0]).hypot(q[1] - p[1]) + reach);
-            for &first in self.next.get(&s).into_iter().flatten() {
-                let (mut prev, mut cur, mut walked) = (s, first, 0.0);
-                for _ in 0..MAX_WALK {
-                    let (a, b) = (self.at(prev), self.at(cur));
-                    // p + u·d = a + v·(b − a), with u ≥ 0 and v in [0, 1].
-                    let (e, f) = ([b[0] - a[0], b[1] - a[1]], [a[0] - p[0], a[1] - p[1]]);
-                    let den = cross(d, e);
-                    if den.abs() > 0.0 {
-                        let (u, v) = (cross(f, e) / den, cross(f, d) / den);
-                        if u >= 0.0 && u <= reach && (0.0..=1.0).contains(&v) && best.is_none_or(|x| u < x) {
-                            best = Some(u);
-                        }
-                    }
-                    walked += e[0].hypot(e[1]);
-                    let next = self.next.get(&cur).and_then(|l| l.iter().find(|&&m| m != prev)).copied();
-                    match next {
-                        Some(n) if walked <= budget && cur != s => (prev, cur) = (cur, n),
-                        _ => break,
-                    }
+            self.walk(s, 2.0 * ((q[0] - p[0]).hypot(q[1] - p[1]) + reach), |a, b| {
+                if let Some(u) = ray_hit(p, d, a, b).filter(|&u| u <= reach)
+                    && best.is_none_or(|x| u < x)
+                {
+                    best = Some(u);
                 }
-            }
+            });
         }
         best
     }
 }
 
-/// A point of the axis and the corners its distance to the boundary is sought from.
+/// A point of the axis, the corners its distance to the boundary is sought from, and how thick
+/// the region is there.
 struct Node {
     at: Point,
     corners: Vec<usize>,
+    thickness: f64,
+}
+
+/// The axis as a graph: its nodes and each one's neighbours.
+#[derive(Default)]
+struct Axis {
+    nodes: Vec<Node>,
+    links: Vec<Vec<usize>>,
 }
 
 /// The centre lines of `region`'s strips, each with the region's thickness along it. The
@@ -180,7 +197,7 @@ pub fn chordal_axis(
     tolerance: f64,
     axis_at: &dyn Fn(Point) -> [f64; 2],
 ) -> Result<Vec<Centreline>, GeomError> {
-    check_points(region.iter().flatten())?;
+    check_points(region.iter().flatten().flatten())?;
     check_value(step)?;
     check_value(tolerance)?;
     if step <= 0.0 {
@@ -206,7 +223,7 @@ pub fn chordal_axis(
     let on = |p: Point, c: Option<(Point, f64)>| {
         c.is_some_and(|(o, r)| ((p[0] - o[0]).hypot(p[1] - o[1]) - r).abs() <= RESOLUTION_MM)
     };
-    let mut cell: Vec<usize> = (0..n).collect();
+    let mut cells = DisjointSets::new(n);
     for t in 0..n {
         for k in 0..3 {
             let Some(u) = across(t, k).filter(|&u| u > t) else { continue };
@@ -215,40 +232,30 @@ pub fn chordal_axis(
             };
             let Some(o) = (0..3).filter_map(|m| corner(u, m)).find(|&v| v != i && v != j) else { continue };
             if on(boundary.at(o), circle(t)) && on(boundary.at(q), circle(u)) {
-                let (a, b) = (root(&mut cell, t), root(&mut cell, u));
-                if let Some(slot) = cell.get_mut(a.max(b)) {
-                    *slot = a.min(b);
-                }
+                cells.unite(t, u);
             }
         }
     }
-    let mut nodes: Vec<Node> = Vec::new();
-    let mut links: Vec<Vec<usize>> = Vec::new();
+    let mut axis = Axis::default();
     let mut chords: HashMap<(usize, usize), usize> = HashMap::new();
-    let add = |nodes: &mut Vec<Node>, links: &mut Vec<Vec<usize>>, node: Node| {
-        nodes.push(node);
-        links.push(Vec::new());
-        nodes.len() - 1
-    };
     // Each cell's corners, and the nodes of its chords to other cells.
     let mut corners_of: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut chords_of: Vec<Vec<usize>> = vec![Vec::new(); n];
     for t in 0..n {
-        let c = root(&mut cell, t);
+        let c = cells.root(t);
         for k in 0..3 {
             let (Some(i), Some(j)) = (corner(t, k + 1), corner(t, k + 2)) else { continue };
             if let (Some(own), Some(v)) = (corners_of.get_mut(c), corner(t, k)) {
                 own.push(v);
             }
-            match across(t, k).map(|u| root(&mut cell, u)) {
+            match across(t, k).map(|u| cells.root(u)) {
                 Some(other) if other != c => {
                     let key = (i.min(j), i.max(j));
                     let id = match chords.get(&key) {
                         Some(&id) => id,
                         None => {
                             let (a, b) = (boundary.at(i), boundary.at(j));
-                            let at = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-                            let id = add(&mut nodes, &mut links, Node { at, corners: vec![i, j] });
+                            let id = axis.add([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0], vec![i, j], 0.0);
                             chords.insert(key, id);
                             id
                         }
@@ -269,48 +276,28 @@ pub fn chordal_axis(
         corners.sort_unstable();
         corners.dedup();
         match inner.as_slice() {
-            [a, b] => link(&mut links, *a, *b),
+            [a, b] => axis.link(*a, *b),
             [_, _, _, ..] => {
                 let k = corners.len() as f64;
                 let at = corners
                     .iter()
                     .map(|&i| boundary.at(i))
                     .fold([0.0, 0.0], |c, p| [c[0] + p[0] / k, c[1] + p[1] / k]);
-                let hub = add(&mut nodes, &mut links, Node { at, corners });
+                let hub = axis.add(at, corners, 0.0);
                 for &c in &inner {
-                    link(&mut links, hub, c);
+                    axis.link(hub, c);
                 }
             }
             _ => {}
         }
     }
-    let mut thickness: Vec<f64> =
-        nodes.iter().map(|node| 2.0 * boundary.distance(node.at, &node.corners)).collect();
-    prune(&nodes, &thickness, &mut links);
-    blobs(region, axis_at, &mut nodes, &mut thickness, &mut links);
-    extend(&mut nodes, &mut thickness, &mut links, &boundary, tolerance);
-    let line = |(ids, closed): (Vec<usize>, bool)| Centreline {
-        points: ids.iter().filter_map(|&i| nodes.get(i).map(|n| n.at)).collect(),
-        thickness: ids.iter().filter_map(|&i| thickness.get(i).copied()).collect(),
-        closed,
-    };
-    Ok(chains(&links).into_iter().map(line).collect())
-}
-
-/// The cell of triangle `t`: the least triangle joined to it, halving the path there.
-fn root(cell: &mut [usize], mut t: usize) -> usize {
-    for _ in 0..cell.len() {
-        let up = cell.get(t).copied().unwrap_or(t);
-        if up == t {
-            break;
-        }
-        let next = cell.get(up).copied().unwrap_or(up);
-        if let Some(slot) = cell.get_mut(t) {
-            *slot = next;
-        }
-        t = next;
+    for node in &mut axis.nodes {
+        node.thickness = 2.0 * boundary.distance(node.at, &node.corners);
     }
-    t
+    axis.prune();
+    axis.lay_compact_shapes(region, axis_at);
+    axis.run_ends_to_boundary(&boundary, tolerance);
+    Ok(axis.centrelines())
 }
 
 /// The centre and radius of the circle through three points, if they are not on one line.
@@ -325,318 +312,276 @@ fn circumcircle(a: Point, b: Point, c: Point) -> Option<(Point, f64)> {
     Some(([a[0] + u[0], a[1] + u[1]], u[0].hypot(u[1])))
 }
 
-fn link(links: &mut [Vec<usize>], a: usize, b: usize) {
-    if let Some(l) = links.get_mut(a) {
-        l.push(b);
-    }
-    if let Some(l) = links.get_mut(b) {
-        l.push(a);
-    }
-}
-
-/// Drops each branch that runs from a junction to an end no longer than the strip is thick at
-/// the junction: it stays within the junction's disc, reaching only into a corner, which the
-/// junction's own bead fills. A junction with nothing else keeps its two longest.
-fn prune(nodes: &[Node], thickness: &[f64], links: &mut [Vec<usize>]) {
-    let degree = |links: &[Vec<usize>], i: usize| links.get(i).map_or(0, Vec::len);
-    let at = |i: usize| nodes.get(i).map_or([0.0, 0.0], |n| n.at);
-    let junction = |links: &[Vec<usize>], i: usize| degree(links, i) >= 3;
-    loop {
-        // Every branch from an end to a junction: the junction, the branch's length and nodes.
-        let mut branches: Vec<(usize, f64, Vec<usize>)> = Vec::new();
-        for end in (0..links.len()).filter(|&i| degree(links, i) == 1) {
-            let (mut branch, mut length) = (vec![end], 0.0);
-            let (mut from, mut next) = (end, links.get(end).and_then(|l| l.first()).copied());
-            while let Some(i) = next {
-                length += (at(i)[0] - at(from)[0]).hypot(at(i)[1] - at(from)[1]);
-                if degree(links, i) != 2 {
-                    break;
-                }
-                branch.push(i);
-                (from, next) = (i, links.get(i).and_then(|l| l.iter().find(|&&m| m != from)).copied());
-            }
-            if let Some(j) = next.filter(|&j| junction(links, j)) {
-                branches.push((j, length, branch));
-            }
-        }
-        // Each junction's short branches, longest first.
-        // A junction's centroid may sit off the centre line: the strip is as thick there as at
-        // the thickest point next to it.
-        let disc = |j: usize| {
-            let around = links.get(j).into_iter().flatten().chain(std::iter::once(&j));
-            around.filter_map(|&i| thickness.get(i)).fold(0.0, |m: f64, &t| m.max(t))
-        };
-        branches.retain(|(j, length, _)| *length <= disc(*j));
-        branches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
-        let mut drop = Vec::new();
-        for group in branches.chunk_by(|a, b| a.0 == b.0) {
-            let Some((j, _, _)) = group.first() else { continue };
-            // A junction with no other branch keeps its two longest, so its strip runs through.
-            let keep = if degree(links, *j) > group.len() { 0 } else { group.len().min(2) };
-            drop.extend(group.iter().skip(keep).flat_map(|(_, _, branch)| branch.iter().copied()));
-        }
-        if drop.is_empty() {
-            break;
-        }
-        for i in drop {
-            for m in links.get_mut(i).map(std::mem::take).unwrap_or_default() {
-                if let Some(l) = links.get_mut(m) {
-                    l.retain(|&k| k != i);
-                }
-            }
-        }
-    }
-    // A junction's centre left between two chords is off the centre line: the line runs
-    // straight from one chord's midpoint to the other's.
-    for i in 0..links.len() {
-        let hub = nodes.get(i).is_some_and(|n| n.corners.len() >= 3);
-        let Some(&[a, b]) = links.get(i).map(Vec::as_slice).filter(|_| hub) else { continue };
-        if a == b {
-            continue;
-        }
-        for (m, other) in [(a, b), (b, a)] {
-            if let Some(l) = links.get_mut(m) {
-                l.retain(|&k| k != i);
-                l.push(other);
-            }
-        }
-        if let Some(l) = links.get_mut(i) {
-            l.clear();
-        }
-    }
-}
-
 /// How far a ray from `p` along the unit `d` runs before it meets an edge of `shape`.
 fn reach(shape: &[Contour], p: Point, d: [f64; 2]) -> Option<f64> {
-    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
-    let mut best: Option<f64> = None;
-    for (a, b) in shape.iter().flat_map(|c| edges(c)) {
-        let (e, f) = ([b[0] - a[0], b[1] - a[1]], [a[0] - p[0], a[1] - p[1]]);
-        let den = cross(d, e);
-        if den.abs() > 0.0 {
-            let (u, v) = (cross(f, e) / den, cross(f, d) / den);
-            if u > 0.0 && (0.0..=1.0).contains(&v) && best.is_none_or(|x| u < x) {
-                best = Some(u);
-            }
-        }
-    }
-    best
+    let hits =
+        shape.iter().flat_map(|c| edges(c)).filter_map(|(a, b)| ray_hit(p, d, a, b).filter(|&u| u > 0.0));
+    hits.fold(None, |best: Option<f64>, u| if best.is_none_or(|x| u < x) { Some(u) } else { best })
 }
 
-/// Lays the centre line of each shape of `region` no longer than twice as thick as it is, its
-/// chord at most twice its area over that chord, along the chord through its centroid on its
-/// own axis, edge to edge, as thick as its area over the chord's length. Of the lines a
-/// symmetric shape leaves open, as a square's two, it takes the one nearest the axis `axis_at`
-/// its centroid gives; a shape with none of its own, as a disc, that axis. Within half its
-/// thickness of either end, the points of a strip lie nearer the end than its sides, and the
-/// axis there turns with which of them the triangulation joined (`extend`): such a shape is all
-/// ends, and its axis would turn with the plate.
-fn blobs(
-    region: &Region,
-    axis_at: &dyn Fn(Point) -> [f64; 2],
-    nodes: &mut Vec<Node>,
-    thickness: &mut Vec<f64>,
-    links: &mut Vec<Vec<usize>>,
-) {
-    let n = links.len();
-    let at = |nodes: &[Node], i: usize| nodes.get(i).map_or([0.0, 0.0], |n| n.at);
-    // The axis's pieces, each by its least node, with their nodes.
-    let mut piece: Vec<usize> = (0..n).collect();
-    for i in 0..n {
-        for j in links.get(i).cloned().unwrap_or_default() {
-            let (a, b) = (root(&mut piece, i), root(&mut piece, j));
-            if let Some(slot) = piece.get_mut(a.max(b)) {
-                *slot = a.min(b);
+impl Axis {
+    fn add(&mut self, at: Point, corners: Vec<usize>, thickness: f64) -> usize {
+        self.nodes.push(Node { at, corners, thickness });
+        self.links.push(Vec::new());
+        self.nodes.len() - 1
+    }
+
+    fn link(&mut self, a: usize, b: usize) {
+        if let Some(l) = self.links.get_mut(a) {
+            l.push(b);
+        }
+        if let Some(l) = self.links.get_mut(b) {
+            l.push(a);
+        }
+    }
+
+    fn degree(&self, i: usize) -> usize {
+        self.links.get(i).map_or(0, Vec::len)
+    }
+
+    fn at(&self, i: usize) -> Point {
+        self.nodes.get(i).map_or([0.0, 0.0], |n| n.at)
+    }
+
+    fn thickness(&self, i: usize) -> f64 {
+        self.nodes.get(i).map_or(0.0, |n| n.thickness)
+    }
+
+    fn corners(&self, i: usize) -> &[usize] {
+        self.nodes.get(i).map_or(&[], |n| n.corners.as_slice())
+    }
+
+    /// The neighbour of `at` other than `from`.
+    fn onward(&self, from: usize, at: usize) -> Option<usize> {
+        self.links.get(at).and_then(|l| l.iter().find(|&&m| m != from)).copied()
+    }
+
+    /// Takes node `i` off the axis: every link to it goes.
+    fn detach(&mut self, i: usize) {
+        for m in self.links.get_mut(i).map(std::mem::take).unwrap_or_default() {
+            if let Some(l) = self.links.get_mut(m) {
+                l.retain(|&k| k != i);
             }
         }
     }
-    let mut members = vec![Vec::new(); n];
-    for i in (0..n).filter(|&i| links.get(i).is_some_and(|l| !l.is_empty())) {
-        let r = root(&mut piece, i);
-        if let Some(m) = members.get_mut(r) {
-            m.push(i);
+
+    /// Drops each branch that runs from a junction to an end no longer than the strip is thick at
+    /// the junction: it stays within the junction's disc, reaching only into a corner, which the
+    /// junction's own bead fills. A junction with nothing else keeps its two longest.
+    fn prune(&mut self) {
+        loop {
+            // Every branch from an end to a junction: the junction, the branch's length and nodes.
+            let mut branches: Vec<(usize, f64, Vec<usize>)> = Vec::new();
+            for end in (0..self.links.len()).filter(|&i| self.degree(i) == 1) {
+                let (mut branch, mut length) = (vec![end], 0.0);
+                let (mut from, mut next) = (end, self.links.get(end).and_then(|l| l.first()).copied());
+                while let Some(i) = next {
+                    let (p, q) = (self.at(i), self.at(from));
+                    length += (p[0] - q[0]).hypot(p[1] - q[1]);
+                    if self.degree(i) != 2 {
+                        break;
+                    }
+                    branch.push(i);
+                    (from, next) = (i, self.onward(from, i));
+                }
+                if let Some(j) = next.filter(|&j| self.degree(j) >= 3) {
+                    branches.push((j, length, branch));
+                }
+            }
+            // Each junction's short branches, longest first.
+            // A junction's centroid may sit off the centre line: the strip is as thick there as at
+            // the thickest point next to it.
+            let disc = |j: usize| {
+                let around = self.links.get(j).into_iter().flatten().chain(std::iter::once(&j));
+                around.map(|&i| self.thickness(i)).fold(0.0, f64::max)
+            };
+            branches.retain(|(j, length, _)| *length <= disc(*j));
+            branches.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.total_cmp(&a.1)));
+            let mut drop = Vec::new();
+            for group in branches.chunk_by(|a, b| a.0 == b.0) {
+                let Some((j, _, _)) = group.first() else { continue };
+                // A junction with no other branch keeps its two longest, so its strip runs through.
+                let keep = if self.degree(*j) > group.len() { 0 } else { group.len().min(2) };
+                drop.extend(group.iter().skip(keep).flat_map(|(_, _, branch)| branch.iter().copied()));
+            }
+            if drop.is_empty() {
+                break;
+            }
+            for i in drop {
+                self.detach(i);
+            }
+        }
+        // A junction's centre left between two chords is off the centre line: the line runs
+        // straight from one chord's midpoint to the other's.
+        for i in 0..self.links.len() {
+            let hub = self.corners(i).len() >= 3;
+            let Some(&[a, b]) = self.links.get(i).map(Vec::as_slice).filter(|_| hub) else { continue };
+            if a == b {
+                continue;
+            }
+            for (m, other) in [(a, b), (b, a)] {
+                if let Some(l) = self.links.get_mut(m) {
+                    l.retain(|&k| k != i);
+                    l.push(other);
+                }
+            }
+            if let Some(l) = self.links.get_mut(i) {
+                l.clear();
+            }
         }
     }
-    let roots: Vec<usize> = (0..n).filter(|&r| members.get(r).is_some_and(|m| !m.is_empty())).collect();
-    for shape in region {
-        let Some(moments) = Moments::of(std::iter::once((shape.as_slice(), 1.0))) else { continue };
-        let edges: Vec<(Point, Point)> = shape.iter().flat_map(|c| edges(c)).collect();
-        let centre = moments.centroid;
-        if !encloses(edges.iter().copied(), centre) {
-            continue;
+
+    /// Lays the centre line of each shape of `region` no longer than twice as thick as it is, its
+    /// chord at most twice its area over that chord, along the chord through its centroid on its
+    /// own axis, edge to edge, as thick as its area over the chord's length. Of the lines a
+    /// symmetric shape leaves open, as a square's two, it takes the one nearest the axis `axis_at`
+    /// its centroid gives; a shape with none of its own, as a disc, that axis. Within half its
+    /// thickness of either end, the points of a strip lie nearer the end than its sides, and the
+    /// axis there turns with which of them the triangulation joined (`run_ends_to_boundary`): such
+    /// a shape is all ends, and its axis would turn with the plate.
+    fn lay_compact_shapes(&mut self, region: &Region, axis_at: &dyn Fn(Point) -> [f64; 2]) {
+        let n = self.links.len();
+        // The axis's pieces, each by its least node, with their nodes.
+        let mut pieces = DisjointSets::new(n);
+        for (i, l) in self.links.iter().enumerate() {
+            for &j in l {
+                pieces.unite(i, j);
+            }
         }
-        let frame = axis_at(centre);
-        let nearest = |lines: &mut dyn Iterator<Item = [f64; 2]>| {
-            let across = |u: [f64; 2]| (u[0] * frame[0] + u[1] * frame[1]).abs();
-            lines.fold(None, |best: Option<[f64; 2]>, u| match best {
-                Some(b) if across(b) >= across(u) => Some(b),
-                _ => Some(u),
-            })
-        };
-        let d = moments.axes.and_then(|axes| nearest(&mut axes.lines())).unwrap_or(frame);
-        let (Some(fore), Some(aft)) = (reach(shape, centre, d), reach(shape, centre, [-d[0], -d[1]])) else {
-            continue;
-        };
-        let chord = fore + aft;
-        if chord * chord > 2.0 * moments.area {
-            continue;
+        let mut members = vec![Vec::new(); n];
+        for i in (0..n).filter(|&i| self.degree(i) > 0) {
+            if let Some(m) = members.get_mut(pieces.root(i)) {
+                m.push(i);
+            }
         }
-        let [lo, hi] = edges.iter().fold([[f64::MAX; 2], [f64::MIN; 2]], |[lo, hi], (a, _)| {
-            [[lo[0].min(a[0]), lo[1].min(a[1])], [hi[0].max(a[0]), hi[1].max(a[1])]]
-        });
-        let within = |p: Point| lo[0] <= p[0] && p[0] <= hi[0] && lo[1] <= p[1] && p[1] <= hi[1];
-        for &r in &roots {
-            let p = at(nodes, r);
-            if within(p) && encloses(edges.iter().copied(), p) {
-                for &i in members.get(r).into_iter().flatten() {
-                    if let Some(l) = links.get_mut(i) {
-                        l.clear();
+        let roots: Vec<usize> = (0..n).filter(|&r| members.get(r).is_some_and(|m| !m.is_empty())).collect();
+        for shape in region {
+            let Some(moments) = Moments::of(std::iter::once((shape.as_slice(), 1.0))) else { continue };
+            let edges: Vec<(Point, Point)> = shape.iter().flat_map(|c| edges(c)).collect();
+            let centre = moments.centroid;
+            if !encloses(edges.iter().copied(), centre) {
+                continue;
+            }
+            let frame = axis_at(centre);
+            let nearest = |lines: &mut dyn Iterator<Item = [f64; 2]>| {
+                let across = |u: [f64; 2]| (u[0] * frame[0] + u[1] * frame[1]).abs();
+                lines.fold(None, |best: Option<[f64; 2]>, u| match best {
+                    Some(b) if across(b) >= across(u) => Some(b),
+                    _ => Some(u),
+                })
+            };
+            let d = moments.axes.and_then(|axes| nearest(&mut axes.lines())).unwrap_or(frame);
+            let (Some(fore), Some(aft)) = (reach(shape, centre, d), reach(shape, centre, [-d[0], -d[1]]))
+            else {
+                continue;
+            };
+            let chord = fore + aft;
+            if chord * chord > 2.0 * moments.area {
+                continue;
+            }
+            let Some([lo, hi]) = bounds_of(shape.iter().flatten()) else { continue };
+            let within = |p: Point| lo[0] <= p[0] && p[0] <= hi[0] && lo[1] <= p[1] && p[1] <= hi[1];
+            for &r in &roots {
+                let p = self.at(r);
+                if within(p) && encloses(edges.iter().copied(), p) {
+                    for &i in members.get(r).into_iter().flatten() {
+                        if let Some(l) = self.links.get_mut(i) {
+                            l.clear();
+                        }
                     }
                 }
             }
+            let t = moments.area / chord;
+            let aft_end = self.add([centre[0] - aft * d[0], centre[1] - aft * d[1]], Vec::new(), t);
+            let fore_end = self.add([centre[0] + fore * d[0], centre[1] + fore * d[1]], Vec::new(), t);
+            self.link(aft_end, fore_end);
         }
-        let t = moments.area / chord;
-        for end in [
-            [centre[0] - aft * d[0], centre[1] - aft * d[1]],
-            [centre[0] + fore * d[0], centre[1] + fore * d[1]],
-        ] {
-            nodes.push(Node { at: end, corners: Vec::new() });
-            thickness.push(t);
-            links.push(Vec::new());
-        }
-        link(links, nodes.len() - 2, nodes.len() - 1);
     }
-}
 
-/// Runs each end of the axis straight on to the boundary, as thick as the strip it ends.
-/// Within half its thickness of its end a strip's points are nearer the end than its sides:
-/// the axis there wanders between the end's chords and stops short, and the distance to the
-/// boundary tells the end's nearness, not the strip's thickness. The line is kept up to the
-/// first point, from the end back, whose disc stops short of the boundary past the end by more
-/// than `tolerance`, touching the sides only; from there it runs on along its course over the
-/// half thickness behind until it meets the boundary, as thick as the strip there or next to
-/// it. Towards a wedge's tip every disc stops short of it: the line runs on from its last
-/// point.
-fn extend(
-    nodes: &mut Vec<Node>,
-    thickness: &mut Vec<f64>,
-    links: &mut Vec<Vec<usize>>,
-    boundary: &Boundary,
-    tolerance: f64,
-) {
-    let at = |nodes: &[Node], i: usize| nodes.get(i).map_or([0.0, 0.0], |n| n.at);
-    let thick = |thickness: &[f64], i: usize| thickness.get(i).copied().unwrap_or(0.0);
-    let unit = |p: Point, q: Point| {
-        let l = (p[0] - q[0]).hypot(p[1] - q[1]);
-        (l > 0.0).then(|| [(p[0] - q[0]) / l, (p[1] - q[1]) / l])
-    };
-    let ends: Vec<usize> = (0..links.len()).filter(|&i| links.get(i).is_some_and(|l| l.len() == 1)).collect();
-    for end in ends {
-        // The line back from the end, as far as the thickest disc on it reaches, with the
-        // length along it to each point.
-        let (mut line, mut along, mut widest) = (vec![end], vec![0.0], thick(thickness, end));
-        let (mut from, mut next) =
-            (end, links.get(end).filter(|l| l.len() == 1).and_then(|l| l.first()).copied());
-        while let Some(i) = next {
-            let (p, q) = (at(nodes, from), at(nodes, i));
-            let walked = along.last().copied().unwrap_or(0.0) + (p[0] - q[0]).hypot(p[1] - q[1]);
-            line.push(i);
-            along.push(walked);
-            widest = widest.max(thick(thickness, i));
-            if walked > widest || links.get(i).map_or(0, Vec::len) != 2 {
-                break;
-            }
-            (from, next) = (i, links.get(i).and_then(|l| l.iter().find(|&&m| m != from)).copied());
-        }
-        let (Some(&second), Some(&last)) = (line.get(1), line.last()) else { continue };
-        let corners = |nodes: &[Node], i: usize| nodes.get(i).map(|n| n.corners.clone()).unwrap_or_default();
-        let Some(ahead) = unit(at(nodes, end), at(nodes, second))
-            .and_then(|d| boundary.hit(at(nodes, end), d, &corners(nodes, end), widest))
-        else {
-            continue;
+    /// Runs each end of the axis straight on to the boundary, as thick as the strip it ends.
+    /// Within half its thickness of its end a strip's points are nearer the end than its sides:
+    /// the axis there wanders between the end's chords and stops short, and the distance to the
+    /// boundary tells the end's nearness, not the strip's thickness. The line is kept up to the
+    /// first point, from the end back, whose disc stops short of the boundary past the end by more
+    /// than `tolerance`, touching the sides only; from there it runs on along its course over the
+    /// half thickness behind until it meets the boundary, as thick as the strip there or next to
+    /// it. Towards a wedge's tip every disc stops short of it: the line runs on from its last
+    /// point.
+    fn run_ends_to_boundary(&mut self, boundary: &Boundary, tolerance: f64) {
+        let unit = |p: Point, q: Point| {
+            let l = (p[0] - q[0]).hypot(p[1] - q[1]);
+            (l > 0.0).then(|| [(p[0] - q[0]) / l, (p[1] - q[1]) / l])
         };
-        // The first point whose disc stops short of the boundary past the end: nearer its sides.
-        let Some(k) = (0..line.len()).find(|&k| {
-            let (i, l) = (line.get(k).copied().unwrap_or(end), along.get(k).copied().unwrap_or(0.0));
-            l + ahead > thick(thickness, i) / 2.0 + tolerance
-        }) else {
-            continue;
-        };
-        let (Some(&kept), Some(&lk)) = (line.get(k), along.get(k)) else { continue };
-        // The course over the half thickness behind the kept point.
-        let half = thick(thickness, kept) / 2.0;
-        let behind = (k + 1..line.len())
-            .find(|&b| along.get(b).is_some_and(|&lb| lb - lk >= half))
-            .and_then(|b| line.get(b).copied())
-            .unwrap_or(last);
-        let Some(d) =
-            unit(at(nodes, kept), at(nodes, behind)).or_else(|| unit(at(nodes, end), at(nodes, second)))
-        else {
-            continue;
-        };
-        let reach = lk + ahead + widest;
-        let Some(u) = boundary.hit(at(nodes, kept), d, &corners(nodes, kept), reach).filter(|&u| u > 0.0)
-        else {
-            continue;
-        };
-        let next_to = line.get(k + 1).map_or(0.0, |&i| thick(thickness, i));
-        let t = thick(thickness, kept).max(next_to);
-        // The points past the kept one leave the line.
-        for &i in line.iter().take(k) {
-            for m in links.get_mut(i).map(std::mem::take).unwrap_or_default() {
-                if let Some(l) = links.get_mut(m) {
-                    l.retain(|&j| j != i);
+        let ends: Vec<usize> = (0..self.links.len()).filter(|&i| self.degree(i) == 1).collect();
+        for end in ends {
+            // The line back from the end, as far as the thickest disc on it reaches, with the
+            // length along it to each point.
+            let (mut line, mut along, mut widest) = (vec![end], vec![0.0], self.thickness(end));
+            let (mut from, mut next) =
+                (end, self.links.get(end).filter(|l| l.len() == 1).and_then(|l| l.first()).copied());
+            while let Some(i) = next {
+                let (p, q) = (self.at(from), self.at(i));
+                let walked = along.last().copied().unwrap_or(0.0) + (p[0] - q[0]).hypot(p[1] - q[1]);
+                line.push(i);
+                along.push(walked);
+                widest = widest.max(self.thickness(i));
+                if walked > widest || self.degree(i) != 2 {
+                    break;
                 }
+                (from, next) = (i, self.onward(from, i));
             }
-        }
-        if let Some(slot) = thickness.get_mut(kept) {
-            *slot = t;
-        }
-        let p = at(nodes, kept);
-        nodes.push(Node { at: [p[0] + u * d[0], p[1] + u * d[1]], corners: Vec::new() });
-        thickness.push(t);
-        links.push(Vec::new());
-        link(links, kept, nodes.len() - 1);
-    }
-}
-
-/// The graph cut into chains between its ends and junctions, then its loops, each as its nodes
-/// in order and whether it closes.
-fn chains(links: &[Vec<usize>]) -> Vec<(Vec<usize>, bool)> {
-    let degree = |i: usize| links.get(i).map_or(0, Vec::len);
-    let mut used: HashSet<(usize, usize)> = HashSet::new();
-    let mut out = Vec::new();
-    let walk = |start: usize, next: usize, used: &mut HashSet<(usize, usize)>| {
-        let mut ids = vec![start];
-        let (mut from, mut at) = (start, next);
-        loop {
-            used.insert((from.min(at), from.max(at)));
-            ids.push(at);
-            if degree(at) != 2 || at == start {
-                break;
-            }
-            let Some(&to) = links.get(at).and_then(|l| l.iter().find(|&&m| m != from)) else { break };
-            (from, at) = (at, to);
-        }
-        ids
-    };
-    for loops in [false, true] {
-        for start in 0..links.len() {
-            if !loops && degree(start) == 2 {
+            let (Some(&second), Some(&last)) = (line.get(1), line.last()) else { continue };
+            let Some(ahead) = unit(self.at(end), self.at(second))
+                .and_then(|d| boundary.hit(self.at(end), d, self.corners(end), widest))
+            else {
                 continue;
+            };
+            // The first point whose disc stops short of the boundary past the end: nearer its sides.
+            let Some(k) = (0..line.len()).find(|&k| {
+                let (i, l) = (line.get(k).copied().unwrap_or(end), along.get(k).copied().unwrap_or(0.0));
+                l + ahead > self.thickness(i) / 2.0 + tolerance
+            }) else {
+                continue;
+            };
+            let (Some(&kept), Some(&lk)) = (line.get(k), along.get(k)) else { continue };
+            // The course over the half thickness behind the kept point.
+            let half = self.thickness(kept) / 2.0;
+            let behind = (k + 1..line.len())
+                .find(|&b| along.get(b).is_some_and(|&lb| lb - lk >= half))
+                .and_then(|b| line.get(b).copied())
+                .unwrap_or(last);
+            let Some(d) =
+                unit(self.at(kept), self.at(behind)).or_else(|| unit(self.at(end), self.at(second)))
+            else {
+                continue;
+            };
+            let reach = lk + ahead + widest;
+            let Some(u) = boundary.hit(self.at(kept), d, self.corners(kept), reach).filter(|&u| u > 0.0)
+            else {
+                continue;
+            };
+            let next_to = line.get(k + 1).map_or(0.0, |&i| self.thickness(i));
+            let t = self.thickness(kept).max(next_to);
+            // The points past the kept one leave the line.
+            for &i in line.iter().take(k) {
+                self.detach(i);
             }
-            for &next in links.get(start).into_iter().flatten() {
-                if used.contains(&(start.min(next), start.max(next))) {
-                    continue;
-                }
-                let mut ids = walk(start, next, &mut used);
-                let closed = loops && ids.len() > 2 && ids.last() == ids.first();
-                if closed {
-                    ids.pop();
-                }
-                out.push((ids, closed));
+            if let Some(node) = self.nodes.get_mut(kept) {
+                node.thickness = t;
             }
+            let p = self.at(kept);
+            let tip = self.add([p[0] + u * d[0], p[1] + u * d[1]], Vec::new(), t);
+            self.link(kept, tip);
         }
     }
-    out
+
+    /// The axis cut into chains between its ends and junctions, then its loops.
+    fn centrelines(&self) -> Vec<Centreline> {
+        let line = |(ids, closed): (Vec<usize>, bool)| Centreline {
+            points: ids.iter().filter_map(|&i| self.nodes.get(i).map(|n| n.at)).collect(),
+            thickness: ids.iter().filter_map(|&i| self.nodes.get(i).map(|n| n.thickness)).collect(),
+            closed,
+        };
+        chains(&self.links).into_iter().map(line).collect()
+    }
 }

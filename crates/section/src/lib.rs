@@ -25,16 +25,21 @@ mod triangulation;
 pub use cut::{Cut, section_loops};
 pub use foliate::Foliation;
 
-use crate::cut::section_over;
+use crate::cut::{MAX_JOINED, section_over};
 use crate::foliate::Leaves;
-use crate::refine::refine;
+use crate::refine::{Refined, refine};
 use crate::trace::Net;
-use layercraft_geom::{Carrier, GeomError, Region, Warp, difference, union, winding_region};
+use crate::triangulation::Triangulation;
+use layercraft_geom::{Carrier, GeomError, Region, Warp, bounds_of, difference, union, winding_region};
 use layercraft_mesh::{Body, Mesh};
 use serde::{Deserialize, Serialize};
 
 /// The largest number of layers a print may have.
-pub const MAX_LAYERS: usize = 100_000;
+const MAX_LAYERS: usize = 100_000;
+/// The thinnest a layer or a slab may be, in mm.
+pub(crate) const MIN_LAYER_MM: f64 = 0.01;
+/// The thickest a layer or a slab may be, in mm.
+pub(crate) const MAX_LAYER_MM: f64 = 2.0;
 
 /// How the solid is cut into layers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -89,8 +94,8 @@ pub struct Sections {
     pub widest_crack: f64,
     /// Triangles of the mesh the leaves' triangles could not cut, fanned whole instead
     /// (`refine`).
-    #[serde(default)]
-    pub unsplit_cells: usize,
+    #[serde(default, alias = "unsplit_cells")]
+    pub unsplit_triangles: usize,
 }
 
 /// Why the section stage failed.
@@ -102,13 +107,20 @@ pub enum SectionError {
     Geometry(#[from] GeomError),
     #[error("the mesh has no vertex")]
     EmptyMesh,
+    /// A section stopped at more cracks than `MAX_JOINED`.
+    #[error(
+        "a section stops at {0} cracks, more than the {MAX_JOINED} a cracked mesh explains: the mesh is broken"
+    )]
+    Broken(usize),
 }
 
 /// The layer slabs `(top, height)` from z = 0 up to `height`.
-pub fn layer_slabs(layering: &Layering, height: f64) -> Result<Vec<(f64, f64)>, SectionError> {
-    let ok = |h: f64| h.is_finite() && (0.01..=2.0).contains(&h);
+fn layer_slabs(layering: &Layering, height: f64) -> Result<Vec<(f64, f64)>, SectionError> {
+    let ok = |h: f64| h.is_finite() && (MIN_LAYER_MM..=MAX_LAYER_MM).contains(&h);
     if !ok(layering.first_layer_height) || !ok(layering.layer_height) {
-        return Err(SectionError::BadLayering(format!("{layering:?} (each must be 0.01 to 2 mm)")));
+        return Err(SectionError::BadLayering(format!(
+            "{layering:?} (each must be {MIN_LAYER_MM} to {MAX_LAYER_MM} mm)"
+        )));
     }
     if !height.is_finite() || height <= 0.0 {
         return Err(SectionError::BadLayering(format!("solid height {height} mm")));
@@ -145,94 +157,122 @@ pub fn section(mesh: &Mesh, layering: &Layering) -> Result<Sections, SectionErro
         .map(|leaf| leaf.map_or(Ok(Warp::default()), Warp::new))
         .collect::<Result<Vec<Warp>, GeomError>>()?;
     let (carrier, stored) = Carrier::new(t.points.clone(), inner.to_vec())?.trim(&warps)?;
-    // Each layer's middle at the triangles' corners, where bent: halfway between the top of the
-    // layer below, or the bed, and its own.
-    let middle = |k: usize| -> Option<Vec<f64>> {
-        let (below, own) = (k.checked_sub(1).and_then(|j| warps.get(j)), warps.get(k));
-        if below.is_none_or(Warp::is_zero) && own.is_none_or(Warp::is_zero) {
-            return None;
-        }
-        let value = |w: Option<&Warp>, i: usize| w.and_then(|w| w.values().get(i)).copied().unwrap_or(0.0);
-        let m: Vec<f64> = (0..t.points.len()).map(|i| (value(below, i) + value(own, i)) / 2.0).collect();
-        m.iter().any(|&v| v != 0.0).then_some(m)
-    };
-    // The mesh cut once along the bent triangles, over the heights the bent middles reach.
-    let mut heights = [f64::INFINITY, f64::NEG_INFINITY];
-    for (k, &(top, height)) in slabs.iter().enumerate() {
-        let Some(m) = middle(k) else { continue };
-        let [dlo, dhi] = m.iter().fold([0.0f64; 2], |[lo, hi], &v| [lo.min(v), hi.max(v)]);
-        let h = top - height / 2.0;
-        heights = [heights[0].min(h + dlo), heights[1].max(h + dhi)];
-    }
-    let refined = if heights[0] <= heights[1] {
-        let net = Net::new(&t.points, &t.triangles, t.inner)?;
-        let mut area = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
-        for p in inner.iter().flatten().filter_map(|&i| t.points.get(i as usize)) {
-            area =
-                [[area[0][0].min(p[0]), area[0][1].min(p[1])], [area[1][0].max(p[0]), area[1][1].max(p[1])]];
-        }
-        Some(refine(mesh, &net, area, heights))
-    } else {
-        None
-    };
-    let materials = mesh.materials.len();
+    let middles = middles(&warps, slabs.len(), t.points.len());
+    let refined = refined_mesh(mesh, t, &slabs, &middles)?;
     let mut layers = Vec::with_capacity(slabs.len());
     let (mut open_chains, mut widest_crack) = (0, 0.0_f64);
-    for (index, (top, height)) in slabs.into_iter().enumerate() {
-        let h = top - height / 2.0;
-        // Each body's vertices' heights over the layer's middle.
-        let (bodies, over): (&[Body], Vec<Vec<f64>>) = match (middle(index), &refined) {
-            (Some(m), Some(r)) => (
-                &r.mesh.bodies,
-                r.mesh
-                    .bodies
-                    .iter()
-                    .zip(&r.places)
-                    .map(|(b, p)| {
-                        b.vertices.iter().zip(p).map(|(v, place)| v[2] - h - place.value(&m)).collect()
-                    })
-                    .collect(),
-            ),
-            _ => (
-                &mesh.bodies,
-                mesh.bodies.iter().map(|b| b.vertices.iter().map(|v| v[2] - h).collect()).collect(),
-            ),
-        };
+    for (index, (&(top, height), middle)) in slabs.iter().zip(&middles).enumerate() {
+        let (bodies, over) = heights_over(mesh, refined.as_ref(), middle.as_deref(), top - height / 2.0);
         let cut = |material: Option<usize>| {
             let chosen = bodies.iter().zip(&over).filter(|(b, _)| material.is_none_or(|k| b.material == k));
             section_over(chosen.map(|(b, o)| (b, o.as_slice())))
         };
-        let whole = cut(None);
+        let whole = cut(None)?;
         open_chains += whole.open;
         widest_crack = widest_crack.max(whole.widest_gap);
-        // Later materials win where bodies overlap: each keeps what no later one covers.
-        let mut parts: Vec<Region> = Vec::new();
-        if materials > 1 {
-            let mut later: Region = Vec::new();
-            for k in (0..materials).rev() {
-                let own = winding_region(&cut(Some(k)).loops)?;
-                parts.push(difference(&own, &later)?);
-                later = union(&later, &own)?;
-            }
-            parts.reverse();
-        }
-        let warp = stored.get(index).cloned().unwrap_or_default();
         layers.push(Layer {
             index,
             top,
             height,
-            warp,
+            warp: stored.get(index).cloned().unwrap_or_default(),
             region: winding_region(&whole.loops)?,
-            materials: parts,
+            materials: material_parts(mesh.materials.len(), |k| cut(Some(k)))?,
         });
     }
-    let unsplit_cells = refined.map_or(0, |r| r.unsplit);
-    Ok(Sections { carrier, layers, open_chains, widest_crack, unsplit_cells })
+    let unsplit_triangles = refined.map_or(0, |r| r.unsplit);
+    Ok(Sections { carrier, layers, open_chains, widest_crack, unsplit_triangles })
 }
 
-#[cfg(test)]
-mod tests;
+/// Each of `layers` layers' middle at the `corners` corners of the bent triangles, halfway
+/// between the top of the layer below, or the bed, and its own; `None` where it is flat.
+fn middles(warps: &[Warp], layers: usize, corners: usize) -> Vec<Option<Vec<f64>>> {
+    let value = |w: Option<&Warp>, i: usize| w.and_then(|w| w.values().get(i)).copied().unwrap_or(0.0);
+    (0..layers)
+        .map(|k| {
+            let (below, own) = (k.checked_sub(1).and_then(|j| warps.get(j)), warps.get(k));
+            if below.is_none_or(Warp::is_zero) && own.is_none_or(Warp::is_zero) {
+                return None;
+            }
+            let m: Vec<f64> = (0..corners).map(|i| (value(below, i) + value(own, i)) / 2.0).collect();
+            m.iter().any(|&v| v != 0.0).then_some(m)
+        })
+        .collect()
+}
+
+/// The mesh cut once along the bent triangles `t`, over the heights the bent middles reach;
+/// `None` when every layer is flat.
+fn refined_mesh(
+    mesh: &Mesh,
+    t: &Triangulation,
+    slabs: &[(f64, f64)],
+    middles: &[Option<Vec<f64>>],
+) -> Result<Option<Refined>, SectionError> {
+    let mut heights = [f64::INFINITY, f64::NEG_INFINITY];
+    for (&(top, height), m) in slabs.iter().zip(middles) {
+        let Some(m) = m else { continue };
+        let [dlo, dhi] = m.iter().fold([0.0f64; 2], |[lo, hi], &v| [lo.min(v), hi.max(v)]);
+        let h = top - height / 2.0;
+        heights = [heights[0].min(h + dlo), heights[1].max(h + dhi)];
+    }
+    let bent = heights[0] <= heights[1];
+    if !bent {
+        return Ok(None);
+    }
+    let net = Net::new(&t.points, &t.triangles, t.inner)?;
+    let inner = t.triangles.get(..t.inner).unwrap_or(&[]);
+    let extent = bounds_of(inner.iter().flatten().filter_map(|&i| t.points.get(i as usize)))
+        .unwrap_or([[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]]);
+    Ok(Some(refine(mesh, &net, extent, heights)))
+}
+
+/// The bodies a layer is cut from, each with its vertices' heights over the layer's middle:
+/// those of the refined mesh where the middle is bent, `middle` over `h` at the bent triangles'
+/// corners, and the mesh's own where it is flat at `h`.
+fn heights_over<'a>(
+    mesh: &'a Mesh,
+    refined: Option<&'a Refined>,
+    middle: Option<&[f64]>,
+    h: f64,
+) -> (&'a [Body], Vec<Vec<f64>>) {
+    match (middle, refined) {
+        (Some(m), Some(r)) => (
+            &r.mesh.bodies,
+            r.mesh
+                .bodies
+                .iter()
+                .zip(&r.places)
+                .map(|(b, p)| b.vertices.iter().zip(p).map(|(v, place)| v[2] - h - place.value(m)).collect())
+                .collect(),
+        ),
+        _ => (
+            &mesh.bodies,
+            mesh.bodies.iter().map(|b| b.vertices.iter().map(|v| v[2] - h).collect()).collect(),
+        ),
+    }
+}
+
+/// Each of `materials` materials' part of a layer, from its own bodies' cut: later materials win
+/// where bodies overlap, each keeping what no later one covers; none with one material.
+fn material_parts(
+    materials: usize,
+    cut: impl Fn(usize) -> Result<Cut, SectionError>,
+) -> Result<Vec<Region>, SectionError> {
+    let mut parts: Vec<Region> = Vec::new();
+    if materials > 1 {
+        let mut later: Region = Vec::new();
+        for k in (0..materials).rev() {
+            let own = winding_region(&cut(k)?.loops)?;
+            parts.push(difference(&own, &later)?);
+            later = union(&later, &own)?;
+        }
+        parts.reverse();
+    }
+    Ok(parts)
+}
 
 fn is_zero(x: &f64) -> bool {
     *x == 0.0
 }
+
+#[cfg(test)]
+mod tests;
