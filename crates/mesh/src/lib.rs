@@ -105,11 +105,6 @@ impl Mesh {
     pub fn volume(&self) -> f64 {
         self.bodies.iter().map(Body::volume).sum()
     }
-
-    /// How many materials the bodies are printed in: at least one.
-    pub fn material_count(&self) -> usize {
-        self.materials.len().max(1)
-    }
 }
 
 #[cfg(test)]

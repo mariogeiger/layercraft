@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 /// The most overrides a tuning holds.
-pub const MAX_OVERRIDES: usize = 10_000;
+const MAX_OVERRIDES: usize = 10_000;
 
 /// A box of the build volume, in mm; an axis left out is unbounded.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -91,7 +91,7 @@ impl Tuning {
 
 /// Merges `patch` into `target` (RFC 7386): objects key by key, `null` removes, anything else
 /// replaces.
-pub fn merge_patch(target: &mut Value, patch: &Value) {
+fn merge_patch(target: &mut Value, patch: &Value) {
     let Value::Object(changes) = patch else {
         *target = patch.clone();
         return;

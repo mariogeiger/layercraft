@@ -96,11 +96,21 @@ fn index(e: &BytesStart, key: &str) -> Result<u32, MeshError> {
 
 fn transform(e: &BytesStart) -> Result<Transform, MeshError> {
     let Some(text) = attr(e, "transform")? else { return Ok(IDENTITY) };
-    let values: Vec<f64> = text.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-    match <[f64; 12]>::try_from(values) {
-        Ok(m) if m.iter().all(|v| v.is_finite()) => Ok(m),
+    // A word that is not a number refuses the whole transform: dropping it would shift the rest.
+    let values: Option<Vec<f64>> = text.split_whitespace().map(|s| s.parse().ok()).collect();
+    match values.map(<[f64; 12]>::try_from) {
+        Some(Ok(m)) if m.iter().all(|v| v.is_finite()) => Ok(m),
         _ => Err(invalid(format!("transform needs 12 finite numbers: {text}"))),
     }
+}
+
+/// Counts one more element of the package, refused past `MAX_ELEMENTS`.
+fn tally(count: &mut usize) -> Result<(), MeshError> {
+    *count += 1;
+    if *count > MAX_ELEMENTS {
+        return Err(invalid(format!("more than {MAX_ELEMENTS} elements")));
+    }
+    Ok(())
 }
 
 /// A 3MF colour, `#RRGGBB` or `#RRGGBBAA`, as `#RRGGBB` in capitals; the alpha is dropped.
@@ -156,10 +166,7 @@ fn parse_part(text: &str, count: &mut usize) -> Result<Part, MeshError> {
             tag @ ("base" | "color") => {
                 let key = if tag == "base" { "displaycolor" } else { "color" };
                 let (Some(id), Some(text)) = (&group, attr(e, key)?) else { continue };
-                *count += 1;
-                if *count > MAX_ELEMENTS {
-                    return Err(invalid(format!("more than {MAX_ELEMENTS} elements")));
-                }
+                tally(count)?;
                 part.colours.entry(id.clone()).or_default().push(colour(&text)?);
             }
             "object" => {
@@ -183,10 +190,7 @@ fn parse_part(text: &str, count: &mut usize) -> Result<Part, MeshError> {
             }
             tag @ ("vertex" | "triangle" | "component") => {
                 let (_, object) = current.as_mut().ok_or_else(|| invalid("mesh data outside an object"))?;
-                *count += 1;
-                if *count > MAX_ELEMENTS {
-                    return Err(invalid(format!("more than {MAX_ELEMENTS} elements")));
-                }
+                tally(count)?;
                 match tag {
                     "vertex" => object.vertices.push([number(e, "x")?, number(e, "y")?, number(e, "z")?]),
                     "triangle" => object.triangles.push([index(e, "v1")?, index(e, "v2")?, index(e, "v3")?]),

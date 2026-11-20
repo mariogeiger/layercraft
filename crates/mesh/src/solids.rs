@@ -7,13 +7,15 @@
 
 use crate::{Body, Vertex};
 
-/// A prism over a simple counterclockwise outline, from `z0` up to `z1`.
+/// A prism over a counterclockwise outline, from `z0` up to `z1`. Its bottom and top are fanned
+/// from the outline's vertices' mean, so the outline must be star-shaped about that point, as any
+/// convex one is.
 pub fn prism(name: &str, outline: &[[f64; 2]], z0: f64, z1: f64) -> Body {
     let n = outline.len();
     let mut vertices: Vec<Vertex> = Vec::with_capacity(2 * n + 2);
     vertices.extend(outline.iter().map(|p| [p[0], p[1], z0]));
     vertices.extend(outline.iter().map(|p| [p[0], p[1], z1]));
-    let (cx, cy) = centroid(outline);
+    let (cx, cy) = vertex_mean(outline);
     vertices.push([cx, cy, z0]);
     vertices.push([cx, cy, z1]);
     let idx = |i: usize| u32::try_from(i).unwrap_or(u32::MAX);
@@ -30,7 +32,8 @@ pub fn prism(name: &str, outline: &[[f64; 2]], z0: f64, z1: f64) -> Body {
     Body { name: name.to_string(), vertices, triangles, material: 0 }
 }
 
-fn centroid(outline: &[[f64; 2]]) -> (f64, f64) {
+/// The mean of the outline's vertices.
+fn vertex_mean(outline: &[[f64; 2]]) -> (f64, f64) {
     let n = outline.len().max(1) as f64;
     let (sx, sy) = outline.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
     (sx / n, sy / n)

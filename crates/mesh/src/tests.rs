@@ -71,6 +71,11 @@ fn units_and_transforms_and_components() {
       </resources><build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 2"/></build></model>"#;
     let mesh = read_3mf(Cursor::new(package(model))).unwrap();
     assert_eq!(mesh.bodies[0].vertices, vec![[50.0, 0.0, 20.0], [60.0, 0.0, 20.0], [50.0, 10.0, 20.0]]);
+    // A word that is no number refuses the transform: dropping it shifted the rest into place.
+    for bad in ["1 0 0 0 1 0 0 0 1 x 5 0 0", "1 0 0 0 1 0 0 0 1 5 0", "1 0 0 0 1 0 0 0 1 5 0 NaN"] {
+        let model = model.replace("1 0 0 0 1 0 0 0 1 5 0 0", bad);
+        assert!(read_3mf(Cursor::new(package(&model))).is_err(), "{bad}");
+    }
 }
 
 #[test]
@@ -95,7 +100,7 @@ fn colours_become_materials() {
     assert_eq!(colours, ["#0A2989", "#9D432C", "#FEC600"]);
     let materials: Vec<_> = mesh.bodies.iter().map(|b| b.material).collect();
     assert_eq!(materials, [0, 1, 0, 2]);
-    assert_eq!(mesh.material_count(), 3);
+    assert_eq!(mesh.materials.len(), 3);
     // One colour throughout is one material, listed as none.
     let plain = format!(
         r##"<model><resources><basematerials id="9"><base displaycolor="#0A2989"/></basematerials>
@@ -103,7 +108,6 @@ fn colours_become_materials() {
     );
     let mesh = read_3mf(Cursor::new(package(&plain))).unwrap();
     assert!(mesh.materials.is_empty());
-    assert_eq!(mesh.material_count(), 1);
     // A property index past its group is refused, as is a malformed colour.
     for bad in [r#"pindex="5""#, r#"pindex="x""#] {
         let model = format!(
