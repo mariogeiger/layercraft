@@ -21,7 +21,7 @@ pub(super) struct Walls {
 }
 
 /// The nodes of each row lying inside `contours`, by the even-odd rule.
-fn inside(nodes: &Nodes, contours: &[Vec<Point>]) -> Vec<bool> {
+fn nodes_inside(nodes: &Nodes, contours: &[Vec<Point>]) -> Vec<bool> {
     let mut inside = vec![false; nodes.len()];
     let mut xs = Vec::new();
     for j in 0..nodes.ny {
@@ -59,7 +59,7 @@ impl Walls {
         hold: f64,
         tilt: f64,
     ) -> Walls {
-        let inside = inside(nodes, contours);
+        let inside = nodes_inside(nodes, contours);
         let band = (3.0 * reach).max(margin + nodes.h);
         let (mut distance, mut nearest) = (vec![f64::INFINITY; nodes.len()], vec![[0.0; 2]; nodes.len()]);
         for contour in contours {

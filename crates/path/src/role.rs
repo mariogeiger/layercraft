@@ -31,10 +31,10 @@ pub enum Face {
     Inside,
 }
 
-/// What a bead is laid on.
+/// What a bead rests on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Support {
+pub enum Rest {
     Solid,
     Sparse,
     Air,
@@ -45,29 +45,32 @@ pub enum Support {
 pub struct Role {
     pub kind: Kind,
     pub face: Face,
-    pub support: Support,
+    #[serde(alias = "support")]
+    pub rest: Rest,
 }
 
-const fn role(kind: Kind, face: Face, support: Support) -> Role {
-    Role { kind, face, support }
+const fn role(kind: Kind, face: Face, rest: Rest) -> Role {
+    Role { kind, face, rest }
 }
 
 impl Role {
-    pub const OUTER_WALL: Role = role(Kind::Wall, Face::Outside, Support::Solid);
-    pub const OVERHANG_WALL: Role = role(Kind::Wall, Face::Outside, Support::Air);
-    pub const INNER_WALL: Role = role(Kind::Wall, Face::Inside, Support::Solid);
-    pub const FLOATING_WALL: Role = role(Kind::Wall, Face::Inside, Support::Sparse);
-    pub const TOP_SURFACE: Role = role(Kind::Solid, Face::Top, Support::Solid);
-    pub const BOTTOM_SURFACE: Role = role(Kind::Solid, Face::Bottom, Support::Solid);
-    pub const SOLID: Role = role(Kind::Solid, Face::Inside, Support::Solid);
-    pub const BRIDGE: Role = role(Kind::Solid, Face::Bottom, Support::Air);
-    pub const INTERNAL_BRIDGE: Role = role(Kind::Solid, Face::Inside, Support::Sparse);
-    pub const SPARSE: Role = role(Kind::Sparse, Face::Inside, Support::Sparse);
+    pub const OUTER_WALL: Role = role(Kind::Wall, Face::Outside, Rest::Solid);
+    pub const OVERHANG_WALL: Role = role(Kind::Wall, Face::Outside, Rest::Air);
+    pub const INNER_WALL: Role = role(Kind::Wall, Face::Inside, Rest::Solid);
+    pub const FLOATING_WALL: Role = role(Kind::Wall, Face::Inside, Rest::Sparse);
+    pub const TOP_SURFACE: Role = role(Kind::Solid, Face::Top, Rest::Solid);
+    pub const BOTTOM_SURFACE: Role = role(Kind::Solid, Face::Bottom, Rest::Solid);
+    pub const SOLID: Role = role(Kind::Solid, Face::Inside, Rest::Solid);
+    pub const BRIDGE: Role = role(Kind::Solid, Face::Bottom, Rest::Air);
+    pub const INTERNAL_BRIDGE: Role = role(Kind::Solid, Face::Inside, Rest::Sparse);
+    pub const SPARSE: Role = role(Kind::Sparse, Face::Inside, Rest::Sparse);
     /// A support's line, standing on the one below it.
-    pub const SUPPORT: Role = role(Kind::Support, Face::Inside, Support::Solid);
-    /// A support's top, dense, what the part rests on: its first layer laid over air, from the
-    /// column's loop to its loop.
-    pub const SUPPORT_INTERFACE: Role = role(Kind::Support, Face::Top, Support::Air);
+    pub const SUPPORT: Role = role(Kind::Support, Face::Inside, Rest::Solid);
+    /// A support's top, what the part rests on: its first layer, spanning the column over air
+    /// from its loop to its loop.
+    pub const SUPPORT_INTERFACE: Role = role(Kind::Support, Face::Top, Rest::Air);
+    /// The layers of a support's top over its first, each resting on the one below.
+    pub const SUPPORT_INTERFACE_RESTING: Role = role(Kind::Support, Face::Top, Rest::Solid);
 
     /// The roles slicers name, in a fixed order: the codes of a legend.
     pub const NAMED: [Role; 12] = [
@@ -85,22 +88,28 @@ impl Role {
         Role::SUPPORT_INTERFACE,
     ];
 
+    /// The role of a dense line inside the part on layer `index`: the first layer's make the
+    /// part's bottom.
+    pub fn solid_on(index: usize) -> Role {
+        if index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID }
+    }
+
     /// Whether the bead is a strand, round in section: a dense line on anything but solid.
     pub fn strand(self) -> bool {
-        self.kind == Kind::Solid && self.support != Support::Solid
+        self.kind == Kind::Solid && self.rest != Rest::Solid
     }
 
     /// The feature name slicers write for this role.
     pub fn name(self) -> &'static str {
         let shows = self.face != Face::Inside;
-        match (self.kind, self.support) {
-            (Kind::Wall, Support::Solid) if shows => "Outer wall",
-            (Kind::Wall, Support::Solid) => "Inner wall",
+        match (self.kind, self.rest) {
+            (Kind::Wall, Rest::Solid) if shows => "Outer wall",
+            (Kind::Wall, Rest::Solid) => "Inner wall",
             (Kind::Wall, _) if shows => "Overhang wall",
             (Kind::Wall, _) => "Floating vertical shell",
-            (Kind::Solid, Support::Air) => "Bridge",
-            (Kind::Solid, Support::Sparse) => "Internal Bridge",
-            (Kind::Solid, Support::Solid) => match self.face {
+            (Kind::Solid, Rest::Air) => "Bridge",
+            (Kind::Solid, Rest::Sparse) => "Internal Bridge",
+            (Kind::Solid, Rest::Solid) => match self.face {
                 Face::Top => "Top surface",
                 Face::Bottom => "Bottom surface",
                 Face::Outside | Face::Inside => "Internal solid infill",

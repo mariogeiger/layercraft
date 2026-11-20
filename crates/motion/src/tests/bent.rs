@@ -24,8 +24,8 @@ fn bent(paths: Vec<Path>) -> Paths {
     let ramp = ramp_from(0.0);
     Paths {
         carrier: ramp.carrier().clone(),
-        layers: vec![
-            PathLayer {
+        passes: vec![
+            PathPass {
                 index: 0,
                 top: 0.2,
                 height: 0.2,
@@ -33,7 +33,7 @@ fn bent(paths: Vec<Path>) -> Paths {
                 paths: Vec::new(),
                 material: 0,
             },
-            PathLayer { index: 1, top: 0.4, height: 0.2, warp: ramp.warp().clone(), paths, material: 0 },
+            PathPass { index: 1, top: 0.4, height: 0.2, warp: ramp.warp().clone(), paths, material: 0 },
         ],
     }
 }
@@ -160,13 +160,13 @@ fn what_the_face_takes_off_a_layer_the_next_gets_back() {
     // Down the ramp, then up it again on a layer bent alike over it: the second lays its slab
     // and what the first lost, the plastic of both as without the face.
     let mut paths = bent(vec![bead(vec![[8.0, 5.5], [2.0, 5.5]])]);
-    let next = PathLayer {
+    let next = PathPass {
         index: 2,
         top: 0.6,
         paths: vec![bead(vec![[2.0, 5.5], [8.0, 5.5]])],
-        ..paths.layers[1].clone()
+        ..paths.passes[1].clone()
     };
-    paths.layers.push(next);
+    paths.passes.push(next);
     let (bare, planed) = (pushed_by_layer(&paths, 0.0), pushed_by_layer(&paths, 0.5));
     assert!(planed[1] < 0.95 * bare[1] && planed[2] > 1.05 * bare[2], "{planed:?} against {bare:?}");
     let total = |v: &[f64]| v.iter().sum::<f64>();
@@ -178,18 +178,18 @@ fn what_the_face_takes_off_any_pass_of_a_layer_the_next_layer_gets_back() {
     // The bent layer in two materials: down the ramp in the first, which the face planes, then
     // up it beside in the second, which it leaves; over them, a layer up the ramp over the first.
     let mut paths = bent(vec![bead(vec![[8.0, 5.5], [2.0, 5.5]])]);
-    let second = PathLayer {
+    let second = PathPass {
         material: 1,
         paths: vec![bead(vec![[2.0, 15.5], [8.0, 15.5]])],
-        ..paths.layers[1].clone()
+        ..paths.passes[1].clone()
     };
-    let next = PathLayer {
+    let next = PathPass {
         index: 2,
         top: 0.6,
         paths: vec![bead(vec![[2.0, 5.5], [8.0, 5.5]])],
-        ..paths.layers[1].clone()
+        ..paths.passes[1].clone()
     };
-    paths.layers.extend([second, next]);
+    paths.passes.extend([second, next]);
     let (bare, planed) = (pushed_by_layer(&paths, 0.0), pushed_by_layer(&paths, 0.5));
     assert!(planed[1] < 0.95 * bare[1] && planed[3] > 1.05 * bare[3], "{planed:?} against {bare:?}");
     let total = |v: &[f64]| v.iter().sum::<f64>();

@@ -17,9 +17,9 @@ pub(super) fn assert_beads_move_with_their_part(
     let g = placed(&[], angle, mirror, shift).0;
     let moved_part: Vec<Vec<Point>> = part.iter().map(|o| placed(o, angle, mirror, shift).1).collect();
     let (here, there) = (lay(part), lay(&moved_part));
-    assert_eq!(here.layers.len(), there.layers.len());
-    for (a, b) in here.layers.iter().zip(&there.layers) {
-        let curves = |layer: &PathLayer, map: &dyn Fn(Point) -> Point| -> Vec<(Role, Vec<Point>)> {
+    assert_eq!(here.passes.len(), there.passes.len());
+    for (a, b) in here.passes.iter().zip(&there.passes) {
+        let curves = |layer: &PathPass, map: &dyn Fn(Point) -> Point| -> Vec<(Role, Vec<Point>)> {
             layer
                 .paths
                 .iter()
@@ -126,6 +126,38 @@ fn each_part_gets_the_rolls_it_gets_alone() {
         for p in together.iter().flatten() {
             let (a, b) = (lines(&first[k]), lines(&second[k]));
             assert!(distance_to(*p, &a).min(distance_to(*p, &b)) < 1e-3, "layer {k}: {p:?} extra");
+        }
+    }
+}
+
+#[test]
+fn bridge_strands_turn_move_and_mirror_with_their_gap() {
+    // A gap 10 mm by 6 with a notch, nothing under it, its strands 3 mm apart: the direction
+    // laying the fewest strands wins, the gap's own where several lay as few, every direction on
+    // the grid through the gap's centroid, wherever the gap lies on the plate.
+    let gap = [[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [4.0, 6.0], [3.0, 4.0], [0.0, 4.0]];
+    let strands = |outline: Vec<Point>| {
+        let region = vec![vec![outline]];
+        let frame = layercraft_geom::Frame::of(std::iter::once((&region, 1.0)));
+        let air = layercraft_geom::Rests::on(&Vec::new(), 0.4).unwrap();
+        layercraft_geom::bridge_strands(&region, 3.0, &frame, &air).unwrap()
+    };
+    let (angle, lines) = strands(gap.to_vec());
+    for (turn, mirror, shift) in [
+        (0.0, false, [0.7, 1.9]),
+        (0.0, false, [-31.3, 12.2]),
+        (37.0, false, [5.0, -8.0]),
+        (110.0, true, [-2.0, 3.0]),
+    ] {
+        let (g, outline) = placed(&gap, turn, mirror, shift);
+        let (moved_angle, moved) = strands(outline);
+        let expected = (if mirror { -angle } else { angle } + turn).rem_euclid(180.0);
+        let off = (moved_angle - expected).rem_euclid(180.0);
+        assert!(off.min(180.0 - off) < 1e-6, "{turn}° {shift:?}: {moved_angle}° for {expected}°");
+        assert_eq!(moved.len(), lines.len(), "{turn}° {shift:?}");
+        let mine: Vec<Vec<Point>> = lines.iter().map(|l| l.iter().map(|&p| g(p)).collect()).collect();
+        for p in moved.iter().flatten() {
+            assert!(distance_to(*p, &mine) < 1e-3, "{turn}° {shift:?}: {p:?} off the strands moved");
         }
     }
 }

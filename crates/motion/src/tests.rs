@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::moves::chained;
-use layercraft_path::{Path, PathLayer, Paths};
+use layercraft_path::{Path, PathPass, Paths};
 use layercraft_tune::Field;
 use std::f64::consts::PI;
 
@@ -65,8 +65,8 @@ fn line(len: f64) -> Paths {
     };
     Paths {
         carrier: Default::default(),
-        layers: vec![
-            PathLayer {
+        passes: vec![
+            PathPass {
                 index: 0,
                 top: 0.2,
                 height: 0.2,
@@ -74,7 +74,7 @@ fn line(len: f64) -> Paths {
                 paths: vec![path.clone()],
                 material: 0,
             },
-            PathLayer {
+            PathPass {
                 index: 1,
                 top: 0.4,
                 height: 0.2,
@@ -228,8 +228,8 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
     };
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![
-            PathLayer {
+        passes: vec![
+            PathPass {
                 index: 0,
                 top: 0.2,
                 height: 0.2,
@@ -237,7 +237,7 @@ fn loops_stop_short_of_their_seam_and_bridges_lay_round_strands() {
                 paths: vec![square.clone()],
                 material: 0,
             },
-            PathLayer {
+            PathPass {
                 index: 1,
                 top: 0.4,
                 height: 0.2,
@@ -272,7 +272,7 @@ fn a_short_move_slides_and_a_long_one_retracts_and_lifts() {
     let between = |second: Path| {
         let paths = Paths {
             carrier: Default::default(),
-            layers: vec![PathLayer {
+            passes: vec![PathPass {
                 index: 1,
                 top: 0.2,
                 height: 0.2,
@@ -315,7 +315,7 @@ fn lifts_turn_a_helix_where_the_nozzle_is_known() {
     };
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 0,
             top: 0.2,
             height: 0.2,
@@ -484,7 +484,7 @@ fn a_bead_slows_by_how_far_it_hangs() {
     let strand = Path::new(Role::BRIDGE, 0.4, false, vec![[18.0, 10.4], [10.0, 10.4]]);
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 1,
             top: 0.4,
             height: 0.2,
@@ -514,7 +514,7 @@ fn a_bead_slows_by_how_far_it_hangs() {
 fn the_pass_after_a_filament_change_goes_without_the_fan() {
     // Layer 2 in two materials, layer 3 in the second: the second material's first pass lies on
     // plastic the change left to cool, and melts into it without the fan; the next layer has it.
-    let pass = |index: usize, material: usize, y: f64| PathLayer {
+    let pass = |index: usize, material: usize, y: f64| PathPass {
         index,
         top: 0.2 * (index + 1) as f64,
         height: 0.2,
@@ -524,7 +524,7 @@ fn the_pass_after_a_filament_change_goes_without_the_fan() {
     };
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![pass(2, 0, 10.0), pass(2, 1, 12.0), pass(3, 1, 14.0)],
+        passes: vec![pass(2, 0, 10.0), pass(2, 1, 12.0), pass(3, 1, 14.0)],
     };
     let mut p = params();
     p.fan_speed = 0.4;
@@ -553,7 +553,7 @@ fn a_short_move_lifts_over_a_laid_bead_it_crosses() {
     let hop = (p.retract_min_travel / 2.0).max(0.1);
     let layer = |crosses: bool| Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 0,
             top: 0.2,
             height: 0.2,

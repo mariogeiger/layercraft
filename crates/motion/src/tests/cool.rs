@@ -2,7 +2,7 @@
 //! waiting off the part, clear of its beads, the same turned, moved or mirrored.
 
 use super::*;
-use layercraft_path::{Path, PathLayer, Paths};
+use layercraft_path::{Path, PathPass, Paths};
 use layercraft_tune::Field;
 
 /// Where the nozzle waits after the first layer of a bead along `points`, held to its floor.
@@ -15,7 +15,7 @@ fn waiting_point(points: &[[f64; 2]]) -> [f64; 2] {
         travel_crosses: false,
         overhang: Vec::new(),
     };
-    let layer = |index: usize| PathLayer {
+    let layer = |index: usize| PathPass {
         index,
         top: 0.2 * (index + 1) as f64,
         height: 0.2,
@@ -25,7 +25,7 @@ fn waiting_point(points: &[[f64; 2]]) -> [f64; 2] {
     };
     let mut p = params();
     p.slow_down_layer_time = 40.0;
-    let mut program = compiled(&Paths { carrier: Default::default(), layers: vec![layer(0), layer(1)] }, &p);
+    let mut program = compiled(&Paths { carrier: Default::default(), passes: vec![layer(0), layer(1)] }, &p);
     let n = program.passes[0].moves.len();
     cool(&mut program, &[Field::uniform(p)], PLATE).unwrap();
     let to = program.passes[0].moves[n..].iter().find_map(|m| m.to).unwrap();
@@ -113,7 +113,7 @@ fn a_layer_cools_on_its_hidden_beads_before_its_surface() {
     };
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 1,
             top: 0.4,
             height: 0.2,

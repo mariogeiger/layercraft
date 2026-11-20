@@ -13,7 +13,7 @@ use crate::leaf::Leaf;
 use crate::room::{self, Cuts};
 use crate::{Arc, Bead, MotionError, MotionParams, Move, Pass, Program, RoleMotion, bead_area, disc_area};
 use layercraft_geom::{GeomError, Point, Relief, bead_spacing};
-use layercraft_path::{Kind, Path, PathLayer, Paths, Role, Support};
+use layercraft_path::{Kind, Path, PathPass, Paths, Rest, Role};
 use layercraft_tune::{Field, centre};
 use std::rc::Rc;
 
@@ -79,7 +79,7 @@ fn mean_section(path: &Path, height: f64, from: f64, to: f64) -> f64 {
 }
 
 /// The speed of a bead: by role, the first layer's own, never past the melt limit.
-fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
+fn bead_speed(p: &MotionParams, path: &Path, layer: &PathPass) -> f64 {
     let base = if layer.index == 0 {
         if path.role.kind == Kind::Wall { p.first_layer_wall_speed } else { p.first_layer_infill_speed }
     } else {
@@ -92,7 +92,7 @@ fn bead_speed(p: &MotionParams, path: &Path, layer: &PathLayer) -> f64 {
 /// The fraction of segment `i` of a bead's width hanging over air: a strand on air hangs whole,
 /// a wall by what the path stage measured under it.
 fn hanging(path: &Path, i: usize) -> f64 {
-    if path.role.support == Support::Air { 1.0 } else { path.overhang.get(i).copied().unwrap_or(0.0) }
+    if path.role.rest == Rest::Air { 1.0 } else { path.overhang.get(i).copied().unwrap_or(0.0) }
 }
 
 /// The speed of a bead hanging the fraction `u` of its width over air, `speed` on solid: the
@@ -112,7 +112,7 @@ fn overhang_speed(p: &MotionParams, u: f64, speed: f64) -> f64 {
 /// The fan over a bead hanging the fraction `u` of its width over air, `fan` on solid: the
 /// overhang fan from `overhang_fan_share` on, and over every strand on air.
 fn overhang_fan(p: &MotionParams, role: Role, u: f64, fan: f64) -> f64 {
-    let hangs = role.support == Support::Air || (p.overhang_fan_share > 0.0 && u >= p.overhang_fan_share);
+    let hangs = role.rest == Rest::Air || (p.overhang_fan_share > 0.0 && u >= p.overhang_fan_share);
     if hangs { fan.max(p.overhang_fan_speed) } else { fan }
 }
 
@@ -354,10 +354,10 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
     };
     // The parameters of the bead last laid, which leaving it takes.
     let mut last = Rc::new(base.clone());
-    let mut passes: Vec<Pass> = Vec::with_capacity(paths.layers.len());
+    let mut passes: Vec<Pass> = Vec::with_capacity(paths.passes.len());
     // Each layer's top over its plane, its warp on the paths' carrier.
     let reliefs = paths
-        .layers
+        .passes
         .iter()
         .map(|l| paths.carrier.relief(&l.warp))
         .collect::<Result<Vec<Relief>, GeomError>>()?;
@@ -372,7 +372,7 @@ pub fn compile(paths: &Paths, fields: &[Field<MotionParams>]) -> Result<Program,
     let (mut cuts_below, mut cuts_here) = (Cuts::default(), Cuts::default());
     // The material of the pass before.
     let mut material: Option<usize> = None;
-    for (layer, relief) in paths.layers.iter().zip(&reliefs) {
+    for (layer, relief) in paths.passes.iter().zip(&reliefs) {
         // A pass after a filament change lays its beads on plastic the change left to cool: as
         // on the first layers, without the fan, so that they melt into it.
         let changed = material.is_some_and(|m| m != layer.material);

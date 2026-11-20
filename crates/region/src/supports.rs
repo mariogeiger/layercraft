@@ -3,16 +3,16 @@
 //!
 //! A bead stands while its centre line lies over the layer below; its outer side may then reach
 //! half its width `w` past it, the slope a bead's own shape allows. Beyond `w/2` past the
-//! section below, a layer hangs. Strands across a hanging piece, a nozzle wide, are laid the way
-//! that leaves the fewest of their ends over air, as the path stage lays a bridge's: a strand held
-//! at both ends, and no longer than `max_bridge`, bridges; any other needs holding, and the band
+//! section below, a layer hangs. Strands across a hanging piece, a nozzle wide, are laid in its
+//! own frame, as the path stage lays a bridge's (`bridge_strands`): a strand held at both ends
+//! (`Rests`), and no longer than `max_bridge`, bridges; any other needs holding, and the band
 //! a strand wide on either side of it, which reaches the edge past the outermost line, is a roof.
 //! Under each roof stands a column, its top `top_gap` below the roof's underside: the roof's
 //! first layer rests on the column, laid as solid a layer thick rather than as strands hanging
 //! over air (`held`), so that all of it, walls and lines, lies the same gap above the column. Its
 //! sides stand `xy_gap` off the part, down to the plate or onto the part, ending
 //! `bottom_gap` above it, or only to the plate (`on_plate_only`). The top `interface_layers` of
-//! a column are its interface, dense, which the roof rests on; the rest is its body.
+//! a column are its interface, which spans it and the roof rests on; the rest is its body.
 //!
 //! A roof is held where it lies within a bead's width and the gap of the column under it; what
 //! of a roof, wider than a bead, lies further from any column is unheld: nothing stands under it
@@ -21,20 +21,24 @@
 
 use crate::SupportParams;
 use layercraft_geom::{
-    Bands, GeomError, Moments, Point, Region, bridge_angle, difference, hatch, intersection, offset, opening,
-    phase_through, polyline_length, union, winding_region,
+    Frame, GeomError, Point, Region, Rests, bridge_strands, difference, intersection, offset, opening,
+    polyline_length, union, winding_region,
 };
 
 /// Heights closer than this are the same, in mm.
 const EPS: f64 = 1e-6;
 
-/// Every layer's supports: the body of the columns, then their interface.
-pub type LayerSupports = (Region, Region);
+/// A layer's columns: their body, and their interface, the top `interface_layers` of each.
+#[derive(Debug, Clone, Default)]
+pub struct Columns {
+    pub body: Region,
+    pub interface: Region,
+}
 
 /// What the supports found: each layer's columns, each layer's roof that columns hold, and
 /// each layer's roof that no column holds.
 pub struct Supported {
-    pub columns: Vec<LayerSupports>,
+    pub columns: Vec<Columns>,
     /// By layer, from the first, the roof that stands on columns, with its gap under it.
     pub held: Vec<Region>,
     /// By layer, from the first, the pieces of its roof left over air.
@@ -71,22 +75,17 @@ pub fn roof(
     if max_bridge <= 0.0 || hang.is_empty() {
         return Ok(hang);
     }
-    let rests = Bands::new(&held);
+    let rests = Rests::on(below, strand)?;
     let mut loose = Vec::new();
     for shape in &hang {
-        // The strands reach a bead's width onto what holds them.
+        // The strands reach a bead's width onto what holds them, laid in the piece's own frame,
+        // as the path stage lays a bridge's.
         let piece = intersection(&offset(&vec![shape.clone()], w)?, section)?;
-        // The piece's own direction and centre, not the plate's, lay its strands.
-        let own = Moments::of(piece.iter().map(|shape| (shape.as_slice(), 1.0)));
-        let (preferred, centre) = own.map_or((0.0, [0.0, 0.0]), |m| {
-            (m.axes.map_or(0.0, |a| a.first[1].atan2(a.first[0]).to_degrees()), m.centroid)
-        });
-        let phase = phase_through(preferred, centre);
-        let angle = bridge_angle(&piece, strand, preferred, phase, |p| !rests.covers(p))?;
-        let phase = phase_through(angle, centre);
-        for line in hatch(&piece, strand, angle, phase)? {
+        let frame = Frame::of(std::iter::once((&piece, 1.0)));
+        let (_, strands) = bridge_strands(&piece, strand, &frame, &rests)?;
+        for line in strands {
             let ends = [line.first(), line.last()];
-            let anchored = ends.iter().flatten().all(|&&p| rests.covers(p));
+            let anchored = ends.iter().flatten().all(|&&p| !rests.hangs(p));
             if anchored && polyline_length(&line) <= max_bridge {
                 continue;
             }
@@ -142,7 +141,7 @@ pub fn supports(
             shadow = union(&shadow, section)?;
         }
     }
-    let mut out: Vec<LayerSupports> = vec![(Vec::new(), Vec::new()); n];
+    let mut out: Vec<Columns> = vec![Columns::default(); n];
     let mut column: Region = Vec::new();
     for j in (0..n).rev() {
         let (Some(section), Some(&top), Some(&h)) = (sections.get(j), tops.get(j), heights.get(j)) else {
@@ -174,13 +173,13 @@ pub fn supports(
         }
         let interface = intersection(&body, &fresh)?;
         if let Some(slot) = out.get_mut(j) {
-            *slot = (difference(&body, &interface)?, interface);
+            *slot = Columns { body: difference(&body, &interface)?, interface };
         }
     }
     let (mut held, mut unheld) = (vec![Vec::new(); n], Vec::new());
     for (i, r, start) in roofs {
         let top = match start.and_then(|j| out.get(j)) {
-            Some((body, interface)) => union(body, interface)?,
+            Some(columns) => union(&columns.body, &columns.interface)?,
             None => Vec::new(),
         };
         let loose = opening(&difference(&r, &offset(&top, p.xy_gap + w)?)?, w / 2.0)?;

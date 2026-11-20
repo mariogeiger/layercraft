@@ -1,60 +1,37 @@
-//! A region's edges filed by the horizontal bands their heights span, about the square root of
-//! them in each band: whether a point or a segment lies in the region is found from the edges of
-//! the bands it spans only.
+//! Items filed by the horizontal bands their heights span, about the square root of them in each
+//! band (`Banded`), and a region's edges so filed (`Bands`): whether a point or a segment lies in
+//! the region is found from the edges of the bands it spans only.
 //!
 //! A segment lies in the region when it crosses no edge and each piece of it between the points
 //! where it touches the edge lies in the region at its middle: only crossing or touching the edge
 //! takes a segment from inside to outside, so each piece lies wholly on one side.
 
-use crate::{Point, Region, crosses_ray, edges, segment_distance};
+use crate::{Point, Region, crosses_ray, distance, edges, segment_distance};
 
 /// A point this close to the edge, in mm, lies on it.
 pub const ON_EDGE_MM: f64 = 1e-4;
 
-/// The edges of a region, by band.
-pub struct Bands {
+/// Items filed by the horizontal bands their heights span: one spanning several is filed in each,
+/// so the items reaching a height are among its band's. Heights past the bands fall in the first
+/// or the last: the bands make a search quick, its answer does not depend on them.
+#[derive(Debug, Clone)]
+pub struct Banded<T> {
     /// The height of the first band's foot.
     foot: f64,
     /// The height of each band, in mm.
     height: f64,
-    /// Each band's edges: every edge whose height reaches into the band.
-    bands: Vec<Vec<(Point, Point)>>,
+    /// Each band's items: every item whose heights reach into the band.
+    bands: Vec<Vec<T>>,
 }
 
-fn cross(o: Point, a: Point, b: Point) -> f64 {
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-}
-
-fn length(a: Point, b: Point) -> f64 {
-    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt()
-}
-
-/// Whether segments `ab` and `cd` cross: each one's ends lie farther than `ON_EDGE_MM` from the
-/// other's line, on either side of it.
-pub fn crosses(a: Point, b: Point, c: Point, d: Point) -> bool {
-    let apart =
-        |s: f64, t: f64, tolerance: f64| s > tolerance && t < -tolerance || s < -tolerance && t > tolerance;
-    apart(cross(a, b, c), cross(a, b, d), ON_EDGE_MM * length(a, b))
-        && apart(cross(c, d, a), cross(c, d, b), ON_EDGE_MM * length(c, d))
-}
-
-impl Bands {
-    /// Files the edges of `region`.
-    pub fn new(region: &Region) -> Bands {
-        let all: Vec<(Point, Point)> = region.iter().flatten().flat_map(|c| edges(c)).collect();
-        let (low, high) = all
-            .iter()
-            .flat_map(|(a, b)| [a[1], b[1]])
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), y| (low.min(y), high.max(y)));
-        let count = (all.len() as f64).sqrt().ceil().max(1.0);
-        let height = if high > low { (high - low) / count } else { 1.0 };
+impl<T: Clone> Banded<T> {
+    /// No items yet, in bands over the heights `low` to `high` for about `count` of them: the
+    /// square root of `count` bands.
+    pub fn new(low: f64, high: f64, count: usize) -> Banded<T> {
+        let bands = (count as f64).sqrt().ceil().max(1.0);
+        let height = if high > low { (high - low) / bands } else { 1.0 };
         let foot = if low.is_finite() { low } else { 0.0 };
-        let mut bands = Bands { foot, height, bands: vec![Vec::new(); count as usize] };
-        for (a, b) in all {
-            let (first, last) = (bands.band(a[1].min(b[1])), bands.band(a[1].max(b[1])));
-            bands.bands.iter_mut().take(last + 1).skip(first).for_each(|band| band.push((a, b)));
-        }
-        bands
+        Banded { foot, height, bands: vec![Vec::new(); bands as usize] }
     }
 
     /// The band at height `y`, the first or last past them.
@@ -63,9 +40,56 @@ impl Bands {
         if k >= 1.0 { (k as usize).min(self.bands.len().saturating_sub(1)) } else { 0 }
     }
 
+    /// Files `item`, whose heights run from `low` to `high`.
+    pub fn insert(&mut self, low: f64, high: f64, item: T) {
+        let (first, last) = (self.band(low), self.band(high));
+        self.bands.iter_mut().take(last + 1).skip(first).for_each(|band| band.push(item.clone()));
+    }
+
+    /// The items of the bands from height `low` to `high`: one that spans several, once for each.
+    pub fn between(&self, low: f64, high: f64) -> impl Iterator<Item = &T> + '_ {
+        self.bands.get(self.band(low)..=self.band(high)).into_iter().flatten().flatten()
+    }
+}
+
+/// The lowest and highest of the heights `ys`; infinite the wrong way round for none.
+pub fn height_range(ys: impl IntoIterator<Item = f64>) -> (f64, f64) {
+    ys.into_iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), y| (low.min(y), high.max(y)))
+}
+
+/// The edges of a region, by band.
+pub struct Bands {
+    edges: Banded<(Point, Point)>,
+}
+
+fn cross(o: Point, a: Point, b: Point) -> f64 {
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+}
+
+/// Whether segments `ab` and `cd` cross: each one's ends lie farther than `ON_EDGE_MM` from the
+/// other's line, on either side of it.
+pub fn crosses(a: Point, b: Point, c: Point, d: Point) -> bool {
+    let apart =
+        |s: f64, t: f64, tolerance: f64| s > tolerance && t < -tolerance || s < -tolerance && t > tolerance;
+    apart(cross(a, b, c), cross(a, b, d), ON_EDGE_MM * distance(a, b))
+        && apart(cross(c, d, a), cross(c, d, b), ON_EDGE_MM * distance(c, d))
+}
+
+impl Bands {
+    /// Files the edges of `region`.
+    pub fn new(region: &Region) -> Bands {
+        let all: Vec<(Point, Point)> = region.iter().flatten().flat_map(|c| edges(c)).collect();
+        let (low, high) = height_range(all.iter().flat_map(|(a, b)| [a[1], b[1]]));
+        let mut filed = Banded::new(low, high, all.len());
+        for (a, b) in all {
+            filed.insert(a[1].min(b[1]), a[1].max(b[1]), (a, b));
+        }
+        Bands { edges: filed }
+    }
+
     /// The edges of the bands from height `low` to `high`: one that spans several, once for each.
     fn between(&self, low: f64, high: f64) -> impl Iterator<Item = (Point, Point)> + '_ {
-        self.bands.get(self.band(low)..=self.band(high)).into_iter().flatten().flatten().copied()
+        self.edges.between(low, high).copied()
     }
 
     /// Whether `p` lies inside the region, by the even-odd rule.

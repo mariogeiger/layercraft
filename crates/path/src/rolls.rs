@@ -7,18 +7,21 @@
 //! goes on from the last layer it lay on, two plies down. The first field starts from a hash of
 //! its grid's nodes, the grid lying in the solid's own frame (`frame`), so a part turned and moved
 //! gets the same lines, turned and moved. The lines are the field's zeros (`contour`), cut to the
-//! area. Each solid of the print has rolls of its own, over its own sparse areas and in its own
-//! frame (`SolidRolls`), so a part's lines do not change with what else stands on the plate.
+//! area. Each solid of the print has rolls of its own for each set of parameters asking for them,
+//! over its own sparse areas and in its own frame (`SolidRolls`), relaxed once a layer over its
+//! areas of all the layer's passes: a part's lines do not change with what else stands on the
+//! plate, and each lies on the lines below it whatever filament laid them.
 
 mod contour;
 mod field;
 mod walls;
 
-use crate::frame::Frame;
+use crate::PathParams;
 use crate::solids::Solids;
 use field::Flow;
-use layercraft_geom::{GeomError, Point, Polyline, Region, Shape, clip_lines};
-use layercraft_region::RegionLayer;
+use layercraft_geom::{Frame, GeomError, Point, Polyline, Region, Shape, clip_lines};
+use layercraft_region::RegionPass;
+use std::rc::Rc;
 use walls::Walls;
 
 /// The grid's nodes per wavelength of the rolls, two lines.
@@ -86,8 +89,8 @@ struct Ply {
     live: Vec<bool>,
 }
 
-/// The rolls of a part's sparse areas, layer after layer.
-pub(crate) struct Rolls {
+/// The rolls of a solid's sparse areas, layer after layer.
+struct Rolls {
     frame: Frame,
     nodes: Nodes,
     flow: Flow,
@@ -145,11 +148,12 @@ impl Rolls {
             .collect()
     }
 
-    /// The lines of a layer's sparse `area`, rolls `spacing` apart: the layer's field relaxed,
-    /// its zeros cut to the area. Layers come in order.
-    pub fn lines(
+    /// The lines of the sparse `area` of layer `index`, whose plane lies at `top`, rolls `spacing`
+    /// apart: the layer's field relaxed, its zeros cut to the area. Layers come in order.
+    fn lines(
         &mut self,
-        layer: &RegionLayer,
+        index: usize,
+        top: f64,
         area: &Region,
         spacing: f64,
     ) -> Result<Vec<Polyline>, GeomError> {
@@ -159,13 +163,13 @@ impl Rolls {
         let contours: Vec<Vec<Point>> =
             area.iter().flatten().map(|c| c.iter().map(|&p| self.frame.local(p)).collect()).collect();
         let tilted = self.ply > 0.0 && self.tilt != 0.0;
-        let way = if tilted { ((layer.top / self.ply).floor() as i64).rem_euclid(2) as usize } else { 0 };
+        let way = if tilted { ((top / self.ply).floor() as i64).rem_euclid(2) as usize } else { 0 };
         let tilt = if way == 0 { self.tilt } else { -self.tilt };
         let wave = 2.0 * spacing;
         let walls = Walls::new(&self.nodes, &contours, wave / 4.0, wave / 4.0, HOLD, tilt);
         let last = self.plies.get_mut(way).and_then(Option::take);
         let (mut u, below, steps) = match last {
-            Some(ply) if ply.layer + 1 == layer.index => {
+            Some(ply) if ply.layer + 1 == index => {
                 let below = (ply.u.clone(), ply.live);
                 (ply.u, Some(below), STEPS)
             }
@@ -180,62 +184,80 @@ impl Rolls {
             .map(|c| c.into_iter().map(|q| self.frame.plate(q)).collect())
             .collect();
         if let Some(slot) = self.plies.get_mut(way) {
-            *slot = Some(Ply { u, layer: layer.index, live });
+            *slot = Some(Ply { u, layer: index, live });
         }
         clip_lines(&curves, area)
     }
 }
 
-/// The rolls of every solid of a print, each over its own sparse areas in its own frame.
+/// The rolls' lines over a layer's sparse areas that ask for them with one set of parameters,
+/// and what of those areas no rolls cover, a part too large for its grid, which takes straight
+/// lines.
+pub(crate) struct RollLines {
+    pub lines: Vec<Polyline>,
+    pub left: Region,
+}
+
+/// The rolls of every solid of a print, each over its own sparse areas in its own frame, one for
+/// each set of parameters asking for them.
 pub(crate) struct SolidRolls {
-    solids: Vec<Option<Rolls>>,
+    /// Each solid's sparse areas, over the print, which the rolls' grids cover.
+    areas: Vec<Vec<Region>>,
+    /// The rolls made, by solid and parameters; none where the grid would be too large.
+    made: Vec<(usize, Rc<PathParams>, Option<Rolls>)>,
 }
 
 impl SolidRolls {
-    /// The rolls `spacing` apart of each solid of `bodies` (see `Rolls::new`), over the sparse
-    /// areas `layers` give it; none for a solid with no sparse area.
-    pub fn new(
-        layers: &[RegionLayer],
-        bodies: &Solids,
-        (spacing, grow): (f64, f64),
-        (tilt, ply): (f64, f64),
-    ) -> SolidRolls {
+    /// No rolls yet over the solids `bodies` of the passes `passes`.
+    pub fn new(passes: &[RegionPass], bodies: &Solids) -> SolidRolls {
         let mut areas: Vec<Vec<Region>> = vec![Vec::new(); bodies.count()];
-        for (pass, layer) in layers.iter().enumerate() {
-            for shape in &layer.sparse {
-                let home = bodies.solid_of_shape(pass, shape).and_then(|s| areas.get_mut(s));
+        for (index, pass) in passes.iter().enumerate() {
+            for shape in &pass.sparse {
+                let home = bodies.solid_of_shape(index, shape).and_then(|s| areas.get_mut(s));
                 home.into_iter().for_each(|list| list.push(vec![shape.clone()]));
             }
         }
-        let solids = areas
-            .iter()
-            .enumerate()
-            .map(|(s, list)| Rolls::new(bodies.frame(s), list, spacing, grow, tilt, ply))
-            .collect();
-        SolidRolls { solids }
+        SolidRolls { areas, made: Vec::new() }
     }
 
-    /// The lines of the sparse `area` of pass `pass`, each shape's from the rolls of the solid
-    /// holding it. Layers come in order.
+    /// The lines of the sparse `areas` of layer `index`, whose plane lies at `top`, each with
+    /// the number of its pass, by the parameters `p`: rolls `spacing` apart, over areas grown by
+    /// `grow`. Each solid's rolls relax once over all its areas given. Layers come in order.
     pub fn lines(
         &mut self,
-        layer: &RegionLayer,
-        pass: usize,
+        (index, top): (usize, f64),
+        p: &Rc<PathParams>,
+        (spacing, grow): (f64, f64),
+        (tilt, ply): (f64, f64),
+        areas: &[(usize, &Region)],
         bodies: &Solids,
-        area: &Region,
-        spacing: f64,
-    ) -> Result<Vec<Polyline>, GeomError> {
-        let mut parts: Vec<Region> = vec![Vec::new(); self.solids.len()];
-        for shape in area {
-            let part = bodies.solid_of_shape(pass, shape).and_then(|s| parts.get_mut(s));
-            part.into_iter().for_each(|part| part.push(Shape::clone(shape)));
-        }
-        let mut lines = Vec::new();
-        for (rolls, part) in self.solids.iter_mut().zip(&parts) {
-            if let Some(rolls) = rolls {
-                lines.extend(rolls.lines(layer, part, spacing)?);
+    ) -> Result<RollLines, GeomError> {
+        let mut parts: Vec<Region> = vec![Vec::new(); self.areas.len()];
+        let mut left = Vec::new();
+        for &(pass, area) in areas {
+            for shape in area {
+                match bodies.solid_of_shape(pass, shape).and_then(|s| parts.get_mut(s)) {
+                    Some(part) => part.push(Shape::clone(shape)),
+                    None => left.push(Shape::clone(shape)),
+                }
             }
         }
-        Ok(lines)
+        let mut lines = Vec::new();
+        for (solid, part) in parts.into_iter().enumerate().filter(|(_, part)| !part.is_empty()) {
+            let at = match self.made.iter().position(|(s, q, _)| *s == solid && Rc::ptr_eq(q, p)) {
+                Some(at) => at,
+                None => {
+                    let over = self.areas.get(solid).map_or(&[][..], Vec::as_slice);
+                    let rolls = Rolls::new(bodies.frame(solid), over, spacing, grow, tilt, ply);
+                    self.made.push((solid, p.clone(), rolls));
+                    self.made.len() - 1
+                }
+            };
+            match self.made.get_mut(at).and_then(|(_, _, rolls)| rolls.as_mut()) {
+                Some(rolls) => lines.extend(rolls.lines(index, top, &part, spacing)?),
+                None => left.extend(part),
+            }
+        }
+        Ok(RollLines { lines, left })
     }
 }

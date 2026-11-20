@@ -1,7 +1,7 @@
 //! The strips of an area too thin for its lines, each filled by one bead along its centre line
 //! as wide as the strip is thick.
 //!
-//! A strip `t` thick holds one bead whose spacing is `t` (`bead_spacing`): `w = t + h·(1 − π/4)`
+//! A strip `t` thick holds one bead whose spacing is `t` (`bead_width`): `w = t + h·(1 − π/4)`
 //! wide on a layer `h` high, which fills it exactly, side to side and along, where lines across
 //! it would be short, all ends. The strips of an area are what an opening by its line spacing
 //! `s` takes away: the parts narrower than two lines. Between its sides the bead holds the
@@ -11,7 +11,7 @@
 //! the strip's to within what the printer can tell apart.
 
 use crate::{Path, Role};
-use layercraft_geom::{GeomError, Point, Region, chordal_axis, difference, opening};
+use layercraft_geom::{GeomError, Point, Region, chordal_axis, difference, distance, opening};
 use std::f64::consts::PI;
 
 /// The strips of `region` narrower than two lines `s` apart, and the rest of it.
@@ -52,7 +52,7 @@ pub fn gap_fill(
             let t = ((ta + tb) / 2.0).min(2.0 * s);
             if t > resolution {
                 let role = role_at([(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
-                run.push(Segment { from: a, to: b, width: t + h * (1.0 - PI / 4.0), role });
+                run.push(Segment { from: a, to: b, width: bead_width(t, h), role });
             } else {
                 beads(&std::mem::take(&mut run), resolution, &mut out);
             }
@@ -70,6 +70,11 @@ pub fn gap_fill(
         }
     }
     Ok(out)
+}
+
+/// The width of the bead whose spacing is `spacing` on a layer `h` high: `bead_spacing` undone.
+fn bead_width(spacing: f64, h: f64) -> f64 {
+    spacing + h * (1.0 - PI / 4.0)
 }
 
 /// A stretch of a centre line and the bead it takes.
@@ -96,7 +101,7 @@ fn beads(run: &[Segment], resolution: f64, out: &mut Vec<Path>) {
             .max(1);
         let (piece, next) = rest.split_at(count.min(rest.len()));
         rest = next;
-        let length = |s: &Segment| (s.to[0] - s.from[0]).hypot(s.to[1] - s.from[1]);
+        let length = |s: &Segment| distance(s.from, s.to);
         let total: f64 = piece.iter().map(length).sum();
         if total <= 0.0 {
             continue;

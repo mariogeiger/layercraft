@@ -6,6 +6,7 @@
 //!                                           [--flat]  every layer flat, none bent
 //!                                           [--colour #RRGGBB,…]  one per material (the 3MF's)
 //!                                           [--material petg-tr,pla]  one per material
+//!                                           [--support 2]  the supports in that filament
 //!                                           [--support-interface 3]  the supports' top in one
 //!   layercraft view part.3mf --out view.json   a SolidCraft script drawing the toolpaths
 //!   layercraft merge a.json b.gcode.3mf --out plate.gcode.3mf   several programs on one plate

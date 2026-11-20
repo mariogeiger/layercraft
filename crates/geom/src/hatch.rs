@@ -1,6 +1,10 @@
-//! Parallel lines clipped to a region, on a grid whose phase the caller anchors.
+//! Parallel lines clipped to a region, on a grid whose phase the caller anchors; and the strands
+//! across a gap, as both the region and the path stage lay them (`bridge_strands`): in the
+//! gap's own frame, where their ends rest (`Rests`).
 
-use crate::{GeomError, Point, Polyline, Region, bounds, clip_lines, edges, polyline_length};
+use crate::{
+    Bands, Frame, GeomError, Point, Polyline, Region, bounds, clip_lines, disc_offset, edges, polyline_length,
+};
 
 /// The most hatch lines drawn across one region.
 const MAX_LINES: f64 = 1_000_000.0;
@@ -42,43 +46,96 @@ pub fn phase_through(angle: f64, point: Point) -> f64 {
 /// The most candidate directions tried for one bridge.
 const MAX_CANDIDATES: usize = 72;
 
-/// The direction, in degrees, for strands across `region`, `spacing` apart. A strand hangs from
-/// its two ends, so it must rest on the layer below at both: the direction chosen leaves the
-/// fewest ends over air (`hangs`), and among those its longest strand, the weakest, is shortest.
-/// Both optima lie across an edge of the region, so the directions tried are those perpendicular
-/// to its edges, plus every 15° from `preferred`; ties keep `preferred`. The strands lie on the
-/// grid `phase` anchors, as `hatch`'s.
-pub fn bridge_angle(
+/// The step, in degrees, of the fan of directions tried round `preferred`, a half turn in all.
+const FAN_STEP_DEG: f64 = 15.0;
+
+/// Directions closer than this, in degrees, are one.
+const SAME_ANGLE_DEG: f64 = 0.5;
+
+/// Strands closer in length than this, in mm, are as long.
+const SAME_LENGTH_MM: f64 = 1e-6;
+
+/// How far apart two directions of lines are, in degrees: within a quarter turn.
+fn apart(a: f64, b: f64) -> f64 {
+    let d = (a - b).rem_euclid(180.0);
+    d.min(180.0 - d)
+}
+
+/// The strands of one direction tried for a bridge, and what they are judged by.
+struct Strands {
+    /// Their ends over air.
+    loose: usize,
+    /// The length of the longest, the weakest.
+    longest: f64,
+    /// How far, in degrees, they turn from the frame's first axis.
+    off: f64,
+    angle: f64,
+    lines: Vec<Polyline>,
+}
+
+impl Strands {
+    /// Whether they are better than `other`: fewer ends loose, then a shorter longest strand,
+    /// then nearer the frame's first axis.
+    fn beats(&self, other: &Strands) -> bool {
+        let as_long = (self.longest - other.longest).abs() <= SAME_LENGTH_MM;
+        self.loose < other.loose
+            || (self.loose == other.loose && self.longest < other.longest - SAME_LENGTH_MM)
+            || (self.loose == other.loose && as_long && self.off < other.off)
+    }
+}
+
+/// Where the ends of strands `width` wide rest: on the section below, or within half their width
+/// past its edge, where a bead's centre line may lie and the bead still stand.
+pub struct Rests {
+    on: Bands,
+}
+
+impl Rests {
+    /// Where strands `width` wide rest on the section `below`; nowhere for no section.
+    pub fn on(below: &Region, width: f64) -> Result<Rests, GeomError> {
+        Ok(Rests { on: Bands::new(&disc_offset(below, width / 2.0)?) })
+    }
+
+    /// Whether an end at `p` hangs: rests on nothing.
+    pub fn hangs(&self, p: Point) -> bool {
+        !self.on.covers(p)
+    }
+}
+
+/// The strands across the gap `region`, `spacing` apart, and their direction in degrees, in the
+/// gap's own `frame`. A strand hangs from its two ends, so it must rest on the layer below at both:
+/// the direction chosen leaves the fewest ends over air (`rests`), and among those its longest
+/// strand, the weakest, is shortest. Both optima lie across an edge of the region, so the
+/// directions tried are those perpendicular to its edges, plus a fan every `FAN_STEP_DEG` from
+/// the frame's first axis; of directions as good, the one nearest that axis wins. Every direction
+/// is tried on the grid of `hatch` through the frame's origin, where its strands lie, so the
+/// choice turns, moves and mirrors with the gap.
+pub fn bridge_strands(
     region: &Region,
     spacing: f64,
-    preferred: f64,
-    phase: f64,
-    hangs: impl Fn(Point) -> bool,
-) -> Result<f64, GeomError> {
+    frame: &Frame,
+    rests: &Rests,
+) -> Result<(f64, Vec<Polyline>), GeomError> {
+    let (preferred, anchor) = (frame.angle(), frame.origin());
     let across = region.iter().flatten().flat_map(|c| edges(c));
-    let candidates = std::iter::once(preferred)
-        .chain(across.map(|(a, b)| (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0));
-    let normalize = |a: f64| a.rem_euclid(180.0);
+    let normals = across.map(|(a, b)| (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() + 90.0);
+    let fan = (0..(180.0 / FAN_STEP_DEG) as usize).map(|k| preferred + FAN_STEP_DEG * k as f64);
     let mut seen: Vec<f64> = Vec::new();
-    for a in candidates.map(normalize).chain((0..12).map(|k| preferred + 15.0 * k as f64)) {
-        if seen.len() < MAX_CANDIDATES && !seen.iter().any(|s| (s - a).abs() < 0.5) {
+    for a in std::iter::once(preferred).chain(normals).chain(fan).map(|a| a.rem_euclid(180.0)) {
+        if seen.len() < MAX_CANDIDATES && !seen.iter().any(|&s| apart(s, a) < SAME_ANGLE_DEG) {
             seen.push(a);
         }
     }
-    let mut best = ((usize::MAX, f64::INFINITY), normalize(preferred));
+    let mut best: Option<Strands> = None;
     for angle in seen {
-        let lines = hatch(region, spacing, angle, phase)?;
-        let loose = lines
-            .iter()
-            .flat_map(|line| [line.first(), line.last()])
-            .flatten()
-            .filter(|&&p| hangs(p))
-            .count();
+        let lines = hatch(region, spacing, angle, phase_through(angle, anchor))?;
+        let ends = lines.iter().flat_map(|line| [line.first(), line.last()]).flatten();
+        let loose = ends.filter(|&&p| rests.hangs(p)).count();
         let longest = lines.iter().map(|line| polyline_length(line)).fold(0.0, f64::max);
-        let ((best_loose, best_longest), _) = best;
-        if loose < best_loose || (loose == best_loose && longest < best_longest - 1e-6) {
-            best = ((loose, longest), angle);
+        let here = Strands { loose, longest, off: apart(angle, preferred), angle, lines };
+        if best.as_ref().is_none_or(|b| here.beats(b)) {
+            best = Some(here);
         }
     }
-    Ok(best.1)
+    Ok(best.map_or_else(|| (preferred.rem_euclid(180.0), Vec::new()), |b| (b.angle, b.lines)))
 }

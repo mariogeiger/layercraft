@@ -19,28 +19,20 @@
 //! and the strips they leave, narrower than two beads, go to the gap fill. On a bent layer's top,
 //! lines follow the fall line. A top surface also pays for the joins it shows (`kinks`).
 
-use crate::frame::Frame;
+mod classes;
+
+pub(crate) use classes::apart;
+
+use classes::{Class, class_of, classes, direction, frame_order, heaviest};
 use layercraft_geom::{
-    Contour, Erosions, GeomError, Moments, Point, Polyline, RESOLUTION_MM, Region, Relief, bounds,
-    clip_lines, difference, disc_offset, disc_opening, edges, encloses, hatch, intersection, polyline_length,
-    segment_distance, union, winding_region,
+    Contour, Erosions, Frame, GeomError, Moments, Point, Polyline, RESOLUTION_MM, Region, Relief, bounds,
+    clip_lines, difference, disc_offset, disc_opening, distance, edges, encloses, hatch, intersection,
+    polyline_length, segment_distance, union, winding_region,
 };
-use std::cmp::Ordering;
 
 /// How far past a curve's end it is looked for going on, in mm: over the lattice's rounding of
 /// where it was cut, under any bead.
 const STEP_MM: f64 = 1e-4;
-
-/// The classes of directions that a cell's edges, and the beads below it, run along most, which
-/// it tries.
-const DIRECTIONS_TRIED: usize = 3;
-
-/// Directions closer than this, in degrees, are one.
-const SAME_DIRECTION: f64 = 0.5;
-
-/// Weights of directions closer than this share are a tie: a part per million, the lattice's
-/// nanometre in a millimetre.
-const SAME_WEIGHT: f64 = 1e-6;
 
 /// The most rounds of the cells' choices.
 const MAX_ROUNDS: usize = 16;
@@ -52,7 +44,7 @@ const TIE: f64 = 1e-3;
 /// The weight of area laid along the layer below when nothing may be: every area crosses.
 const ALWAYS_CROSS: f64 = 1e12;
 
-/// The mean slope under which a piece counts as flat: a degree.
+/// The mean slope under which a piece counts as flat: tan 1°.
 const FLAT_SLOPE: f64 = 0.017_455_064_928_217_585;
 
 /// What an end at the area's edge costs on a top surface at the least, in ends: the wall it overlaps
@@ -92,115 +84,12 @@ pub struct Dense {
 }
 
 /// How an area is laid: beads `spacing` apart and `width` wide, crossing the layer below where
-/// wider than `crossing`; `shows` when it is a top surface, whose joins are seen.
+/// wider than `crossing`.
 #[derive(Debug, Clone, Copy)]
-pub struct Spacing {
+pub struct Laying {
     pub spacing: f64,
     pub width: f64,
     pub crossing: f64,
-    pub shows: bool,
-}
-
-/// The direction of a segment, in degrees, and its length.
-fn direction(a: Point, b: Point) -> (f64, f64) {
-    ((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees(), (b[0] - a[0]).hypot(b[1] - a[1]))
-}
-
-/// How far apart two directions of lines are, in degrees: within a half turn.
-fn apart(a: f64, b: f64) -> f64 {
-    let d = (a - b).rem_euclid(180.0);
-    d.min(180.0 - d)
-}
-
-/// Lines at `a` and at `b` degrees in the order ties go in, beside `frame`: nearest its axes
-/// first, then nearest its first, then on from it towards its second.
-fn frame_order(a: f64, b: f64, frame: &Frame) -> Ordering {
-    let (first, sense) = (frame.angle(), if frame.right_handed() { 1.0 } else { -1.0 });
-    let key = |x: f64| {
-        let d = apart(x, first);
-        (d.min(90.0 - d), d, (sense * (x - first)).rem_euclid(180.0))
-    };
-    let (x, y) = (key(a), key(b));
-    x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1)).then(x.2.total_cmp(&y.2))
-}
-
-/// A class of directions, a quarter turn counting as none, so of lines along them and across:
-/// its directions span `width` degrees on from `from`, about their mean `angle`, in [0, 90).
-#[derive(Debug, Clone, Copy)]
-struct Class {
-    angle: f64,
-    from: f64,
-    width: f64,
-}
-
-impl Class {
-    /// How far a direction, in degrees, lies outside the class.
-    fn gap(&self, a: f64) -> f64 {
-        let t = (a - self.from).rem_euclid(90.0);
-        if t <= self.width { 0.0 } else { (t - self.width).min(90.0 - t) }
-    }
-}
-
-/// Directions in degrees with their weights, in classes: those closer than `SAME_DIRECTION`
-/// chain into one, at the mean of their weights taken as `4θ` round the circle, a quarter turn
-/// being a whole one. The chains start past the widest gap, which the directions place, not the
-/// plate.
-fn classes(items: &[(f64, f64)]) -> Vec<Class> {
-    let mut all: Vec<(f64, f64)> = items
-        .iter()
-        .filter(|(a, w)| a.is_finite() && w.is_finite() && *w > 0.0)
-        .map(|&(a, w)| (a.rem_euclid(90.0), w))
-        .collect();
-    all.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let n = all.len();
-    let at = |i: usize| all.get(i % n.max(1)).copied().unwrap_or_default();
-    // From each direction on to the next, round the quarter turn.
-    let gap = |i: usize| if n == 1 { 90.0 } else { (at(i + 1).0 - at(i).0).rem_euclid(90.0) };
-    let Some(widest) = (0..n).max_by(|&i, &j| gap(i).total_cmp(&gap(j))) else { return Vec::new() };
-    let close = |(from, width, sum): (f64, f64, [f64; 2])| Class {
-        angle: (sum[1].atan2(sum[0]).to_degrees() / 4.0).rem_euclid(90.0),
-        from,
-        width,
-    };
-    let mut out: Vec<Class> = Vec::new();
-    // The chain open: where it starts, how far on it reaches, and its weights' sum as `4θ`.
-    let mut open: Option<(f64, f64, [f64; 2])> = None;
-    for i in widest + 1..=widest + n {
-        let (a, w) = at(i);
-        let (sin, cos) = (4.0 * a).to_radians().sin_cos();
-        open = match open {
-            Some((from, _, [x, y])) if gap(i - 1) < SAME_DIRECTION => {
-                Some((from, (a - from).rem_euclid(90.0), [x + w * cos, y + w * sin]))
-            }
-            done => {
-                out.extend(done.map(close));
-                Some((a, 0.0, [w * cos, w * sin]))
-            }
-        };
-    }
-    out.extend(open.map(close));
-    out
-}
-
-/// The class of a direction in degrees: the nearest of `classes`, within `SAME_DIRECTION`.
-fn class_of(classes: &[Class], a: f64) -> Option<usize> {
-    let gaps = classes.iter().map(|c| c.gap(a)).enumerate();
-    gaps.filter(|(_, g)| *g < SAME_DIRECTION).min_by(|x, y| x.1.total_cmp(&y.1)).map(|(k, _)| k)
-}
-
-/// The classes that `items`, directions with their weights, run along most: the
-/// `DIRECTIONS_TRIED` heaviest, and any as heavy as the last of them.
-fn heaviest(classes: &[Class], items: impl Iterator<Item = (f64, f64)>) -> Vec<usize> {
-    let mut weights = vec![0.0; classes.len()];
-    for (a, w) in items {
-        if let Some(total) = class_of(classes, a).and_then(|k| weights.get_mut(k)) {
-            *total += w;
-        }
-    }
-    let mut ranked: Vec<(usize, f64)> = weights.into_iter().enumerate().filter(|(_, w)| *w > 0.0).collect();
-    ranked.sort_by(|x, y| y.1.total_cmp(&x.1));
-    let last = ranked.get(DIRECTIONS_TRIED - 1).map_or(0.0, |r| r.1 * (1.0 - SAME_WEIGHT));
-    ranked.into_iter().take_while(|r| r.1 >= last).map(|r| r.0).collect()
 }
 
 /// One shape of the area, which decides its lines: their phase, the directions they may take
@@ -216,7 +105,8 @@ struct Component {
 }
 
 impl Component {
-    fn new(shape: &[Contour], fall: &dyn Fn(&Region) -> Option<f64>) -> Component {
+    /// The component of `shape`, on a top surface over the layer's relief `top`.
+    fn new(shape: &[Contour], top: Option<&Relief>) -> Component {
         let region = vec![shape.to_vec()];
         let edges: Vec<(Point, Point)> = shape.iter().flat_map(|c| edges(c)).collect();
         let directions: Vec<(f64, f64)> = edges.iter().map(|&(a, b)| direction(a, b)).collect();
@@ -224,7 +114,7 @@ impl Component {
             outer: shape.first().cloned().unwrap_or_default(),
             frame: Frame::of(std::iter::once((&region, 1.0))),
             classes: classes(&directions),
-            fall: fall(&region),
+            fall: top.and_then(|relief| fall_line(&region, relief)),
             edges,
         }
     }
@@ -330,16 +220,21 @@ impl Cell {
 }
 
 /// The cell holding `q`, other than `except`.
-fn holder(cells: &[Cell], q: Point, except: usize) -> Option<usize> {
+fn cell_at(cells: &[Cell], q: Point, except: usize) -> Option<usize> {
     cells.iter().enumerate().find(|(i, c)| *i != except && c.holds(q)).map(|(i, _)| i)
 }
 
-/// A point just inside a shape, off the middle of its outer contour's first edge, on its left.
-fn inside(shape: &[Contour]) -> Option<Point> {
-    let outer = shape.first()?;
-    let (a, b) = edges(outer).next()?;
-    let (d, l) = ([b[0] - a[0], b[1] - a[1]], (b[0] - a[0]).hypot(b[1] - a[1]));
-    (l > 0.0).then(|| [(a[0] + b[0]) / 2.0 - STEP_MM * d[1] / l, (a[1] + b[1]) / 2.0 + STEP_MM * d[0] / l])
+/// The point `STEP_MM` off the middle of the edge `a`–`b`, on its left (`side` 1) or right (-1).
+fn beside(a: Point, b: Point, side: f64) -> Option<Point> {
+    let (d, l) = ([b[0] - a[0], b[1] - a[1]], distance(a, b));
+    let off = |x: f64| side * STEP_MM * x / l;
+    (l > 0.0).then(|| [(a[0] + b[0]) / 2.0 - off(d[1]), (a[1] + b[1]) / 2.0 + off(d[0])])
+}
+
+/// A point just inside a shape, beside the middle of its outer contour's first edge.
+fn just_inside(shape: &[Contour]) -> Option<Point> {
+    let (a, b) = edges(shape.first()?).next()?;
+    beside(a, b, 1.0)
 }
 
 /// The beads of `beneath` within `region`, whose box is `box_`, cut at its edge.
@@ -384,7 +279,7 @@ fn cells_of(
     let mut cells: Vec<Cell> = Vec::new();
     for (shape, thin) in thick.iter().map(|s| (s, false)).chain(thin.iter().map(|s| (s, true))) {
         let region = vec![shape.clone()];
-        let (Some(box_), Some(q)) = (bounds(&region), inside(shape)) else { continue };
+        let (Some(box_), Some(q)) = (bounds(&region), just_inside(shape)) else { continue };
         let component = components.iter().position(|c| encloses(c.edges.iter().copied(), q)).unwrap_or(0);
         let centroid = Moments::of(std::iter::once((shape.as_slice(), 1.0))).map_or(q, |m| m.centroid);
         let centre = components.get(component).map_or(centroid, |c| c.frame.local(centroid));
@@ -408,12 +303,9 @@ fn cells_of(
         let mut touching: Vec<(usize, f64)> = Vec::new();
         let Some(cell) = cells.get(i) else { continue };
         for (a, b) in cell.region.iter().flatten().flat_map(|c| edges(c)) {
-            let (d, l) = ([b[0] - a[0], b[1] - a[1]], (b[0] - a[0]).hypot(b[1] - a[1]));
-            if l <= 0.0 {
-                continue;
-            }
-            let q = [(a[0] + b[0]) / 2.0 + STEP_MM * d[1] / l, (a[1] + b[1]) / 2.0 - STEP_MM * d[0] / l];
-            if let Some(n) = holder(&cells, q, i) {
+            let Some(q) = beside(a, b, -1.0) else { continue };
+            let l = distance(a, b);
+            if let Some(n) = cell_at(&cells, q, i) {
                 match touching.iter_mut().find(|(m, _)| *m == n) {
                     Some((_, shared)) => *shared += l,
                     None => touching.push((n, l)),
@@ -554,14 +446,7 @@ impl Rings {
     fn of(insets: &[Inset]) -> Rings {
         let contours = insets.iter().flat_map(|i| i.centre.iter().flatten());
         let lines: Vec<Polyline> = contours.filter(|c| c.len() > 1).map(closed).collect();
-        let boxes = lines
-            .iter()
-            .map(|l| {
-                l.iter().fold([[f64::MAX; 2], [f64::MIN; 2]], |[lo, hi], p| {
-                    [[lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])]]
-                })
-            })
-            .collect();
+        let boxes = lines.iter().filter_map(|l| bounds(&vec![vec![l.clone()]])).collect();
         Rings { lines, boxes }
     }
 
@@ -592,7 +477,7 @@ fn beads(
 }
 
 /// The two ends of an open piece, each with the way out of it.
-fn ends(piece: &[Point]) -> Vec<(Point, [f64; 2])> {
+fn exits(piece: &[Point]) -> Vec<(Point, [f64; 2])> {
     let out = |end: Option<&Point>, before: Option<&Point>| {
         let (e, b) = (end?, before?);
         let (d, l) = ([e[0] - b[0], e[1] - b[1]], (e[0] - b[0]).hypot(e[1] - b[1]));
@@ -633,13 +518,14 @@ fn kinks(piece: &[Point], s: f64) -> f64 {
     inner + closing
 }
 
-/// Fills a dense area with beads: `area` with the parameters `p`, over the dense beads
-/// `beneath`, its lines along `fall` where it gives a shape of it one.
+/// Fills a dense area with beads: `area` laid as `p` says, over the dense beads `beneath`. A top
+/// surface, over the layer's relief `top`, pays for the joins it shows, and its lines follow the
+/// fall line where its shapes slope.
 pub(crate) fn fill(
     area: &Region,
-    p: Spacing,
+    p: Laying,
     beneath: &Beneath,
-    fall: impl Fn(&Region) -> Option<f64>,
+    top: Option<&Relief>,
 ) -> Result<Dense, GeomError> {
     let (s, w) = (p.spacing, p.width);
     if area.is_empty() || !(s.is_finite() && s > 0.0 && w.is_finite() && w > 0.0) {
@@ -647,7 +533,8 @@ pub(crate) fn fill(
     }
     let crossing = if p.crossing.is_finite() && p.crossing > 0.0 { p.crossing } else { 0.0 };
     let weight = if crossing > 0.0 { 1.0 / (s * crossing) } else { ALWAYS_CROSS };
-    let mut components: Vec<Component> = area.iter().map(|shape| Component::new(shape, &fall)).collect();
+    let shows = top.is_some();
+    let mut components: Vec<Component> = area.iter().map(|shape| Component::new(shape, top)).collect();
     // What a disc `W*` across reaches in the area, and the kernel's resolution on: where it runs
     // along the area's edge it covers it, which the two edges, rounded each its own way, would
     // leave needles between as thin as the lattice. The rest is the bands, what that reach leaves
@@ -679,21 +566,21 @@ pub(crate) fn fill(
                 Choice { family, edge_ends: 0.0, kinks: 0.0, ends_to: Vec::new(), along_below: 0.0 };
             for piece in beads(family, cell, component, s, &rings)? {
                 // A bead hardly longer than it is wide is all ends, hidden or not.
-                let edge_end = if p.shows {
+                let edge_end = if shows {
                     let short = (s / polyline_length(&piece).max(s)).min(1.0);
                     HIDDEN_END + (1.0 - HIDDEN_END) * short
                 } else {
                     1.0
                 };
-                if p.shows {
+                if shows {
                     choice.kinks += kinks(&piece, s);
                 }
                 if family == Family::Insets && whole(&piece) {
                     continue;
                 }
-                for (end, out) in ends(&piece) {
+                for (end, out) in exits(&piece) {
                     let q = [end[0] + STEP_MM * out[0], end[1] + STEP_MM * out[1]];
-                    match holder(&cells, q, i).and_then(|n| host.get(n).copied()) {
+                    match cell_at(&cells, q, i).and_then(|n| host.get(n).copied()) {
                         Some(n) if n != i => match choice.ends_to.iter_mut().find(|(m, _)| *m == n) {
                             Some((_, k)) => *k += 1.0,
                             None => choice.ends_to.push((n, 1.0)),
@@ -719,7 +606,7 @@ pub(crate) fn fill(
         }
     }
     choose(&mut cells, &host);
-    laid(&cells, &host, &components, s, w, &rings, &levels)
+    chosen_beads(&cells, &host, &components, s, w, &rings, &levels)
 }
 
 /// A contour closed back to its start, as a polyline.
@@ -797,7 +684,7 @@ fn least(costs: Vec<f64>, current: usize) -> usize {
 
 /// The beads of the chosen families: each family's lines over all its cells of one shape, so
 /// that they go on from cell to cell; the insets over all theirs, and what they leave.
-fn laid(
+fn chosen_beads(
     cells: &[Cell],
     host: &[usize],
     components: &[Component],

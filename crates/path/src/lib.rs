@@ -1,27 +1,28 @@
 //! Stage 3: the lines the nozzle draws, in printing order.
 //!
-//! Walls become closed loops, starting at the concave corner nearest the seam of the layer
-//! below (`seam`), so seams line up from layer to layer. Dense areas are laid at the beads' tiling spacing as
-//! families of parallel curves with the fewest bead ends (`families`): a band narrower than
-//! its beads' crossing width along itself, in insets of its edge, a wider area in straight lines
-//! along or across its edges, crossing the dense beads of the layer below. Sparse areas get
-//! lines spaced for the requested density by volume, turning a quarter turn each layer, so no
-//! two beads cross on a layer, or convection rolls as far apart (`rolls`), running from wall to
-//! wall and resting on those below. Bridges are strands one nozzle wide: side by side over air,
-//! where they hang; over sparse infill, where they rest, spaced to fill their layer exactly.
-//! Sparse lines lie on a fixed grid, so layers stack. A move that crosses a bead already laid at
-//! its height is marked, and the tours avoid it first (`crossing`). Each island is printed whole —
-//! inner walls, outer wall, then its infill — and islands follow each other nearest first.
-//! Within an island, the beads of each kind follow the tour that retracts least often, then
-//! travels least; the lines of a `monotone` role are laid in sweeps instead, each against the
-//! one before. The first layer's beads are all `first_layer_width` wide. Each wall segment
-//! carries the share of its bead that hangs past the layer below (`overhang`). Each island is
-//! traced by the parameters at its centre. The supports are islands of their own (`supports`).
+//! Walls become closed loops, starting at the concave corner nearest the seam of the layer below
+//! (`seam`), so seams line up from layer to layer. Dense areas are laid at the beads' tiling
+//! spacing as families of parallel curves with the fewest bead ends (`families`): a band narrower
+//! than its beads' crossing width along itself, in insets of its edge, a wider area in straight
+//! lines along or across its edges, crossing the dense beads of the layer below. Sparse areas get
+//! lines spaced for the requested density by volume, in the solid's own frame, turning a quarter
+//! turn each layer, so no two beads cross on a layer, or convection rolls as far apart (`rolls`),
+//! running from wall to wall and resting on those below. Bridges are strands one nozzle wide: side
+//! by side over air, where they hang; over sparse infill, where they rest, spaced to fill their
+//! layer exactly. Each island is printed whole, inner walls, outer wall, then its infill
+//! (`island`), and islands follow each other nearest first; within an island, the beads of each
+//! kind follow the tour that crosses laid beads least often, then travels least, and the lines of
+//! a `monotone` face are laid in sweeps instead, each against the one before (`order`). A move
+//! that crosses a bead already laid at its height is marked (`crossing`). The first layer's beads
+//! are all `first_layer_width` wide. Each wall segment carries the share of its bead that hangs
+//! past the layer below (`overhang`). Each island is traced by the parameters at its centroid. The
+//! supports are islands of their own (`supports`).
 
 mod crossing;
 mod families;
 mod frame;
 mod gap;
+mod island;
 mod near;
 mod order;
 mod overhang;
@@ -32,12 +33,13 @@ mod solids;
 mod supports;
 mod tour;
 
-pub use role::{Face, Kind, Role, Support};
+pub use role::{Face, Kind, Rest, Role};
 
-use layercraft_geom::{Carrier, GeomError, Point, Warp};
-use layercraft_region::{RegionLayer, Regions};
+use layercraft_geom::{Carrier, GeomError, Point, Region, Warp, union};
+use layercraft_region::{RegionPass, Regions};
 use layercraft_tune::{Field, TuneError};
 use serde::{Deserialize, Serialize};
+use std::rc::Rc;
 
 /// One bead: a polyline drawn `width` wide, closed back to its start when `closed`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,9 +78,9 @@ impl Path {
     }
 }
 
-/// The beads of one layer, in printing order.
+/// The beads of one pass of a layer, in printing order: the layer's beads of one material.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PathLayer {
+pub struct PathPass {
     pub index: usize,
     pub top: f64,
     pub height: f64,
@@ -98,7 +100,15 @@ pub struct Paths {
     /// The triangles the bent layers' warps are linear on, as the regions give them.
     #[serde(default, skip_serializing_if = "Carrier::is_empty")]
     pub carrier: Carrier,
-    pub layers: Vec<PathLayer>,
+    #[serde(alias = "layers")]
+    pub passes: Vec<PathPass>,
+}
+
+impl Paths {
+    /// The passes of each layer, layer by layer: the runs of passes sharing an index.
+    pub fn layers(&self) -> impl Iterator<Item = &[PathPass]> {
+        self.passes.chunk_by(|a, b| a.index == b.index)
+    }
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -113,11 +123,13 @@ pub struct PathParams {
     pub top_surface_width: f64,
     pub solid_width: f64,
     pub sparse_width: f64,
-    /// Fraction of the area the sparse grid covers, in (0, 1].
+    /// Fraction of the area the sparse lines cover, from 0, none, to 1.
     pub sparse_density: f64,
     /// How far infill reaches into the innermost wall, as a fraction of the infill width.
     pub infill_wall_overlap: f64,
-    /// Direction of the solid hatch on even layers, in degrees.
+    /// The turn, in degrees, from each solid's own first axis of the straight lines of even
+    /// layers: sparse lines and strands resting on sparse infill. Dense areas and bridges over
+    /// air choose their own.
     pub infill_angle: f64,
     /// The width of every bead of the first layer.
     pub first_layer_width: f64,
@@ -142,8 +154,8 @@ pub struct PathParams {
     pub support: SupportLines,
 }
 
-/// The supports' lines: `width` wide, the interface's `interface_gap` apart past their tiling
-/// spacing, in mm; a gap of 0 lays it solid.
+/// The supports' lines: `width` wide, the interface's `interface_gap` farther apart than beads
+/// that tile, in mm; a gap of 0 lays it solid.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupportLines {
     pub width: f64,
@@ -183,6 +195,14 @@ pub enum PathError {
     Tune(#[from] TuneError),
     #[error("path geometry: {0}")]
     Geometry(#[from] GeomError),
+}
+
+impl PathParams {
+    /// The width of a bead `width` wide on layer `index`: the first layer's are all
+    /// `first_layer_width`, to grip the bed.
+    pub fn width_on(&self, index: usize, width: f64) -> f64 {
+        if index == 0 { self.first_layer_width } else { width }
+    }
 }
 
 pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
@@ -229,71 +249,102 @@ pub(crate) fn check(p: &PathParams) -> Result<(), PathError> {
     Ok(())
 }
 
-/// Turns every layer's regions into ordered beads, each island by the parameters at its centre.
+/// Turns every layer's regions into ordered beads, each island by the parameters at its centroid.
 pub fn trace(regions: &Regions, field: &Field<PathParams>) -> Result<Paths, PathError> {
     check(field.base())?;
-    let mut layers = Vec::with_capacity(regions.layers.len());
-    let mut at: Point = [0.0, 0.0];
-    // Made on the first layer whose sparse area asks for them, over all the layers, one for
-    // each solid.
-    let mut rolls: Option<rolls::SolidRolls> = None;
-    // The dense beads of the layer below, and of the passes laid so far at this height.
-    let (mut beneath, mut laid, mut height) = (families::Beneath::default(), Vec::new(), None);
-    let solids = solids::Solids::of(&regions.layers, RegionLayer::outline)?;
-    let mut seams = seam::Seams::default();
+    let solids = solids::Solids::of(&regions.passes, RegionPass::outline)?;
     let columns =
-        solids::Solids::of(&regions.layers, |l| l.supports.iter().chain(&l.support_interface).collect())?;
-    // Every bead of the passes laid so far at this height.
-    let mut earlier: Vec<crossing::Segment> = Vec::new();
-    // The supports' interface on the layer below, and on this one so far.
-    let (mut interface_below, mut interface) = (Vec::new(), Vec::new());
-    for (pass, layer) in regions.layers.iter().enumerate() {
-        if height != Some(layer.top) {
-            beneath = families::Beneath::new(std::mem::take(&mut laid));
-            earlier.clear();
-            height = Some(layer.top);
-            interface_below = std::mem::take(&mut interface);
-        }
-        interface = layercraft_geom::union(&interface, &layer.support_interface)?;
-        let parts = order::parts(layer, field)?;
-        let relief = regions.carrier.relief(&layer.warp)?;
-        let asked = parts.iter().find_map(|(p, _)| match p.sparse_pattern {
-            SparsePattern::Rolls { tilt, ply } if !layer.sparse.is_empty() => Some((p, tilt, ply)),
-            _ => None,
-        });
-        let lines = match asked {
-            Some((p, tilt, ply)) => {
-                let (width, spacing) = order::sparse_bead(layer, p);
-                let grow = p.infill_wall_overlap * width;
-                let made = || rolls::SolidRolls::new(&regions.layers, &solids, (spacing, grow), (tilt, ply));
-                let area = layercraft_geom::offset(&layer.sparse, grow)?;
-                Some(rolls.get_or_insert_with(made).lines(layer, pass, &solids, &area, spacing)?)
+        solids::Solids::of(&regions.passes, |l| l.supports.iter().chain(&l.support_interface).collect())?;
+    let mut rolls = rolls::SolidRolls::new(&regions.passes, &solids);
+    let mut seams = seam::Seams::default();
+    let mut at: Point = [0.0, 0.0];
+    // The dense beads of the layer below, and its supports' interface.
+    let (mut beneath, mut interface_below) = (families::Beneath::default(), Vec::new());
+    let mut passes = Vec::with_capacity(regions.passes.len());
+    for layer in regions.layers() {
+        let first = passes.len();
+        let parts: Vec<_> = layer.iter().map(|pass| island::parts(pass, field)).collect::<Result<_, _>>()?;
+        let numbered: Vec<_> =
+            layer.iter().zip(&parts).enumerate().map(|(k, (pass, parts))| (first + k, pass, parts)).collect();
+        let lines = roll_lines(&mut rolls, &solids, &numbered)?;
+        // Every bead of the passes laid so far at this height, their dense ones, and their
+        // supports' interface.
+        let (mut earlier, mut dense, mut interface) = (Vec::new(), Vec::new(), Vec::new());
+        for (k, (pass, parts)) in layer.iter().zip(&parts).enumerate() {
+            let index = first + k;
+            interface = union(&interface, &pass.support_interface)?;
+            let relief = regions.carrier.relief(&pass.warp)?;
+            let mut islands = Vec::new();
+            for (params, part) in parts {
+                let rolls = lines.iter().find(|(q, _)| Rc::ptr_eq(q, params)).map(|(_, lines)| lines);
+                let guides = island::Guides { rolls, beneath: &beneath, relief: &relief };
+                islands.extend(island::islands(part, params, guides, &solids, index, &mut seams)?);
             }
-            None => None,
-        };
-        let guides = order::Guides { rolls: lines.as_deref(), beneath: &beneath, relief: &relief };
-        let mut islands = Vec::new();
-        for (params, part) in parts {
-            islands.extend(order::islands(&part, &params, guides, &solids, pass, &mut seams)?);
+            seams.commit();
+            islands.extend(supports::islands(pass, field.base(), &columns, index, &interface_below)?);
+            let paths = order::sequence(islands, &mut at, &earlier);
+            earlier.extend(paths.iter().flat_map(crossing::segments));
+            for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {
+                dense.extend(crossing::segments(path).into_iter().map(|(a, b)| (a, b, path.width)));
+            }
+            passes.push(PathPass {
+                index: pass.index,
+                top: pass.top,
+                height: pass.height,
+                material: pass.material,
+                warp: pass.warp.clone(),
+                paths,
+            });
         }
-        seams.commit();
-        islands.extend(supports::islands(layer, field.base(), &columns, pass, &interface_below)?);
-        let paths = crossing::mark(order::sequence(islands, &mut at, &earlier), &earlier);
-        earlier.extend(paths.iter().flat_map(crossing::segments));
-        for path in paths.iter().filter(|p| p.role.kind == Kind::Solid) {
-            let points = path.points.iter().chain(path.points.first().filter(|_| path.closed));
-            laid.extend(points.clone().zip(points.skip(1)).map(|(a, b)| (*a, *b, path.width)));
-        }
-        layers.push(PathLayer {
-            index: layer.index,
-            top: layer.top,
-            height: layer.height,
-            material: layer.material,
-            warp: layer.warp.clone(),
-            paths,
-        });
+        beneath = families::Beneath::new(dense);
+        interface_below = interface;
     }
-    Ok(Paths { carrier: regions.carrier.clone(), layers })
+    Ok(Paths { carrier: regions.carrier.clone(), passes })
+}
+
+/// The parts of a layer's passes, each pass with its number in the print.
+type LayerParts<'a> = [(usize, &'a RegionPass, &'a Vec<(Rc<PathParams>, RegionPass)>)];
+
+/// The sparse areas of a layer that ask for rolls by one set of parameters, each with the
+/// number of its pass, grown by `grow` into the walls, the rolls `spacing` apart.
+struct Ask {
+    params: Rc<PathParams>,
+    spacing: f64,
+    grow: f64,
+    areas: Vec<(usize, Region)>,
+}
+
+/// The rolls' lines of each set of parameters asking for them among `parts`, over the sparse
+/// areas of all their passes at once, each grown into the walls as its infill reaches.
+fn roll_lines(
+    rolls: &mut rolls::SolidRolls,
+    solids: &solids::Solids,
+    parts: &LayerParts,
+) -> Result<Vec<(Rc<PathParams>, rolls::RollLines)>, PathError> {
+    let mut asks: Vec<Ask> = Vec::new();
+    let mut at = None;
+    for &(index, pass, parts) in parts {
+        at = Some((pass.index, pass.top));
+        for (p, part) in parts.iter().filter(|(_, part)| !part.sparse.is_empty()) {
+            let SparsePattern::Rolls { .. } = p.sparse_pattern else { continue };
+            let (width, spacing) = island::sparse_bead(part, p);
+            let grow = p.infill_wall_overlap * width;
+            let area = layercraft_geom::offset(&part.sparse, grow)?;
+            match asks.iter_mut().find(|ask| Rc::ptr_eq(&ask.params, p)) {
+                Some(ask) => ask.areas.push((index, area)),
+                None => asks.push(Ask { params: p.clone(), spacing, grow, areas: vec![(index, area)] }),
+            }
+        }
+    }
+    let Some(at) = at else { return Ok(Vec::new()) };
+    let mut out = Vec::with_capacity(asks.len());
+    for Ask { params, spacing, grow, areas } in asks {
+        let SparsePattern::Rolls { tilt, ply } = params.sparse_pattern else { continue };
+        let areas: Vec<(usize, &Region)> = areas.iter().map(|(index, area)| (*index, area)).collect();
+        let lines = rolls.lines(at, &params, (spacing, grow), (tilt, ply), &areas, solids)?;
+        out.push((params, lines));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

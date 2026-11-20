@@ -29,7 +29,7 @@ fn beads_are_written_as_the_fewest_lines_and_arcs_within_the_resolution() {
     };
     let paths = Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 1,
             top: 0.4,
             height: 0.2,

@@ -13,7 +13,7 @@ fn closed_beads_start_and_run_where_the_moved_part_has_them() {
     for (angle, mirror, shift) in [(37.0, false, [12.5, -7.0]), (110.0, true, [-30.0, 4.0])] {
         let (g, outline) = placed(&part, angle, mirror, shift);
         let there = slab_beads(&outline);
-        for (a, b) in here.layers.iter().zip(&there.layers) {
+        for (a, b) in here.passes.iter().zip(&there.passes) {
             for loop_ in a.paths.iter().filter(|p| p.closed && p.points.len() > 2) {
                 let image: Vec<Point> = loop_.points.iter().map(|&p| g(p)).collect();
                 let close = |u: Point, v: Point| polyline_length(&[u, v]) < 1e-3;
@@ -35,7 +35,7 @@ fn closed_beads_start_and_run_where_the_moved_part_has_them() {
 
 /// The first outer wall of each layer of `paths`.
 fn seams_of(paths: &Paths) -> Vec<&Path> {
-    paths.layers.iter().filter_map(|l| l.paths.iter().find(|p| p.role == Role::OUTER_WALL)).collect()
+    paths.passes.iter().filter_map(|l| l.paths.iter().find(|p| p.role == Role::OUTER_WALL)).collect()
 }
 
 #[test]
@@ -62,8 +62,8 @@ fn a_notch_gives_the_outer_wall_a_concave_seam_on_every_layer() {
 
 #[test]
 fn a_cylinders_seams_line_up_at_the_far_end_of_its_axis() {
-    use crate::frame::Frame;
     use crate::solids::Solids;
+    use layercraft_geom::Frame;
     let ring: Vec<Point> = (0..64)
         .map(|k| {
             let t = std::f64::consts::TAU * f64::from(k) / 64.0;
@@ -74,7 +74,7 @@ fn a_cylinders_seams_line_up_at_the_far_end_of_its_axis() {
     let (regions, paths) = paths_of(&mesh);
     let seams: Vec<Point> = seams_of(&paths).iter().map(|p| p.points[0]).collect();
     assert!(seams.windows(2).all(|w| w[0] == w[1]), "{seams:?}");
-    let solids = Solids::of(&regions.layers, layercraft_region::RegionLayer::outline).unwrap();
+    let solids = Solids::of(&regions.passes, layercraft_region::RegionPass::outline).unwrap();
     let frame: Frame = solids.frame_at(0, [0.0, 0.0]);
     let far = |p: &Point| p[0] * frame.axis()[0] + p[1] * frame.axis()[1];
     // The wall's own farthest point along the axis, the wall lying inside the outline.
@@ -95,7 +95,7 @@ fn holed_prism(outline: &[Point], hole: &[Point], z1: f64) -> layercraft_mesh::B
 
 /// Whether every outer-wall loop of `here`, mapped by `g`, starts where a loop of `there` does.
 fn outer_walls_start_alike(here: &Paths, there: &Paths, g: &dyn Fn(Point) -> Point) -> bool {
-    here.layers.iter().zip(&there.layers).all(|(a, b)| {
+    here.passes.iter().zip(&there.passes).all(|(a, b)| {
         a.paths.iter().filter(|p| p.role == Role::OUTER_WALL).all(|p| {
             let start = g(p.points[0]);
             b.paths.iter().any(|m| {
@@ -152,7 +152,7 @@ fn the_seam_round_a_small_round_hole_turns_with_its_part() {
         (g, paths_of(&Mesh { bodies: vec![holed_prism(&outline, &moved, 1.0)], ..Mesh::default() }).1)
     };
     let (_, here) = printed(0.0, [0.0, 0.0]);
-    assert!(here.layers[0].paths.iter().filter(|p| p.role == Role::OUTER_WALL).count() == 2);
+    assert!(here.passes[0].paths.iter().filter(|p| p.role == Role::OUTER_WALL).count() == 2);
     for angle in [7.0, 37.0, 61.0, 103.0, 151.0, 211.0, 299.0] {
         let (g, there) = printed(angle, [3.0, -2.0]);
         assert!(outer_walls_start_alike(&here, &there, &g), "{angle}°");

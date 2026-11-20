@@ -268,9 +268,9 @@ pub fn sections(sections: &Sections) -> Result<Complex<0, 0, 1>, ViewError> {
 pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
     let mut c = Complex::new([], [int("layer"), int("role")], [int("layer"), int("role")]);
     c.comments.push(role_comment());
-    let (reliefs, below) = tops(&regions.carrier, regions.layers.iter().map(|l| (l.index, &l.warp)))?;
+    let (reliefs, below) = tops(&regions.carrier, regions.passes.iter().map(|l| (l.index, &l.warp)))?;
     let bed = Relief::default();
-    for (layer, bend) in regions.layers.iter().zip(middles(&reliefs, &below, &bed)) {
+    for (layer, bend) in regions.passes.iter().zip(middles(&reliefs, &below, &bed)) {
         let (z, index) = (layer.top - layer.height / 2.0, layer.index as f64);
         for (k, wall) in layer.walls.iter().enumerate() {
             let role = role_code(if k == 0 { Role::OUTER_WALL } else { Role::INNER_WALL });
@@ -278,8 +278,13 @@ pub fn regions(regions: &Regions) -> Result<Complex<0, 2, 2>, ViewError> {
                 polyline(&mut c, contour, true, z, &bend, [index, role])?;
             }
         }
-        let solid = if layer.index == 0 { Role::BOTTOM_SURFACE } else { Role::SOLID };
-        let roles = [Role::TOP_SURFACE, solid, Role::BRIDGE, Role::INTERNAL_BRIDGE, Role::SPARSE];
+        let roles = [
+            Role::TOP_SURFACE,
+            Role::solid_on(layer.index),
+            Role::BRIDGE,
+            Role::INTERNAL_BRIDGE,
+            Role::SPARSE,
+        ];
         for (area, role) in layer.infill().into_iter().zip(roles) {
             fill(&mut c, area, z, &bend, [index, role_code(role)])?;
         }
@@ -298,8 +303,8 @@ pub fn paths(paths: &Paths) -> Result<Complex<0, 5, 0>, ViewError> {
     let mut c = Complex::new([], properties, []);
     c.comments.push(role_comment());
     let mut bead = 0usize;
-    let (reliefs, _) = tops(&paths.carrier, paths.layers.iter().map(|l| (l.index, &l.warp)))?;
-    for (layer, relief) in paths.layers.iter().zip(&reliefs) {
+    let (reliefs, _) = tops(&paths.carrier, paths.passes.iter().map(|l| (l.index, &l.warp)))?;
+    for (layer, relief) in paths.passes.iter().zip(&reliefs) {
         let bend = Bend { parts: vec![(relief, 1.0)] };
         for path in &layer.paths {
             let [w, h] = bead_section(path.role, path.width, layer.height);

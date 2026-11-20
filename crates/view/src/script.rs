@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 /// A SolidCraft script drawing every bead's centre line, layers `from..to`.
 pub fn solidcraft_script(paths: &Paths, layers: std::ops::Range<usize>) -> Value {
     let mut commands = Vec::new();
-    for layer in paths.layers.iter().filter(|l| layers.contains(&l.index)) {
+    for layer in paths.passes.iter().filter(|l| layers.contains(&l.index)) {
         for role in Role::NAMED {
             let beads: Vec<_> =
                 layer.paths.iter().filter(|p| p.role == role && p.points.len() >= 2).collect();

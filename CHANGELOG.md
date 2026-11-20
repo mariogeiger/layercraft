@@ -2,6 +2,35 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.24.0
+
+### Changed
+
+- The supports' columns are laid in the first filament up to their interface, `compile
+  --support N` in filament N; on the interface's layers the whole top of a column, its loop and
+  its lines, is the interface's filament, so that the lines weld to the loop they end on. The
+  columns went with whichever filament began each layer before. In the USB-C cable support (grey
+  and pink PETG, a PLA interface) they were pink and are now grey: its 19 layers that print only
+  pink take a grey pass too, 27 filament changes instead of 7; `--support 2` keeps them pink.
+  The owner's choice.
+- A bridge's strands follow one rule in both stages (`bridge_strands`): each gap in its own frame,
+  every direction tried on lines through its centroid, ties going to its own axis. The region
+  stage, which decides what needs supports, so lays the strands as the path stage prints them,
+  and a gap's direction no longer depends on where it lies on the plate or on the layer's infill
+  angle. The test bridges print the same; the quarter-turn part's two small bridges at z 10.2 keep
+  their direction, their strands shifted onto lines through each gap's centre.
+- Convection rolls follow each island's own parameters (a `--tune` density or tilt applies to
+  them as to lines), relax once a layer over a part's areas in every filament, and a part too
+  large for their grid takes straight lines instead of none.
+- Parameters are read at each shape's centroid, not its box's centre, so a `--tune` box picks
+  the same shapes of a turned part.
+- No top or bottom shell layers, or no support interface, is refused: a part was all solid, and a
+  hollow column left its roof over air.
+- Stage files: regions and paths list `passes` (was `layers`), a role says what it `rest`s on (was
+  `support`); old files still read. A region pass's `support` alias of `below` is gone.
+  `RegionLayer`, `PathLayer` and `Support` are `RegionPass`, `PathPass` and `Rest`;
+  `SupportParams` has `column_material`, and `Regions` and `Paths` give their `layers()`.
+
 ## 0.23.0
 
 ### Fixed

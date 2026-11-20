@@ -4,8 +4,7 @@
 //! solid's frame. A loop of a mirrored part runs the other way. Nothing here names a plate
 //! direction, so a part turned, moved or mirrored has its seams turned, moved or mirrored.
 
-use crate::frame::Frame;
-use layercraft_geom::Point;
+use layercraft_geom::{Frame, Point, distance, edges, segment_distance};
 use std::collections::HashMap;
 
 /// The seams of each solid's islands on the last pass, which the next pass's seams follow. A
@@ -42,27 +41,11 @@ impl Seams {
 
 /// How far `p` lies from the closed loop.
 fn distance_to_loop(loop_: &[Point], p: Point) -> f64 {
-    (0..loop_.len())
-        .map(|k| {
-            let (a, b) = (at(loop_, k), at(loop_, k + 1));
-            let d = [b[0] - a[0], b[1] - a[1]];
-            let length2 = d[0] * d[0] + d[1] * d[1];
-            let t = if length2 > 0.0 {
-                (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / length2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            dist(p, [a[0] + t * d[0], a[1] + t * d[1]])
-        })
-        .fold(f64::MAX, f64::min)
+    edges(loop_).map(|(a, b)| segment_distance(p, a, b)).fold(f64::MAX, f64::min)
 }
 
 fn at(loop_: &[Point], k: usize) -> Point {
     loop_.get(k % loop_.len().max(1)).copied().unwrap_or([0.0, 0.0])
-}
-
-fn dist(a: Point, b: Point) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 /// The point at arc length `d` along the loop from vertex `k`, forward or backward.
@@ -74,7 +57,7 @@ fn along(loop_: &[Point], k: usize, d: f64, forward: bool) -> Point {
     for _ in 0..n {
         let next = if forward { index + 1 } else { index + n - 1 } % n;
         let to = at(loop_, next);
-        let step = dist(here, to);
+        let step = distance(here, to);
         if step >= left {
             let t = if step > 0.0 { left / step } else { 0.0 };
             return [here[0] + t * (to[0] - here[0]), here[1] + t * (to[1] - here[1])];
@@ -90,7 +73,7 @@ fn along(loop_: &[Point], k: usize, d: f64, forward: bool) -> Point {
 /// before and after it: positive on the material's side of a loop with material on its left.
 fn depth(loop_: &[Point], k: usize, width: f64) -> f64 {
     let (a, b, v) = (along(loop_, k, width / 2.0, false), along(loop_, k, width / 2.0, true), at(loop_, k));
-    let chord = dist(a, b);
+    let chord = distance(a, b);
     if chord <= 0.0 {
         return 0.0;
     }
@@ -124,11 +107,11 @@ fn concave_corners(loop_: &[Point], width: f64, resolution: f64) -> Vec<usize> {
 
 /// The index of the vertex a loop with material on its left starts at, for a seam near
 /// `reference`: the concave corner nearest it, else the vertex nearest it.
-pub(crate) fn seam_index(loop_: &[Point], reference: Point, width: f64, resolution: f64) -> usize {
+fn seam_index(loop_: &[Point], reference: Point, width: f64, resolution: f64) -> usize {
     let nearest = |candidates: Vec<usize>| {
         candidates
             .into_iter()
-            .min_by(|&a, &b| dist(at(loop_, a), reference).total_cmp(&dist(at(loop_, b), reference)))
+            .min_by(|&a, &b| distance(at(loop_, a), reference).total_cmp(&distance(at(loop_, b), reference)))
     };
     nearest(concave_corners(loop_, width, resolution))
         .or_else(|| nearest((0..loop_.len()).collect()))

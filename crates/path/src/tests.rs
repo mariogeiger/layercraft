@@ -5,7 +5,7 @@ use super::*;
 use layercraft_geom::{Region, area, bead_area, polyline_length};
 use layercraft_mesh::Mesh;
 use layercraft_mesh::solids::cuboid;
-use layercraft_region::{RegionParams, SupportParams, split};
+use layercraft_region::{RegionParams, RegionPass, SupportParams, split};
 use layercraft_section::{Layering, section};
 use layercraft_tune::Field;
 
@@ -48,9 +48,20 @@ fn region_params() -> RegionParams {
             xy_gap: 0.35,
             interface_layers: 2,
             on_plate_only: false,
+            column_material: 0,
             interface_material: None,
         },
     }
+}
+
+/// The beads `segments`, laid.
+pub(crate) fn laid_of(segments: &[crossing::Segment]) -> crossing::Laid {
+    let (low, high) = layercraft_geom::height_range(segments.iter().flat_map(|(a, b)| [a[1], b[1]]));
+    let mut laid = crossing::Laid::new(low, high, segments.len());
+    for &(a, b) in segments {
+        laid.add(a, b);
+    }
+    laid
 }
 
 fn paths_of(mesh: &Mesh) -> (Regions, Paths) {
@@ -101,8 +112,8 @@ fn filled_area(paths: &[Path], role: Role, angle: f64) -> f64 {
 fn solid_hatch_covers_its_area() {
     let (regions, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])], ..Mesh::default() });
-    let layer = &paths.layers[0];
-    let solid = area(&regions.layers[0].solid);
+    let layer = &paths.passes[0];
+    let solid = area(&regions.passes[0].solid);
     // On the bed, the solid is the part's bottom surface.
     let covered = laid_area(&layer.paths, Role::BOTTOM_SURFACE, 0.2);
     assert!((covered / solid - 1.0).abs() < 0.03, "{covered} for {solid}");
@@ -113,8 +124,8 @@ fn sparse_grid_has_its_density() {
     let (regions, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])], ..Mesh::default() });
     let i = 7;
-    let sparse = area(&regions.layers[i].sparse);
-    let covered = filled_area(&paths.layers[i].paths, Role::SPARSE, 135.0);
+    let sparse = area(&regions.passes[i].sparse);
+    let covered = filled_area(&paths.passes[i].paths, Role::SPARSE, 135.0);
     assert!((covered / sparse - 0.2).abs() < 0.02, "{}", covered / sparse);
 }
 
@@ -122,10 +133,10 @@ fn sparse_grid_has_its_density() {
 fn walls_come_inner_first_and_seams_align() {
     let (_, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])], ..Mesh::default() });
-    let roles: Vec<Role> = paths.layers[5].paths.iter().map(|p| p.role).take(2).collect();
+    let roles: Vec<Role> = paths.passes[5].paths.iter().map(|p| p.role).take(2).collect();
     assert_eq!(roles, vec![Role::INNER_WALL, Role::OUTER_WALL]);
     let seams: Vec<Point> = paths
-        .layers
+        .passes
         .iter()
         .map(|l| l.paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap().points[0])
         .collect();
@@ -139,7 +150,7 @@ fn separate_islands_are_printed_whole() {
         ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
-    let side: Vec<bool> = paths.layers[2].paths.iter().map(|p| p.points[0][0] > 10.0).collect();
+    let side: Vec<bool> = paths.passes[2].paths.iter().map(|p| p.points[0][0] > 10.0).collect();
     let switches = side.windows(2).filter(|w| w[0] != w[1]).count();
     assert_eq!(switches, 1, "{side:?}");
 }
@@ -148,7 +159,7 @@ fn separate_islands_are_printed_whole() {
 fn beads_have_no_zero_length_segments() {
     let (_, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [10.0, 10.0, 3.0])], ..Mesh::default() });
-    for path in paths.layers.iter().flat_map(|l| l.paths.iter()) {
+    for path in paths.passes.iter().flat_map(|l| l.paths.iter()) {
         let mut pts = path.points.clone();
         if path.closed {
             pts.push(pts[0]);
@@ -161,7 +172,7 @@ fn beads_have_no_zero_length_segments() {
 fn sparse_beads_never_cross_on_a_layer() {
     let (_, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [40.0, 40.0, 3.0])], ..Mesh::default() });
-    for layer in &paths.layers {
+    for layer in &paths.passes {
         let angle = 45.0 + if layer.index % 2 == 1 { 90.0 } else { 0.0 };
         let sparse: Vec<&Path> = layer.paths.iter().filter(|p| p.role == Role::SPARSE).collect();
         // Every long segment runs in the layer's one direction; the rest are short joins.
@@ -184,7 +195,7 @@ fn sparse_beads_never_cross_on_a_layer() {
 fn moves_between_neighbouring_lines_are_short() {
     let (_, paths) =
         paths_of(&Mesh { bodies: vec![cuboid("c", [0.0; 3], [20.0, 20.0, 3.0])], ..Mesh::default() });
-    let solid: Vec<&Path> = paths.layers[1].paths.iter().filter(|p| p.role == Role::SOLID).collect();
+    let solid: Vec<&Path> = paths.passes[1].paths.iter().filter(|p| p.role == Role::SOLID).collect();
     let far = solid.windows(2).filter(|w| {
         let (a, b) = (w[0].end().unwrap(), w[1].points[0]);
         (a[0] - b[0]).hypot(a[1] - b[1]) > 1.0
@@ -206,7 +217,7 @@ fn a_bridge_crosses_its_gap_the_short_way() {
         ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
-    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
+    let strands: Vec<&Path> = paths.passes[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
     assert!(!strands.is_empty());
     for s in strands {
         let (a, b) = (s.points[0], s.points[s.points.len() - 1]);
@@ -230,7 +241,7 @@ fn a_bridge_runs_from_support_to_support() {
         ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
-    let strands: Vec<&Path> = paths.layers[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
+    let strands: Vec<&Path> = paths.passes[5].paths.iter().filter(|p| p.role == Role::BRIDGE).collect();
     assert!(!strands.is_empty());
     for s in strands {
         let (a, b) = (s.points[0], s.points[s.points.len() - 1]);
@@ -259,12 +270,12 @@ fn a_monotone_surface_is_laid_in_one_sweep() {
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(region_params())).unwrap();
     let monotone = PathParams { monotone: vec![Face::Top], ..PATHS };
-    let top = regions.layers.len() - 1;
+    let top = regions.passes.len() - 1;
     let paths = trace(&regions, &Field::uniform(monotone)).unwrap();
     // The surface's lines: straight, along and as wide as its longest. Its corners, narrower than
     // its beads' crossing width, are laid round in insets, and what these leave in beads of their
     // own widths.
-    let surface = paths.layers[top].paths.iter().filter(|p| p.role == Role::TOP_SURFACE);
+    let surface = paths.passes[top].paths.iter().filter(|p| p.role == Role::TOP_SURFACE);
     let longest = surface
         .clone()
         .filter(|p| p.points.len() == 2)
@@ -287,7 +298,7 @@ fn a_monotone_surface_is_laid_in_one_sweep() {
 }
 
 #[test]
-fn each_island_is_traced_by_the_parameters_at_its_centre() {
+fn each_island_is_traced_by_the_parameters_at_its_centroid() {
     let mesh = Mesh {
         bodies: vec![
             cuboid("a", [0.0; 3], [10.0, 10.0, 2.0]),
@@ -301,18 +312,24 @@ fn each_island_is_traced_by_the_parameters_at_its_centre() {
     let tuning: layercraft_tune::Tuning =
         serde_json::from_str(r#"[{"within": {"x": [15, 40]}, "set": {"path": {"sparse_density": 0.4}}}]"#)
             .unwrap();
-    let paths = trace(&regions, &Field::new(PATHS, &tuning, "path").unwrap()).unwrap();
-    let sparse = |lo: f64, hi: f64| -> f64 {
-        paths.layers[5]
-            .paths
-            .iter()
-            .filter(|p| p.role == Role::SPARSE && (lo..hi).contains(&p.points[0][0]))
-            .map(|p| p.points.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum::<f64>())
-            .sum()
-    };
-    // Twice the density, twice the lines, in the same area.
-    let ratio = sparse(15.0, 40.0) / sparse(-1.0, 15.0);
-    assert!((ratio - 2.0).abs() < 0.25, "{ratio}");
+    // Lines, or rolls: the rolls of each island are as far apart as its own parameters ask,
+    // whichever island asked for rolls first.
+    for sparse_pattern in [SparsePattern::Lines, SparsePattern::Rolls { tilt: 0.0, ply: 0.0 }] {
+        let paths =
+            trace(&regions, &Field::new(PathParams { sparse_pattern, ..PATHS }, &tuning, "path").unwrap())
+                .unwrap();
+        let sparse = |lo: f64, hi: f64| -> f64 {
+            paths.passes[5]
+                .paths
+                .iter()
+                .filter(|p| p.role == Role::SPARSE && (lo..hi).contains(&p.points[0][0]))
+                .map(|p| polyline_length(&p.points))
+                .sum()
+        };
+        // Twice the density, twice the lines, in the same area.
+        let ratio = sparse(15.0, 40.0) / sparse(-1.0, 15.0);
+        assert!((ratio - 2.0).abs() < 0.25, "{sparse_pattern:?}: {ratio}");
+    }
 }
 
 #[test]
@@ -320,16 +337,16 @@ fn strands_resting_on_sparse_infill_fill_their_layer_exactly() {
     // Under the top shells of a wide slab, the first solid layer rests on sparse infill.
     let mesh = Mesh { bodies: vec![cuboid("c", [0.0; 3], [30.0, 30.0, 2.0])], ..Mesh::default() };
     let (regions, paths) = paths_of(&mesh);
-    let i = regions.layers.iter().position(|l| !l.bridge_on_sparse.is_empty()).unwrap();
-    assert!(regions.layers[i].bridge.is_empty());
-    let strands: f64 = paths.layers[i]
+    let i = regions.passes.iter().position(|l| !l.bridge_on_sparse.is_empty()).unwrap();
+    assert!(regions.passes[i].bridge.is_empty());
+    let strands: f64 = paths.passes[i]
         .paths
         .iter()
         .filter(|p| p.role == Role::INTERNAL_BRIDGE)
         .map(|p| polyline_length(&p.points) * std::f64::consts::PI * 0.4 * 0.4 / 4.0)
         .sum();
     // The strands' plastic is the area's slab, up to a line's share at the hatch's ends.
-    let slab = area(&regions.layers[i].bridge_on_sparse) * 0.2;
+    let slab = area(&regions.passes[i].bridge_on_sparse) * 0.2;
     assert!((strands / slab - 1.0).abs() < 0.03, "{strands} mm³ of strands for a {slab} mm³ slab");
 }
 
@@ -343,9 +360,9 @@ fn an_inner_wall_under_the_layer_above_stays_a_loop_at_the_seam() {
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let params = RegionParams { one_wall_on_top: true, ..region_params() };
     let regions = split(&sections, &Field::uniform(params)).unwrap();
-    assert!(regions.layers[5].inner_walls_within.is_some());
+    assert!(regions.passes[5].inner_walls_within.is_some());
     let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
-    let layer = &paths.layers[5].paths;
+    let layer = &paths.passes[5].paths;
     let (inner, outer) = (&layer[0], &layer[1]);
     assert_eq!((inner.role, outer.role), (Role::INNER_WALL, Role::OUTER_WALL));
     assert!(inner.closed);
@@ -370,7 +387,7 @@ fn a_wall_hangs_the_share_of_its_bead_past_the_layer_below() {
             })
             .collect();
         let (_, paths) = paths_of(&Mesh { bodies, ..Mesh::default() });
-        let outer = paths.layers[5].paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap();
+        let outer = paths.passes[5].paths.iter().find(|p| p.role == Role::OUTER_WALL).unwrap();
         assert_eq!(outer.overhang.len(), outer.points.len(), "one share per segment of the loop");
         let edge = 10.0 + 5.0 * step - 0.2;
         let mut points = outer.points.clone();
@@ -394,8 +411,8 @@ fn a_dense_strip_is_laid_along_its_length() {
     let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
     let at = |u: f64, v: f64| [u * c - v * s, u * s + v * c];
     let piece: Region = vec![vec![vec![at(0.0, -0.2), at(20.0, -0.2), at(20.0, 1.8), at(0.0, 1.8)]]];
-    let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 6.25, shows: false };
-    let laid = families::fill(&piece, spacing, &families::Beneath::default(), |_| None).unwrap();
+    let laying = families::Laying { spacing: 0.4, width: 0.4, crossing: 6.25 };
+    let laid = families::fill(&piece, laying, &families::Beneath::default(), None).unwrap();
     assert!(laid.lines.is_empty(), "{:?}", laid.lines);
     assert_eq!(laid.insets.len(), 2, "{:?}", laid.insets);
     for (points, closed) in &laid.insets {
@@ -419,8 +436,9 @@ fn a_top_surface_takes_the_family_with_no_joins_to_see() {
         let (s, c) = turn.to_radians().sin_cos();
         let piece: Region =
             vec![vec![outline.iter().map(|p| [c * p[0] - s * p[1], s * p[0] + c * p[1]]).collect()]];
-        let spacing = families::Spacing { spacing: 0.4, width: 0.4, crossing: 20.0, shows };
-        families::fill(&piece, spacing, &families::Beneath::default(), |_| None).unwrap()
+        let laying = families::Laying { spacing: 0.4, width: 0.4, crossing: 20.0 };
+        let flat = layercraft_geom::Relief::default();
+        families::fill(&piece, laying, &families::Beneath::default(), shows.then_some(&flat)).unwrap()
     };
     let square = [[0.0, 0.0], [21.0, 0.0], [21.0, 21.0], [0.0, 21.0]];
     // A round socket 9.2 mm across, its neck 5.2 mm wide, open on the side x = 21.
@@ -465,9 +483,9 @@ fn a_strip_too_thin_for_two_lines_takes_one_bead_along_it() {
     };
     let (regions, paths) = paths_of(&mesh);
     let i = 7;
-    let band = &regions.layers[i].sparse;
+    let band = &regions.passes[i].sparse;
     assert!(area(band) > 0.0);
-    let beads: Vec<&Path> = paths.layers[i].paths.iter().filter(|p| p.role.kind != Kind::Wall).collect();
+    let beads: Vec<&Path> = paths.passes[i].paths.iter().filter(|p| p.role.kind != Kind::Wall).collect();
     assert!(beads.iter().all(|p| p.role == Role::SOLID), "{beads:?}");
     for bead in &beads {
         for q in &bead.points {
@@ -530,18 +548,18 @@ fn rolls_over(shape: &[Point], tilt: f64, layers: usize) -> Vec<Vec<Path>> {
 
 /// As `rolls_over`, over every one of `shapes` at once.
 pub(crate) fn rolls_over_all(shapes: &[Vec<Point>], tilt: f64, layers: usize) -> Vec<Vec<Path>> {
-    let layer = |k: usize| layercraft_region::RegionLayer {
+    let layer = |k: usize| layercraft_region::RegionPass {
         index: k,
         top: 0.2 * (k + 1) as f64,
         height: 0.2,
         sparse: shapes.iter().map(|shape| vec![shape.clone()]).collect(),
         ..Default::default()
     };
-    let regions = Regions { carrier: Default::default(), layers: (1..=layers).map(layer).collect() };
+    let regions = Regions { carrier: Default::default(), passes: (1..=layers).map(layer).collect() };
     let params = PathParams { sparse_pattern: SparsePattern::Rolls { tilt, ply: 1.0 }, ..PATHS };
     let paths = trace(&regions, &Field::uniform(params)).unwrap();
     paths
-        .layers
+        .passes
         .into_iter()
         .map(|l| l.paths.into_iter().filter(|p| p.role == Role::SPARSE).collect())
         .collect()
@@ -624,6 +642,71 @@ fn tilted_rolls_rest_on_those_below_and_turn_the_other_way_each_ply() {
 }
 
 #[test]
+fn a_parts_rolls_do_not_change_with_the_filaments_it_is_laid_in() {
+    // Two strips side by side on a slab, one solid, laid in one filament, then each in a filament
+    // of its own, the order of the passes changing every layer: the same rolls, cut at the seam.
+    let strip = |y: f64, w: f64| vec![vec![[0.0, y], [30.0, y], [30.0, y + w], [0.0, y + w]]];
+    let pass = |k: usize, material: usize, sparse: Region| RegionPass {
+        index: k,
+        top: 0.2 * (k + 1) as f64,
+        height: 0.2,
+        material,
+        sparse,
+        ..Default::default()
+    };
+    let slab = pass(1, 0, vec![strip(0.0, 12.0)]);
+    let one: Vec<RegionPass> = std::iter::once(slab.clone())
+        .chain((2..=5).map(|k| pass(k, 0, vec![strip(0.0, 6.0), strip(6.0, 6.0)])))
+        .collect();
+    let two: Vec<RegionPass> = std::iter::once(slab)
+        .chain((2..=5).flat_map(|k| {
+            let (a, b) = (pass(k, 0, vec![strip(0.0, 6.0)]), pass(k, 1, vec![strip(6.0, 6.0)]));
+            if k % 2 == 1 { [a, b] } else { [b, a] }
+        }))
+        .collect();
+    let params = PathParams { sparse_pattern: SparsePattern::Rolls { tilt: 30.0, ply: 0.0 }, ..PATHS };
+    let lines = |passes: Vec<RegionPass>, index: usize| -> Vec<Vec<Point>> {
+        let paths =
+            trace(&Regions { carrier: Default::default(), passes }, &Field::uniform(params.clone())).unwrap();
+        let beads = paths.passes.into_iter().filter(|p| p.index == index).flat_map(|p| p.paths);
+        beads.filter(|p| p.role == Role::SPARSE).map(|p| p.points).collect()
+    };
+    for index in 2..=5 {
+        let (whole, split) = (lines(one.clone(), index), lines(two.clone(), index));
+        assert!(!split.is_empty(), "layer {index}");
+        for p in split.iter().flatten() {
+            assert!(distance_to(*p, &whole) < 1e-3, "layer {index}: {p:?} off the lines in one filament");
+        }
+    }
+}
+
+#[test]
+fn a_part_too_large_for_its_rolls_keeps_straight_lines() {
+    // Rolls a bead apart over 130 mm would ask for a grid of five million nodes: the part takes
+    // straight lines instead, as many as the density asks.
+    let side = 130.0;
+    let layer = RegionPass {
+        index: 1,
+        top: 0.4,
+        height: 0.2,
+        sparse: vec![vec![vec![[0.0, 0.0], [side, 0.0], [side, side], [0.0, side]]]],
+        ..Default::default()
+    };
+    let regions = Regions { carrier: Default::default(), passes: vec![layer] };
+    let rolls = SparsePattern::Rolls { tilt: 0.0, ply: 0.0 };
+    let params = PathParams { sparse_pattern: rolls, sparse_density: 1.0, ..PATHS };
+    let paths = trace(&regions, &Field::uniform(params)).unwrap();
+    let length: f64 = paths.passes[0]
+        .paths
+        .iter()
+        .filter(|p| p.role == Role::SPARSE)
+        .map(|p| polyline_length(&p.points))
+        .sum();
+    let spacing = 0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
+    assert!((length / (side * side / spacing) - 1.0).abs() < 0.02, "{length} mm of lines");
+}
+
+#[test]
 fn rolls_turn_move_and_mirror_with_their_part() {
     for (angle, mirror, shift) in [(40.0, false, [30.0, -5.0]), (110.0, true, [-12.0, 7.0])] {
         let (moved, shape) = placed(&PENTAGON, angle, mirror, shift);
@@ -646,69 +729,6 @@ fn rolls_turn_move_and_mirror_with_their_part() {
 }
 
 #[test]
-fn supports_are_loops_under_a_cantilever_spanned_by_their_interface() {
-    // A T: a 4 mm stem under a 20 mm bar, which overhangs 8 mm on either side from z = 10.
-    let mesh = Mesh {
-        bodies: vec![
-            cuboid("stem", [-2.0, -2.0, 0.0], [2.0, 2.0, 10.0]),
-            cuboid("bar", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0]),
-        ],
-        ..Mesh::default()
-    };
-    let sections =
-        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
-    let regions = split(&sections, &Field::uniform(region_params())).unwrap();
-    let paths = trace(&regions, &Field::uniform(PATHS)).unwrap();
-    let of = |k: usize, keep: &dyn Fn(Role) -> bool| -> Vec<Path> {
-        paths.layers[k].paths.iter().filter(|p| keep(p.role)).cloned().collect()
-    };
-    let loops = |k: usize| of(k, &|r| r == Role::SUPPORT);
-    let closed = |r: &Path| r.points.iter().chain(r.points.first()).copied().collect::<Vec<Point>>();
-    let interface = |k: usize| of(k, &|r| r.kind == Kind::Support && r.face == Face::Top);
-    // Each 7.65 × 4 mm column is a loop a bead's width in, the same on every layer, and nothing
-    // else up to its interface.
-    let perimeter = 2.0 * ((7.65 - 0.4) + (4.0 - 0.4));
-    for k in [1, 20, 46] {
-        let rings = loops(k);
-        assert!(rings.len() == 2 && rings.iter().all(|r| r.closed), "layer {k}");
-        for ring in &rings {
-            let mut points = ring.points.clone();
-            points.extend(ring.points.first().copied());
-            assert!((polyline_length(&points) - perimeter).abs() < 0.05, "layer {k}");
-            let stacked: Vec<Vec<Point>> = loops(20).iter().map(closed).collect();
-            assert!(ring.points.iter().all(|&p| distance_to(p, &stacked) < 1e-3), "layer {k}");
-        }
-        assert!(interface(k).is_empty(), "layer {k}");
-    }
-    // The bar's underside is at z 10: the columns' tops, their interface, 0.2 mm under it, on
-    // layers 47 and 48; the first over air, slowly, the second on it; layer 49 is the gap.
-    let rings: Vec<Vec<Point>> = loops(46).iter().map(closed).collect();
-    for (k, support) in [(47, Support::Air), (48, Support::Solid)] {
-        let lines = interface(k);
-        assert!(!lines.is_empty() && lines.iter().all(|p| p.role.support == support), "layer {k}");
-        // Across each column the short way, every line runs from its loop to its loop, held at
-        // both ends by the loop under it.
-        for line in &lines {
-            let (Some(&a), Some(&b)) = (line.points.first(), line.points.last()) else { continue };
-            assert!((a[0] - b[0]).abs() < 1e-3, "layer {k}: {a:?} to {b:?} not across");
-            let off = distance_to(a, &rings).max(distance_to(b, &rings));
-            assert!(off < 1e-3, "layer {k}: {a:?} to {b:?} ends {off} mm off the loop");
-        }
-    }
-    assert_eq!(of(49, &|r| r.kind == Kind::Support).len(), 0);
-    // The bar rests on the columns as solid, a layer thick, not as strands hanging over air.
-    assert!(
-        paths.layers[50].paths.iter().all(|p| p.role.support != Support::Air || p.role.kind == Kind::Wall)
-    );
-    // Every support line stays 0.35 mm off the stem, less its half width.
-    for layer in &paths.layers {
-        for path in layer.paths.iter().filter(|p| p.role.kind == Kind::Support) {
-            assert!(path.points.iter().all(|p| p[0].abs() >= 2.35 + 0.2 - 1e-3 || p[1].abs() > 2.0));
-        }
-    }
-}
-
-#[test]
 fn ridges_along_either_axis_lay_their_lines_along_themselves() {
     // A plate under a cross of ridges 3 mm wide, one along x and one along y, as on a game board.
     // Within its walls each ridge holds a band four beads wide, which hatching at one angle for
@@ -722,7 +742,7 @@ fn ridges_along_either_axis_lay_their_lines_along_themselves() {
         ..Mesh::default()
     };
     let (_, paths) = paths_of(&mesh);
-    for layer in &paths.layers[7..10] {
+    for layer in &paths.passes[7..10] {
         let dense: Vec<&Path> = layer.paths.iter().filter(|p| p.role.kind == Kind::Solid).collect();
         assert!(!dense.is_empty(), "layer {}", layer.index);
         for bead in dense {
@@ -796,13 +816,14 @@ fn placed(part: &[Point], angle: f64, mirror: bool, shift: Point) -> (impl Fn(Po
 
 mod directions;
 mod seams;
+mod supports;
 mod tour;
 
 #[test]
 fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
-    use crate::frame::Frame;
     use crate::solids::Solids;
-    use layercraft_region::RegionLayer;
+    use layercraft_geom::Frame;
+    use layercraft_region::RegionPass;
     // Two posts under one beam stand apart on the lower layers but make one solid; a block
     // beside them is a solid of its own.
     let bodies = vec![
@@ -812,7 +833,7 @@ fn a_solid_is_what_holds_together_and_its_frame_mirrors_with_it() {
         cuboid("block", [20.0, 0.0, 0.0], [23.0, 5.0, 1.6]),
     ];
     let (regions, _) = paths_of(&Mesh { bodies, ..Mesh::default() });
-    let solids = Solids::of(&regions.layers, RegionLayer::outline).unwrap();
+    let solids = Solids::of(&regions.passes, RegionPass::outline).unwrap();
     let at = |p: Point| solids.solid_at(0, p);
     assert!(
         at([1.0, 1.0]).is_some() && at([1.0, 1.0]) == at([9.0, 1.0]) && at([21.5, 2.5]) != at([1.0, 1.0])
@@ -840,7 +861,12 @@ fn a_move_is_marked_when_it_crosses_a_laid_bead() {
     let line = |a: Point, b: Point| Path::new(Role::SPARSE, 0.4, false, vec![a, b]);
     let wall = line([0.0, 5.0], [20.0, 5.0]);
     let later = line([0.0, 7.0], [20.0, 7.0]);
-    let paths = crossing::mark(
+    let marked = |mut paths: Vec<Path>, earlier: &[crossing::Segment]| {
+        let mut laid = laid_of(earlier);
+        paths.iter_mut().for_each(|path| laid.lay(path));
+        paths
+    };
+    let paths = marked(
         vec![
             wall,
             line([1.0, 0.0], [1.0, 4.9]),
@@ -856,7 +882,7 @@ fn a_move_is_marked_when_it_crosses_a_laid_bead() {
     let marks: Vec<bool> = paths.iter().map(|p| p.travel_crosses).collect();
     assert_eq!(marks, [false, false, true, false, false, false, false]);
     // A bead of an earlier pass at this height counts as well.
-    let earlier = crossing::mark(
+    let earlier = marked(
         vec![line([1.0, 0.0], [1.0, 4.0]), line([1.0, 6.0], [1.0, 8.0])],
         &[([0.0, 5.0], [20.0, 5.0])],
     );

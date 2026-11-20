@@ -40,8 +40,12 @@ enum Command {
         /// Also write the G-code as plain text.
         #[arg(long)]
         gcode: Option<PathBuf>,
+        /// The filament the supports' columns are laid in, numbered from 1 as the materials are
+        /// (default: the first).
+        #[arg(long)]
+        support: Option<usize>,
         /// The filament the supports' interface is laid in, numbered from 1 as the materials
-        /// are (default: the column's): one that does not weld to the part, as PLA under PETG,
+        /// are (default: the columns'): one that does not weld to the part, as PLA under PETG,
         /// lets the supports come off it. Give it a colour and a material.
         #[arg(long)]
         support_interface: Option<usize>,
@@ -135,12 +139,14 @@ enum Infill {
 }
 
 /// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
-/// with the settings' rolls, the supports' interface in the material `interface` or the
-/// column's. Supports are no choice: whatever hangs stands on them.
+/// with the settings' rolls, the supports' columns in the material `column` or the first, their
+/// interface in the material `interface` or the columns'. Supports are no choice: whatever
+/// hangs stands on them.
 #[derive(Clone, Copy)]
 struct Choices {
     flat: bool,
     infill: Option<Infill>,
+    column: Option<usize>,
     interface: Option<usize>,
 }
 
@@ -153,12 +159,16 @@ fn setup(
     tune: Option<&Path>,
     choices: Choices,
 ) -> Result<Setup, String> {
-    let Choices { flat, infill, interface } = choices;
+    let Choices { flat, infill, column, interface } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
     let quality = settings::quality(quality)?;
     let plate = bed.map(settings::plate).transpose()?.unwrap_or(X2D.plate);
     let interface = match interface {
         Some(k) => Some(k.checked_sub(1).ok_or("the supports' interface filament is numbered from 1")?),
+        None => None,
+    };
+    let column = match column {
+        Some(k) => Some(k.checked_sub(1).ok_or("the supports' filament is numbered from 1")?),
         None => None,
     };
     let read = |name: &str| -> Result<settings::Settings, String> {
@@ -174,6 +184,9 @@ fn setup(
             None => {}
         }
         settings.region.supports.interface_material = interface;
+        if let Some(column) = column {
+            settings.region.supports.column_material = column;
+        }
         Ok(settings)
     };
     let mut each = materials.split(',').map(read);
@@ -206,6 +219,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             input,
             printing: p,
             gcode,
+            support,
             support_interface,
             emit,
             from,
@@ -214,7 +228,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             flat,
             infill,
         } => {
-            let choices = Choices { flat, infill, interface: support_interface };
+            let choices = Choices { flat, infill, column: support, interface: support_interface };
             let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
             let at = match at {
                 Some(text) => parse_pair(&text)?,
@@ -243,7 +257,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             if let Some((stage, _)) = emit.iter().find(|(s, _)| *s != Stage::Program) {
                 return Err(format!("merge writes the program stage only, not {stage:?}"));
             }
-            let choices = Choices { flat: false, infill: None, interface: None };
+            let choices = Choices { flat: false, infill: None, column: None, interface: None };
             let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
             let programs = inputs.iter().map(|p| pipeline::read_program(p)).collect::<Result<Vec<_>, _>>()?;
             let merged = layercraft_motion::merge(&programs, s.settings.motion.deretract_speed)
@@ -270,7 +284,7 @@ pub fn run(cli: Cli) -> Result<(), String> {
             let paths: layercraft_path::Paths = if pipeline::has_extension(&input, "json") {
                 pipeline::read_json(&input)?
             } else {
-                let choices = Choices { flat, infill, interface: None };
+                let choices = Choices { flat, infill, column: None, interface: None };
                 let s = setup(&p.quality, &p.material, p.bed.as_deref(), p.tune.as_deref(), choices)?;
                 let output = pipeline::run(Some(&input), plate_centre(&s), &s, None, &[])?;
                 output.paths.ok_or("no toolpaths")?

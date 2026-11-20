@@ -15,6 +15,7 @@ mod axis;
 mod bands;
 mod bead;
 mod even;
+mod frame;
 mod hatch;
 mod hull;
 mod lists;
@@ -26,10 +27,11 @@ mod relief;
 mod sets;
 
 pub use axis::{Centreline, chordal_axis};
-pub use bands::{Bands, ON_EDGE_MM, crosses};
+pub use bands::{Banded, Bands, ON_EDGE_MM, crosses, height_range};
 pub use bead::{bead_area, bead_spacing, disc_area};
 pub use even::{Triangles, triangulate_evenly};
-pub use hatch::{bridge_angle, hatch, phase_through};
+pub use frame::Frame;
+pub use hatch::{Rests, bridge_strands, hatch, phase_through};
 pub use hull::convex_hull;
 pub use lists::Lists;
 pub use locate::Buckets;
@@ -110,6 +112,16 @@ pub(crate) fn crosses_ray(p: Point, (a, b): (Point, Point)) -> bool {
 /// from it crosses them an odd number of times.
 pub fn encloses(edges: impl IntoIterator<Item = (Point, Point)>, p: Point) -> bool {
     edges.into_iter().filter(|&e| crosses_ray(p, e)).count() % 2 == 1
+}
+
+/// The distance between `a` and `b`.
+pub fn distance(a: Point, b: Point) -> f64 {
+    (b[0] - a[0]).hypot(b[1] - a[1])
+}
+
+/// The square of the distance between `a` and `b`, which orders distances without a root.
+pub fn distance2(a: Point, b: Point) -> f64 {
+    (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)
 }
 
 /// How far along the segment from `a` to `b` its point nearest `p` lies, from 0 at `a` to 1 at `b`.

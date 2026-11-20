@@ -38,7 +38,7 @@ fn cube_regions() -> Regions {
 
 #[test]
 fn walls_sit_at_their_centre_lines() {
-    let layer = &cube_regions().layers[4];
+    let layer = &cube_regions().passes[4];
     assert_eq!(layer.walls.len(), 2);
     assert!(close(area(&layer.walls[0]), 9.6 * 9.6));
     // The outer bead's side on the edge, then beads at their tiling spacing s = w − h(1 − π/4).
@@ -52,7 +52,7 @@ fn walls_sit_at_their_centre_lines() {
 fn shells_and_sparse_partition_the_inside() {
     let regions = cube_regions();
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
-    for layer in &regions.layers {
+    for layer in &regions.passes {
         // The first layer's beads are all `first_layer_width` (0.4 here).
         let inner = if layer.index == 0 { 0.4 } else { 0.5 };
         let side = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(inner));
@@ -67,7 +67,7 @@ fn shells_and_sparse_partition_the_inside() {
     // 10 layers: 2 bottom shells, 5 sparse, then 3 top shells: the first bridges the sparse
     // infill, the last is exposed.
     let kinds: Vec<(bool, bool, bool, bool)> = regions
-        .layers
+        .passes
         .iter()
         .map(|l| {
             (
@@ -94,6 +94,10 @@ fn bad_params_are_refused() {
         split(&sections, &Field::uniform(RegionParams { outer_wall_width: f64::NAN, ..PARAMS })).is_err()
     );
     assert!(split(&sections, &Field::uniform(RegionParams { walls: 1_000_000, ..PARAMS })).is_err());
+    // Without a shell layer over and under the sparse infill, nothing would keep it off the air
+    // below, or hold up what stands on it: refused, rather than laid all solid.
+    assert!(split(&sections, &Field::uniform(RegionParams { top_layers: 0, ..PARAMS })).is_err());
+    assert!(split(&sections, &Field::uniform(RegionParams { bottom_layers: 0, ..PARAMS })).is_err());
 }
 
 #[test]
@@ -110,12 +114,12 @@ fn an_overhang_over_air_is_a_bridge() {
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-    let first = &regions.layers[5];
+    let first = &regions.passes[5];
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let inside = 10.0 - 2.0 * (0.2 + s(0.4) / 2.0 + s(0.5));
     // The 6 mm gap, plus a 0.5 mm bead's width onto each post.
     assert!(close(area(&first.bridge), 7.0 * inside), "{}", area(&first.bridge));
-    assert!(regions.layers[6].bridge.is_empty());
+    assert!(regions.passes[6].bridge.is_empty());
 }
 
 #[test]
@@ -138,9 +142,9 @@ fn a_strand_hangs_only_over_air_deeper_than_it_reaches() {
             section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
                 .unwrap();
         let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-        let over = &regions.layers[(depth / 0.2).round() as usize];
+        let over = &regions.passes[(depth / 0.2).round() as usize];
         assert_eq!(!over.bridge.is_empty(), hangs, "slot {depth} mm deep: bridge {}", area(&over.bridge));
-        assert!(regions.layers.iter().all(|l| l.index == over.index || l.bridge.is_empty()));
+        assert!(regions.passes.iter().all(|l| l.index == over.index || l.bridge.is_empty()));
     }
 }
 
@@ -161,7 +165,7 @@ fn an_inner_wall_runs_only_where_its_bead_passes() {
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-    let layer = &regions.layers[5];
+    let layer = &regions.passes[5];
     let s = |w: f64| w - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let inset = offset(&sections.layers[5].region, -(0.2 + s(0.4) / 2.0 + s(0.5) / 2.0)).unwrap();
     assert_eq!(inset.len(), 1, "the plain inset runs through the neck");
@@ -178,14 +182,14 @@ fn the_first_layer_is_wider_and_the_top_has_one_wall() {
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let params = RegionParams { first_layer_width: 0.5, one_wall_on_top: true, ..PARAMS };
     let regions = split(&sections, &Field::uniform(params.clone())).unwrap();
-    assert!(close(area(&regions.layers[0].walls[0]), 9.5 * 9.5));
-    let top = regions.layers.last().unwrap();
+    assert!(close(area(&regions.passes[0].walls[0]), 9.5 * 9.5));
+    let top = regions.passes.last().unwrap();
     // Nothing covers the top layer: its inner walls are drawn nowhere.
     assert!(top.inner_walls_within.as_ref().is_some_and(|r| r.is_empty()));
     let s = 0.4 - 0.2 * (1.0 - std::f64::consts::FRAC_PI_4);
     let side = 10.0 - 2.0 * (0.2 + s / 2.0);
     assert!(close(area(&top.top_surface), side * side), "{}", area(&top.top_surface));
-    assert!(regions.layers[8].inner_walls_within.as_ref().is_some_and(|r| !r.is_empty()));
+    assert!(regions.passes[8].inner_walls_within.as_ref().is_some_and(|r| !r.is_empty()));
 }
 
 #[test]
@@ -202,7 +206,7 @@ fn a_band_narrower_than_the_sparse_gap_is_not_a_bridge() {
     let sections =
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-    for layer in &regions.layers {
+    for layer in &regions.passes {
         let a = area(&layer.bridge_on_sparse);
         assert!(a == 0.0 || a > 10.0, "layer {}: a {a} mm² sliver of bridge", layer.index);
     }
@@ -218,7 +222,7 @@ fn small_pieces_of_sparse_are_solid() {
             section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None })
                 .unwrap();
         let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-        let middle = &regions.layers[7];
+        let middle = &regions.passes[7];
         assert_eq!(!middle.sparse.is_empty(), sparse, "{side} mm post");
         assert!(!middle.solid.is_empty() || sparse);
     }
@@ -240,12 +244,12 @@ fn a_thin_rib_stands_on_solid() {
     let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
     // Layers 12 to 14 (z 2.4 to 3) have the rib among their three layers above. Taken by its
     // section, the rib once left them a 16 mm² strip of sparse under it, over the 15 mm² minimum.
-    for layer in &regions.layers[12..15] {
+    for layer in &regions.passes[12..15] {
         assert!(layer.sparse.is_empty(), "layer {}: sparse {}", layer.index, area(&layer.sparse));
         assert!(!layer.solid.is_empty() || !layer.bridge_on_sparse.is_empty(), "layer {}", layer.index);
     }
     // Deeper, the whole inside is sparse again.
-    assert!(area(&regions.layers[8].sparse) > 200.0);
+    assert!(area(&regions.passes[8].sparse) > 200.0);
 }
 
 #[test]
@@ -262,7 +266,7 @@ fn each_shape_splits_by_the_parameters_at_its_centre() {
     let tuning: layercraft_tune::Tuning =
         serde_json::from_str(r#"[{"within": {"x": [15, 40]}, "set": {"region": {"walls": 1}}}]"#).unwrap();
     let field = Field::new(PARAMS.clone(), &tuning, "region").unwrap();
-    let layer = &split(&sections, &field).unwrap().layers[4];
+    let layer = &split(&sections, &field).unwrap().passes[4];
     // Both cubes have their outer wall; only the left one, untouched, an inner wall.
     assert_eq!(layer.walls[0].len(), 2);
     assert_eq!(layer.walls[1].len(), 1);
@@ -283,6 +287,7 @@ const SUPPORTS: SupportParams = SupportParams {
     xy_gap: 0.35,
     interface_layers: 2,
     on_plate_only: false,
+    column_material: 0,
     interface_material: None,
 };
 
@@ -312,7 +317,7 @@ fn a_cantilever_stands_on_supports_down_to_the_plate() {
     // bar. Each column runs from the stem's side, 0.35 mm off, to the bar's end: 7.65 × 4 mm,
     // twice.
     let column = 2.0 * 7.65 * 4.0;
-    for layer in &regions.layers {
+    for layer in &regions.passes {
         let (body, interface) = (area(&layer.supports), area(&layer.support_interface));
         let (want_body, want_interface) = match layer.index {
             0..=46 => (column, 0.0),
@@ -322,11 +327,11 @@ fn a_cantilever_stands_on_supports_down_to_the_plate() {
         assert!(close(body, want_body), "layer {}: body {body}", layer.index);
         assert!(close(interface, want_interface), "layer {}: interface {interface}", layer.index);
         // Never inside the part, nor nearer it than the gap.
-        let part = offset(&regions.layers[layer.index].walls[0], 0.2 + 0.35 - 1e-3).unwrap();
+        let part = offset(&regions.passes[layer.index].walls[0], 0.2 + 0.35 - 1e-3).unwrap();
         let both = union(&layer.supports, &layer.support_interface).unwrap();
         assert!(area(&intersection(&both, &part).unwrap()) < 1e-6, "layer {}", layer.index);
     }
-    let bar = &regions.layers[50];
+    let bar = &regions.passes[50];
     assert!(bar.bridge.is_empty(), "the bar hangs {} mm² of strands", area(&bar.bridge));
     assert!(area(&bar.solid) > column / 2.0, "the bar's first layer is not solid");
 }
@@ -338,7 +343,7 @@ fn the_interface_in_a_material_of_its_own_takes_a_pass_of_it() {
     // and the passes start with the material the layer before ended in.
     let regions = supported(tee(), SupportParams { interface_material: Some(1), ..SUPPORTS });
     let of =
-        |index: usize| -> Vec<&RegionLayer> { regions.layers.iter().filter(|l| l.index == index).collect() };
+        |index: usize| -> Vec<&RegionPass> { regions.passes.iter().filter(|l| l.index == index).collect() };
     for index in [47, 48] {
         let passes = of(index);
         let materials: Vec<usize> = passes.iter().map(|p| p.material).collect();
@@ -355,6 +360,34 @@ fn the_interface_in_a_material_of_its_own_takes_a_pass_of_it() {
 }
 
 #[test]
+fn the_columns_keep_their_filament_whatever_the_order_of_the_passes() {
+    // The T in material 0 beside a post in material 1, every layer laid in both: the passes
+    // start with the material the layer before ended in, but the columns and their interface
+    // stay in material 0, the first filament, over their whole height.
+    let mut bodies = tee();
+    bodies
+        .push(layercraft_mesh::Body { material: 1, ..cuboid("post", [20.0, -2.0, 0.0], [24.0, 2.0, 12.0]) });
+    let colour = |c: &str| layercraft_mesh::Material { colour: Some(c.into()) };
+    let mesh = Mesh { bodies, materials: vec![colour("#808080"), colour("#F5A0C0")] };
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
+    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
+    let held: Vec<&RegionPass> =
+        regions.passes.iter().filter(|p| !p.supports.is_empty() || !p.support_interface.is_empty()).collect();
+    assert_eq!(held.iter().map(|p| p.index).max(), Some(48));
+    assert!(
+        held.iter().all(|p| p.material == 0),
+        "{:?}",
+        held.iter().map(|p| (p.index, p.material)).collect::<Vec<_>>()
+    );
+    let firsts = regions.layers().filter(|passes| passes.first().is_some_and(|p| p.material == 1)).count();
+    assert!(firsts > 10, "the passes' order changes from layer to layer: {firsts}");
+    // Asked for in material 1, they stay in it.
+    let regions = supported(tee(), SupportParams { column_material: 1, ..SUPPORTS });
+    assert!(regions.passes.iter().filter(|p| !p.supports.is_empty()).all(|p| p.material == 1));
+}
+
+#[test]
 fn a_bridge_held_at_both_ends_needs_no_support_unless_it_is_too_long() {
     // A 20 mm deck on two 4 mm pillars: its strands span the 12 mm between them, 12.4 mm long
     // with a bead's reach onto each pillar.
@@ -366,14 +399,14 @@ fn a_bridge_held_at_both_ends_needs_no_support_unless_it_is_too_long() {
         ]
     };
     let total =
-        |r: &Regions| r.layers.iter().map(|l| area(&l.supports) + area(&l.support_interface)).sum::<f64>();
+        |r: &Regions| r.passes.iter().map(|l| area(&l.supports) + area(&l.support_interface)).sum::<f64>();
     assert_eq!(total(&supported(deck(), SUPPORTS)), 0.0);
     assert_eq!(total(&supported(deck(), SupportParams { max_bridge: Some(20.0), ..SUPPORTS })), 0.0);
     // Shorter than the span, or 0, which holds every strand up: the 11.3 × 4 mm between the
     // pillars, 0.35 mm off each, stands on columns, layers 0 to 47.
     for max_bridge in [Some(10.0), Some(0.0)] {
         let regions = supported(deck(), SupportParams { max_bridge, ..SUPPORTS });
-        let layer = &regions.layers[20];
+        let layer = &regions.passes[20];
         assert!(close(area(&layer.supports), 11.3 * 4.0), "{max_bridge:?}: {}", area(&layer.supports));
     }
 }
@@ -386,8 +419,8 @@ fn a_column_stands_on_the_part_or_only_on_the_plate() {
     bodies.push(cuboid("base", [-10.0, -2.0, 0.0], [10.0, 2.0, 2.0]));
     let regions = supported(bodies.clone(), SUPPORTS);
     // Layers 0 to 9 are the base, 10 the gap over it; the columns start on layer 11.
-    assert!(regions.layers[..11].iter().all(|l| l.supports.is_empty()));
-    assert!(close(area(&regions.layers[11].supports), 2.0 * 7.65 * 4.0));
+    assert!(regions.passes[..11].iter().all(|l| l.supports.is_empty()));
+    assert!(close(area(&regions.passes[11].supports), 2.0 * 7.65 * 4.0));
     // Only on the plate, no column can stand under the bar: it would fall, and nothing is split.
     let sections = section(
         &Mesh { bodies, ..Mesh::default() },
@@ -444,6 +477,8 @@ fn bad_support_params_are_refused() {
         SupportParams { xy_gap: -1.0, ..SUPPORTS },
         SupportParams { max_bridge: Some(f64::INFINITY), ..SUPPORTS },
         SupportParams { interface_layers: 1_000, ..SUPPORTS },
+        // A column is a hollow shell: without an interface, nothing would span it under the roof.
+        SupportParams { interface_layers: 0, ..SUPPORTS },
     ] {
         assert!(split(&sections, &Field::uniform(RegionParams { supports: bad, ..PARAMS })).is_err());
     }
@@ -460,7 +495,7 @@ fn materials_split_into_passes_judged_against_the_whole_layer() {
         section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
     let passes =
-        |i: usize| regions.layers.iter().filter(|l| l.index == i).map(|l| l.material).collect::<Vec<_>>();
+        |i: usize| regions.passes.iter().filter(|l| l.index == i).map(|l| l.material).collect::<Vec<_>>();
     // Below the inlay, one pass; beside it, both, each layer starting with the material the one
     // before ended with; above the base, the inlay alone.
     assert_eq!(passes(4), [0]);
@@ -469,18 +504,18 @@ fn materials_split_into_passes_judged_against_the_whole_layer() {
     assert_eq!(passes(7), [0, 1]);
     assert_eq!(passes(10), [1]);
     // The base's layer under the inlay is covered by it: no top surface there.
-    let under = regions.layers.iter().find(|l| l.index == 4).unwrap();
+    let under = regions.passes.iter().find(|l| l.index == 4).unwrap();
     assert!(area(&under.top_surface) < 1e-9);
     // Each pass has walls of its own: the inlay's outer wall runs 0.2 mm inside its 4 mm square,
     // the base's around both its outline and the inlay's hole.
-    let side = regions.layers.iter().find(|l| l.index == 6 && l.material == 0).unwrap();
-    let inlay = regions.layers.iter().find(|l| l.index == 6 && l.material == 1).unwrap();
+    let side = regions.passes.iter().find(|l| l.index == 6 && l.material == 0).unwrap();
+    let inlay = regions.passes.iter().find(|l| l.index == 6 && l.material == 1).unwrap();
     assert!(close(area(&inlay.walls[0]), 3.6 * 3.6));
     assert!(close(area(&side.walls[0]), 9.6 * 9.6 - 4.4 * 4.4));
     // The top of the base, beside the inlay, is a top surface; the inlay's top layers are too.
-    let last_base = regions.layers.iter().find(|l| l.index == 9 && l.material == 0).unwrap();
+    let last_base = regions.passes.iter().find(|l| l.index == 9 && l.material == 0).unwrap();
     assert!(area(&last_base.top_surface) > 30.0);
-    let last = regions.layers.last().unwrap();
+    let last = regions.passes.last().unwrap();
     assert_eq!((last.index, last.material), (14, 1));
     assert!(area(&last.top_surface) > 0.0);
 }
@@ -506,7 +541,7 @@ fn the_supports_under_a_turned_bridge_are_the_turned_supports() {
             post(6.0, 10.0, 10.0, 0.0, "right"),
             post(-10.0, 10.0, 12.0, 10.0, "deck"),
         ];
-        supported(bodies, SupportParams { max_bridge: Some(10.0), ..SUPPORTS }).layers[20].supports.clone()
+        supported(bodies, SupportParams { max_bridge: Some(10.0), ..SUPPORTS }).passes[20].supports.clone()
     };
     let (flat, turned) = (supports(false), supports(true));
     let moved: Region = flat

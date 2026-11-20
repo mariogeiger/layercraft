@@ -3,11 +3,7 @@
 //! be taken out, and a search looks only into the parts that still hold some. Of points as near,
 //! the lower number comes first, so every answer is the same however the tree splits.
 
-use layercraft_geom::Point;
-
-fn distance2(a: Point, b: Point) -> f64 {
-    (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)
-}
+use layercraft_geom::{Point, distance2};
 
 /// Numbered points.
 pub(crate) struct Near {

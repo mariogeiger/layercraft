@@ -2,7 +2,7 @@
 //! salesman from where the nozzle is to wherever the last path ends, each open path taken from
 //! either end and a loop from its start.
 //!
-//! A move costs first whether it crosses a laid bead (`Cover`), and so lifts, then its length.
+//! A move costs first whether it crosses a laid bead (`Laid`), and so lifts, then its length.
 //! The tour is a cycle through the paths and the nozzle, whose second end is free:
 //! the move from the last path to it costs nothing. Nearest first lays the cycle out; two
 //! changes then shorten it until neither can: reversing a run of it (2-opt), and moving a run of
@@ -11,13 +11,14 @@
 //! the right pair on, stay positive all the way (Lin and Kernighan). So a change that shortens
 //! the tour has an end whose new move is cheaper than the move it replaces there, or, for a run
 //! it takes out, than what taking the run out saves. Each end therefore looks only at the ends
-//! nearer than that (`Near`), and, where cheaper means hidden, at those a hidden move from it
-//! reaches: every change that shortens the tour is found, for the cost of each end's neighbours.
+//! nearer than that (`Near`), and, where cheaper means clear of the laid beads, at those a clear
+//! move from it reaches: every change that shortens the tour is found, for the cost of each end's
+//! neighbours.
 
 use crate::Path;
-use crate::crossing::Cover;
+use crate::crossing::Laid;
 use crate::near::Near;
-use layercraft_geom::Point;
+use layercraft_geom::{Point, distance};
 use std::collections::{HashMap, VecDeque};
 use std::hash::BuildHasherDefault;
 
@@ -34,10 +35,6 @@ const NOWHERE: usize = usize::MAX;
 /// Three moves, each between two ends: what a change drops or adds, a 2-opt's third from
 /// `NOWHERE` to `NOWHERE`.
 type Moves = [(usize, usize); 3];
-
-fn distance(a: Point, b: Point) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-}
 
 /// Hashes a pair of ends packed in one number by Fibonacci hashing, a multiplication by 2⁶⁴ over
 /// the golden ratio, which spreads near numbers far apart: the pairs are many and small, and come
@@ -63,26 +60,26 @@ impl std::hash::Hasher for Pairs {
 /// saves of both.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct Cost {
-    leaves: i64,
+    crossings: i64,
     length: f64,
 }
 
 impl Cost {
-    const NONE: Cost = Cost { leaves: 0, length: 0.0 };
+    const NONE: Cost = Cost { crossings: 0, length: 0.0 };
 
     fn plus(self, o: Cost) -> Cost {
-        Cost { leaves: self.leaves + o.leaves, length: self.length + o.length }
+        Cost { crossings: self.crossings + o.crossings, length: self.length + o.length }
     }
     fn minus(self, o: Cost) -> Cost {
-        Cost { leaves: self.leaves - o.leaves, length: self.length - o.length }
+        Cost { crossings: self.crossings - o.crossings, length: self.length - o.length }
     }
-    /// Whether it is less than `o`: fewer leave, or as many and it is shorter.
+    /// Whether it is less than `o`: fewer cross, or as many and it is shorter.
     fn below(self, o: Cost) -> bool {
-        self.leaves < o.leaves || (self.leaves == o.leaves && self.length < o.length)
+        self.crossings < o.crossings || (self.crossings == o.crossings && self.length < o.length)
     }
     /// Whether, saved, it shortens the tour by more than rounding.
     fn saves(self) -> bool {
-        self.leaves > 0 || (self.leaves == 0 && self.length > GAIN)
+        self.crossings > 0 || (self.crossings == 0 && self.length > GAIN)
     }
 }
 
@@ -107,12 +104,11 @@ struct Cycle<'a> {
     pos: Vec<usize>,
     /// Whether each node is run from its second end to its first.
     turned: Vec<bool>,
-    cover: &'a Cover<'a>,
-    /// Whether the move between two ends stays hidden, once asked.
-    hidden: HashMap<u64, bool, BuildHasherDefault<Pairs>>,
-    /// How far a hidden move from each end reaches, once asked.
-    reach: Vec<Option<f64>>,
-    /// The ends a hidden move goes to from each end it may take anywhere, once asked: asking
+    /// The beads the moves keep off.
+    laid: &'a Laid,
+    /// Whether the move between two ends is clear of the laid beads, once asked.
+    clear: HashMap<u64, bool, BuildHasherDefault<Pairs>>,
+    /// The ends a clear move goes to from each end it may take anywhere, once asked: asking
     /// each pair once keeps the pairs remembered few.
     far: Vec<Option<Vec<usize>>>,
 }
@@ -164,13 +160,13 @@ impl Cycle<'_> {
         let (Some(a), Some(b)) = (self.point(p), self.point(q)) else { return Cost::NONE };
         let one = |e: usize| if self.single(e / 2) { e & !1 } else { e };
         let (p, q) = (one(p), one(q));
-        let cover = self.cover;
+        let laid = self.laid;
         let key = (p.min(q) as u64) << 32 | p.max(q) as u64;
-        let hidden = *self.hidden.entry(key).or_insert_with(|| cover.stays(a, b));
-        Cost { leaves: i64::from(!hidden), length: distance(a, b) }
+        let clear = *self.clear.entry(key).or_insert_with(|| !laid.crosses(a, b));
+        Cost { crossings: i64::from(!clear), length: distance(a, b) }
     }
 
-    /// The ends a hidden move from end `p` goes to, its own node's aside, taken out of `far`.
+    /// The ends a clear move from end `p` goes to, its own node's aside, taken out of `far`.
     fn far_from(&mut self, p: usize) -> Vec<usize> {
         if let Some(far) = self.far.get_mut(p).and_then(Option::take) {
             return far;
@@ -178,32 +174,21 @@ impl Cycle<'_> {
         let Some(a) = self.point(p) else { return Vec::new() };
         (0..self.ends.len() * 2)
             .filter(|&q| q / 2 != p / 2 && (q % 2 == 0 || !self.single(q / 2)))
-            .filter(|&q| self.point(q).is_some_and(|b| self.cover.stays(a, b)))
+            .filter(|&q| self.point(q).is_some_and(|b| !self.laid.crosses(a, b)))
             .collect()
     }
 
     /// Whether the move between ends `p` and `q` costs less than `bound`, asking whether it
-    /// leaves only where its length does not tell.
+    /// crosses a bead only where its length does not tell.
     fn cheaper(&mut self, p: usize, q: usize, bound: Cost) -> bool {
         let length = self.length(p, q);
-        match bound.leaves {
+        match bound.crossings {
             l if l < 0 => false,
-            0 => length < bound.length && self.cost(p, q).leaves == 0,
+            0 => length < bound.length && self.cost(p, q).crossings == 0,
             1 if length < bound.length => true,
-            1 => self.cost(p, q).leaves == 0,
+            1 => self.cost(p, q).crossings == 0,
             _ => true,
         }
-    }
-
-    fn reach(&mut self, e: usize) -> f64 {
-        if let Some(Some(r)) = self.reach.get(e) {
-            return *r;
-        }
-        let r = self.point(e).map_or(0.0, |p| self.cover.reach(p));
-        if let Some(slot) = self.reach.get_mut(e) {
-            *slot = Some(r);
-        }
-        r
     }
 
     /// The moves a change drops and those it adds, as pairs of ends.
@@ -236,19 +221,19 @@ impl Cycle<'_> {
     }
 
     /// What a change saves, where it shortens the tour by more than `best` does: whether the
-    /// moves it adds leave is asked only while it still can.
+    /// moves it adds cross a bead is asked only while it still can.
     fn saving(&mut self, change: Change, best: Option<Cost>) -> Option<Cost> {
         let (dropped, added) = self.moves(change);
         let length = dropped.iter().map(|&(p, q)| self.length(p, q)).sum::<f64>()
             - added.iter().map(|&(p, q)| self.length(p, q)).sum::<f64>();
-        let leaving: i64 = dropped.iter().map(|&(p, q)| self.cost(p, q).leaves).sum();
+        let crossing: i64 = dropped.iter().map(|&(p, q)| self.cost(p, q).crossings).sum();
         let better = |saving: Cost| saving.saves() && best.is_none_or(|b| b.below(saving));
-        let mut saving = Cost { leaves: leaving, length };
+        let mut saving = Cost { crossings: crossing, length };
         for &(p, q) in &added {
             if !better(saving) {
                 return None;
             }
-            saving.leaves -= self.cost(p, q).leaves;
+            saving.crossings -= self.cost(p, q).crossings;
         }
         better(saving).then_some(saving)
     }
@@ -396,14 +381,11 @@ impl Cycle<'_> {
                 }
             }
             let bound = runs.iter().fold(replaced, |b, &r| if b.below(r) { r } else { b });
-            // Within the bound's length, any end; beyond it, where cheaper means hidden, those
-            // a hidden move from `p` reaches.
-            let (radius, anywhere) = match bound.leaves {
+            // Within the bound's length, any end; beyond it, where cheaper means clear, those a
+            // clear move from `p` reaches, which may be anywhere.
+            let (radius, anywhere) = match bound.crossings {
                 0 if bound.length > 0.0 => (bound.length, false),
-                1 => {
-                    let reach = self.reach(p);
-                    if reach.is_finite() { (bound.length.max(reach), false) } else { (bound.length, true) }
-                }
+                1 => (bound.length, true),
                 l if l > 1 => (f64::INFINITY, false),
                 _ => continue,
             };
@@ -520,9 +502,9 @@ fn nearest_first(ends: &[[Option<Point>; 2]], nozzle: usize, mut at: Point) -> V
     order
 }
 
-/// Orders `paths` for the least travel from `at` through them all, a move that `cover` lets stay
-/// costing less than any that leaves it, and leaves `at` where the last one ends.
-pub(crate) fn tour(paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>, cover: &Cover) {
+/// Orders `paths` for the least travel from `at` through them all, a move clear of the beads
+/// `laid` costing less than any that crosses one, and leaves `at` where the last one ends.
+pub(crate) fn tour(paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>, laid: &Laid) {
     let (paths, pointless): (Vec<Path>, Vec<Path>) = paths.into_iter().partition(|p| ends(p).is_some());
     let mut ends: Vec<[Option<Point>; 2]> =
         paths.iter().map(|p| ends(p).map_or([None, None], |[a, b]| [Some(a), Some(b)])).collect();
@@ -535,9 +517,8 @@ pub(crate) fn tour(paths: Vec<Path>, at: &mut Point, out: &mut Vec<Path>, cover:
         order: order.iter().map(|&(v, _)| v).collect(),
         pos: vec![0; count],
         turned: vec![false; count],
-        cover,
-        hidden: HashMap::default(),
-        reach: vec![None; 2 * count],
+        laid,
+        clear: HashMap::default(),
         far: vec![None; 2 * count],
     };
     for (i, &(v, turned)) in order.iter().enumerate() {

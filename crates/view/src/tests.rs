@@ -5,8 +5,8 @@ use super::*;
 use layercraft_geom::{Carrier, Point, Warp, union_contours};
 use layercraft_mesh::{Body, Mesh};
 use layercraft_motion::{Arc, Bead, Limits, Move, Pass, Program};
-use layercraft_path::{Path, PathLayer, Paths};
-use layercraft_region::{RegionLayer, Regions};
+use layercraft_path::{Path, PathPass, Paths};
+use layercraft_region::{RegionPass, Regions};
 use layercraft_section::{Layer, Sections};
 
 fn square(x: f64, y: f64, side: f64) -> Vec<Point> {
@@ -81,7 +81,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
     assert!(c.triangles.rows.iter().all(|(_, v)| v == &[3.0]));
 
     let empty = Vec::new();
-    let layer = RegionLayer {
+    let layer = RegionPass {
         index: 3,
         material: 0,
         top: 0.8,
@@ -99,7 +99,7 @@ fn sections_and_regions_lie_at_mid_height_and_cover_their_area() {
         supports: Vec::new(),
         support_interface: Vec::new(),
     };
-    let c = regions(&Regions { carrier: Default::default(), layers: vec![layer] }).unwrap();
+    let c = regions(&Regions { carrier: Default::default(), passes: vec![layer] }).unwrap();
     // The outer wall's two loops and the inner wall's one, four sides each.
     let roles: Vec<f64> = c.segments.rows.iter().map(|(_, v)| v[1]).collect();
     assert_eq!(roles, [[0.0; 8].as_slice(), &[2.0; 4]].concat());
@@ -163,7 +163,7 @@ fn a_bent_layer_is_drawn_on_its_bend() {
     };
     let p = Paths {
         carrier: carrier.clone(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 1,
             top: 0.4,
             height: 0.2,
@@ -192,7 +192,7 @@ fn a_bent_layer_is_drawn_on_its_bend() {
     // A wall of the regions lies on the same middle as the section.
     let r = Regions {
         carrier,
-        layers: vec![RegionLayer {
+        passes: vec![RegionPass {
             index: 1,
             material: 0,
             top: 0.4,
@@ -236,7 +236,7 @@ fn beads_lie_half_their_height_under_the_nozzle_and_bridges_hang_round() {
     };
     let p = Paths {
         carrier: Default::default(),
-        layers: vec![PathLayer {
+        passes: vec![PathPass {
             index: 1,
             top: 0.4,
             height: 0.2,
@@ -369,7 +369,7 @@ fn the_script_draws_a_sketch_per_layer_and_role_within_the_layers_asked() {
         travel_crosses: false,
         overhang: Vec::new(),
     };
-    let layer = |index: usize| PathLayer {
+    let layer = |index: usize| PathPass {
         index,
         top: 0.2 * (index + 1) as f64,
         height: 0.2,
@@ -377,7 +377,7 @@ fn the_script_draws_a_sketch_per_layer_and_role_within_the_layers_asked() {
         paths: vec![line(Role::OUTER_WALL, 0.0), line(Role::OUTER_WALL, 1.0), line(Role::SPARSE, 2.0)],
         material: 0,
     };
-    let p = Paths { carrier: Default::default(), layers: vec![layer(0), layer(1), layer(2)] };
+    let p = Paths { carrier: Default::default(), passes: vec![layer(0), layer(1), layer(2)] };
     let script = solidcraft_script(&p, 1..3);
     let commands = script["commands"].as_array().unwrap();
     let names: Vec<&str> = commands.iter().filter_map(|c| c["params"]["name"].as_str()).collect();
