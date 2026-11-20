@@ -1,7 +1,7 @@
 {
   "default_bed_type": "Textured PEI Plate",
   "deretraction_speed": 30,
-  "long_retractions_when_cut": 0,
+  "long_retractions_when_cut": 1,
   "machine_max_acceleration_e": 30000,
   "machine_max_acceleration_extruding": 20000,
   "machine_max_acceleration_retracting": 30000,

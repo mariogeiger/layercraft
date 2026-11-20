@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.21.1
+
+### Changed
+
+- A filament change flushes nothing, and the X2D pulls the old filament back out of the nozzle,
+  10 mm for our filaments, before it cuts it (`long_retractions_when_cut`, the printer's way to
+  waste less): what little wets the nozzle mixes into the new pass's first beads, the inner
+  walls. The owner found even 60 mm³ a change too much purge, three times; this is the setting
+  for every print.
+
 ## 0.21.0
 
 ### Added

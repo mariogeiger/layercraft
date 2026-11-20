@@ -113,7 +113,7 @@ fn sparse_infill_is_rolls_unless_lines_are_asked_for() {
 }
 
 #[test]
-fn a_colour_change_flushes_only_enough_to_prime_the_nozzle() {
+fn a_colour_change_pulls_the_old_filament_back_and_flushes_nothing() {
     use layercraft_mesh::{Material, Mesh, solids::cuboid};
     if !bambu_studio() {
         eprintln!("skipped: no Bambu Studio");
@@ -140,10 +140,17 @@ fn a_colour_change_flushes_only_enough_to_prime_the_nozzle() {
     let text = std::fs::read_to_string(&gcode).unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
-    // 60 mm³ of 1.75 mm filament, 24.9451 mm, whichever way the colours change, in 5 s.
+    // The old filament pulled back out of the nozzle before it is cut, by the filament's own
+    // 10 mm, and nothing flushed: what wets the nozzle goes into the new colour's first beads.
     let flushes: Vec<&str> =
         text.lines().filter(|l| l.starts_with("M620.10 A1") && l.contains(" L")).collect();
     assert!(flushes.len() > 1);
-    assert!(flushes.iter().all(|l| l.contains(" L24.9451 ")), "{flushes:?}");
-    assert!(text.lines().filter(|l| l.starts_with("SYNC T")).all(|l| l.starts_with("SYNC T5 ")));
+    assert!(flushes.iter().all(|l| l.contains(" L0 ")), "{flushes:?}");
+    assert!(text.lines().filter(|l| l.starts_with("SYNC T")).all(|l| l.starts_with("SYNC T0 ")));
+    let cuts: Vec<&str> =
+        text.lines().filter(|l| l.starts_with("M620.11 P") && l.contains("old filament")).collect();
+    assert!(
+        !cuts.is_empty() && cuts.iter().all(|l| l.starts_with("M620.11 P1 ") && l.contains(" E-10 ")),
+        "{cuts:?}"
+    );
 }

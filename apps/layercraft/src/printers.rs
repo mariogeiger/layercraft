@@ -447,8 +447,8 @@ mod tests {
     #[test]
     fn a_print_of_petg_and_pla_gives_each_filament_its_own_settings() {
         // PETG for the part, PLA for the supports' interface, the last standing for the third:
-        // each its temperatures, its own item in the templates' per-filament lists, and a flush
-        // between two kinds even of one colour.
+        // each its temperatures and its own item in the templates' per-filament lists; no
+        // change flushes.
         let read = |name| crate::settings::read(&machine("0.20", name).unwrap(), None).unwrap();
         let (petg, more) = (read("petg-tr"), [read("pla")]);
         let filaments = crate::settings::Filaments { first: &petg, more: &more };
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(scope.get("nozzle_temperature").cloned(), list(&[Value::Num(245.0), Value::Num(220.0)]));
         let flush = filaments.flush(&[grey.clone(), grey.clone(), grey]);
         let at = |a: usize, b: usize| flush.get(a).and_then(|row| row.get(b)).copied().unwrap_or(-1.0);
-        assert!(at(0, 0) == 0.0 && at(0, 1) > 0.0 && at(1, 2) == 0.0, "{flush:?}");
+        assert!((0..3).all(|a| (0..3).all(|b| at(a, b) == 0.0)), "{flush:?}");
     }
 
     #[test]

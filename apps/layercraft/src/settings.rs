@@ -34,11 +34,6 @@ pub struct Settings {
     pub heat: Heat,
 }
 
-/// What a filament change flushes, in mm³, whatever the colours: enough to prime the nozzle
-/// with the new filament, not to clear the old one, which mixes into the new colour's first
-/// beads, the inner walls (the owner's choice, 2026-11-18: less waste over a clean transition).
-const FLUSH: f64 = 60.0;
-
 /// A print's filaments by material, each with the settings of its own kind: the first's shape
 /// the part, and the last given stands for every material past them.
 pub struct Filaments<'a> {
@@ -111,17 +106,11 @@ impl Filaments<'_> {
     }
 
     /// The filament each change flushes, in mm, from one material (row) to another (column):
-    /// `FLUSH` between two filaments, none between two of one kind and colour.
+    /// none. The printer pulls the old filament back out of the nozzle before it cuts it (its
+    /// long retraction), and what little wets the nozzle mixes into the new pass's first beads,
+    /// the inner walls: the owner's choice (2026-11-18, 2026-11-20), no purge thrown away.
     pub fn flush(&self, colours: &[String]) -> Vec<Vec<f64>> {
-        let area = layercraft_motion::disc_area(self.first.motion.filament_diameter);
-        let same = |a: usize, b: usize| {
-            colours.get(a) == colours.get(b) && self.of(a).filament_code == self.of(b).filament_code
-        };
-        (0..colours.len())
-            .map(|from| {
-                (0..colours.len()).map(|to| if same(from, to) { 0.0 } else { FLUSH / area }).collect()
-            })
-            .collect()
+        vec![vec![0.0; colours.len()]; colours.len()]
     }
 }
 
