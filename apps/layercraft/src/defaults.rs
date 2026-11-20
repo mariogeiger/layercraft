@@ -214,8 +214,8 @@ pub struct Cooling {
     /// The part fan, a share of its full speed, off for the first layers.
     pub fan: f64,
     pub fan_off_layers: usize,
-    /// The part fan over bridges and over walls hanging past `overhang_share` of their bead;
-    /// 0, no faster than `fan`.
+    /// The part fan over bridges, strands on air and walls hanging past `overhang_share` of
+    /// their bead, when faster than `fan`: PETG, cooled gently, sets its hanging beads fast.
     pub overhang_fan: f64,
     pub overhang_share: f64,
     /// A layer takes at least this long to cool, its beads slowed to no less than `min_speed`.
@@ -372,8 +372,8 @@ const PLA: Material = Material {
     cooling: Cooling {
         fan: 1.0,
         fan_off_layers: 1,
-        overhang_fan: 0.0,
-        overhang_share: 0.0,
+        overhang_fan: 1.0,
+        overhang_share: 0.5,
         layer_time: 4.0,
         min_speed: 20.0,
         aux_first_layers: 1.0,
@@ -397,6 +397,8 @@ const PETG_TRANSLUCENT: Material = Material {
     cooling: Cooling {
         fan: 0.4,
         fan_off_layers: 3,
+        overhang_fan: 0.9,
+        overhang_share: 0.1,
         layer_time: 8.0,
         min_speed: 10.0,
         aux_first_layers: 3.0,

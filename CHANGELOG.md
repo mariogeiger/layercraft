@@ -2,6 +2,16 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.22.1
+
+### Changed
+
+- Bridges, strands over air (the supports' interface among them) and walls hanging past a share
+  of their bead get the filament's overhang fan: PETG 90 % from a tenth over air (its fan is 40 %
+  elsewhere), PLA 100 % from a half, as its fan already is. The materials declared it, but the
+  maker's switch for it was never in their profiles, so it was never applied; the owner chose to
+  turn it on.
+
 ## 0.22.0
 
 ### Changed

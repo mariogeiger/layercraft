@@ -386,6 +386,9 @@ mod tests {
         assert_eq!(scope.get("min_vitrification_temperature"), Some(&Value::Num(45.0)));
         assert_eq!(scope.get("max_additional_fan"), Some(&Value::Num(70.0)));
         assert_eq!(scope.get("flush_length"), Some(&Value::Num(0.0)));
+        // What hangs is cooled harder than the rest of PETG: bridges, and walls a tenth over air.
+        assert_eq!((petg.motion.fan_speed, petg.motion.overhang_fan_speed), (0.4, 0.9));
+        assert_eq!(petg.motion.overhang_fan_share, 0.1);
         let pulled = [Value::Bool(true), Value::Bool(true)];
         assert_eq!(scope.get("long_retractions_when_cut").cloned(), list(&pulled));
         assert_eq!(
