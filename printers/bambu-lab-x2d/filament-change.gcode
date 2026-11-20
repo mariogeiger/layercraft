@@ -2,12 +2,11 @@
    head up 3 mm, the old filament cut and flushed back into the AMS, the new one loaded and
    flushed, the head back up, the detectors set for the new filament, and its auxiliary fans as
    the layer change sets them, the printer's chamber cooling once past them. Expanded with the
-   settings and current_filament_id and next_filament_id (the filaments, from 0),
-   current_nozzle_id, next_nozzle_id, current_hotend and next_hotend (the nozzle printed with),
-   old_filament_temp and new_filament_temp, flush_length (mm of filament the change flushes),
-   long_retraction_when_cut and retraction_distance_when_cut, long_retraction_when_ec and
-   retraction_distance_when_ec (how far the old filament is pulled back when cut and when it
-   leaves the extruder), max_layer_z, layer_z and layer_num.
+   settings, among them flush_length (mm of filament the change flushes) and each filament's
+   long_retractions_when_cut and retraction_distances_when_cut, long_retractions_when_ec and
+   retraction_distances_when_ec (whether and how far it is pulled back when cut and as it leaves
+   the extruder), and with current_filament_id and next_filament_id (the filaments, from 0),
+   old_filament_temp and new_filament_temp, max_layer_z, layer_z and layer_num.
 
    Written from what the maker's change gave on compiles varying one setting at a time, in its
    order. The flush runs at the filament's flush speed in mm³/s, F in mm/min of 1.75 mm
@@ -21,13 +20,13 @@ M106 P1 S0 ; the part fan off
 M620.10 A0 F{flush_volumetric_speeds[current_filament_id] / 2.4053 * 60} L{flush_length} H{nozzle_diameter_at_nozzle_id[current_nozzle_id]} T{flush_temperatures[current_filament_id]} P{old_filament_temp} S1 ; the old filament's flush
 M620.10 A1 F{flush_volumetric_speeds[next_filament_id] / 2.4053 * 60} L{flush_length} H{nozzle_diameter_at_nozzle_id[next_nozzle_id]} T{flush_temperatures[next_filament_id]} P{new_filament_temp} S1 ; the new filament's
 M620.15 C{new_filament_temp - filament_cooling_before_tower[next_filament_id]} ; the nozzle cooled before the new filament prints
-{if long_retraction_when_cut}
-M620.11 P1 L0 I{current_filament_id} B{current_hotend} E-{retraction_distance_when_cut} F{max(flush_volumetric_speeds[current_filament_id] / 2.4053 * 60, 200)} ; the old filament pulled back far when cut
+{if long_retractions_when_cut[current_filament_id]}
+M620.11 P1 L0 I{current_filament_id} B{current_hotend} E-{retraction_distances_when_cut[current_filament_id]} F{max(flush_volumetric_speeds[current_filament_id] / 2.4053 * 60, 200)} ; the old filament pulled back far when cut
 {else}
 M620.11 P0 L0 I{current_filament_id} B{current_hotend} E0 ; the old filament cut where it is
 {endif}
-{if long_retraction_when_ec}
-M620.11 K1 I{current_filament_id} B{current_hotend} R{retraction_distance_when_ec} F{max(flush_volumetric_speeds[current_filament_id] / 2.4053 * 60, 200)} ; and pulled back as it leaves the extruder
+{if long_retractions_when_ec[current_filament_id]}
+M620.11 K1 I{current_filament_id} B{current_hotend} R{retraction_distances_when_ec[current_filament_id]} F{max(flush_volumetric_speeds[current_filament_id] / 2.4053 * 60, 200)} ; and pulled back as it leaves the extruder
 {else}
 M620.11 K0 I{current_filament_id} B{current_hotend} R0
 {endif}

@@ -259,12 +259,13 @@ layercraft merge a.json b.gcode.3mf --out plate.gcode.3mf   # several programs o
 layercraft compare part.gcode.3mf other.gcode   # side by side with another slicer's output
 ```
 
-The X2D's settings are layercraft's own, in [`printers/bambu-lab-x2d/`](printers/bambu-lab-x2d/):
-the printer's, each quality's (`--quality 0.20` or `0.12`) and each material's (`--material pla`
-or `petg-tr`), built into the binary, so every computer prints with the same, and so is the
-X2D's G-code: its start, layer change, filament change and end are layercraft's own. The
-printer maker's profiles are still read from an installed Bambu Studio at each compile, for the
-settings the package declares; their text never enters this repository. `compare` lines up two
+Every default is layercraft's own and hard-coded in one file,
+[`apps/layercraft/src/defaults.rs`](apps/layercraft/src/defaults.rs): the X2D's measurements and
+limits, each quality's settings (`--quality 0.20` or `0.12`), each material's (`--material pla`
+or `petg-tr`) and the plates (`--bed`), built into the binary, so every computer prints with the
+same and nothing is read from a slicer. So is the X2D's G-code, in
+[`printers/bambu-lab-x2d/`](printers/bambu-lab-x2d/): its start, layer change, filament change
+and end are layercraft's own. `compare` lines up two
 G-code files layer by layer and feature by feature: another slicer is a reference to compare
 against, not an oracle. `merge` prints programs together, layer by layer: program stages and
 G-code from any slicer, each already placed, so two slicers' parts can share one plate. Each

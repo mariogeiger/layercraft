@@ -10,7 +10,7 @@ repository.workspace = true
 clap.workspace = true
 layercraft-geom = { path = "../../crates/geom" }
 layercraft-gcode = { path = "../../crates/gcode" }
-layercraft-machine = { path = "../../crates/machine" }
+layercraft-template = { path = "../../crates/template" }
 layercraft-mesh = { path = "../../crates/mesh" }
 layercraft-motion = { path = "../../crates/motion" }
 layercraft-package = { path = "../../crates/package" }

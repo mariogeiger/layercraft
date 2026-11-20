@@ -19,7 +19,7 @@ outranks feature work.**
   in `[workspace.lints]`, and every crate takes those lints with `[lints] workspace = true`.
 - **Errors are `Result<T, E>`** through the crate's error type and `?`. An unfinished feature
   returns an error ("not supported yet: …").
-- **Input is hostile:** 3MF files, stage files read with `--from`, the maker's profiles and the
+- **Input is hostile:** 3MF files, stage files read with `--from`, tuning files and the
   printer's replies. Use `get()` not `[i]`, check floats are finite, cap sizes and loop counts.
 - **Prove it:** every crash or verify fix lands with a regression test in the existing test file
   for its stage, never in a new file named after the bug.
@@ -33,12 +33,12 @@ outranks feature work.**
 - **Bambu Studio is a black box.** You may run it, slice with it and read the files it writes,
   to compare results and to learn what the firmware expects of a `.gcode.3mf`. Its output is
   never committed. Never copy its start or end G-code or other text into the repository.
-- **Settings live in the repository.** A printer's settings, its own, each quality's and each
-  material's, are layercraft's values in its folder of `printers/`, built into the binary, so
-  every computer prints with the same: change them there, never in a local file. So is the
-  printer's G-code, its start, layer change, filament change and end. The maker's profiles are
-  still read from an installed Bambu Studio at each compile, as data, for what the printer's
-  files declare.
+- **Every default lives in one file.** The printer's settings, each quality's and each
+  material's, the printer's measurements and layercraft's own choices are hard-coded in
+  `apps/layercraft/src/defaults.rs`, built into the binary, so every computer prints with the
+  same: change them there, never in a local file and never read from a slicer. The command line
+  picks among them and `--tune` overrides by place. The printer's G-code, its start, layer
+  change, filament change and end, is its folder's in `printers/`.
 - **Every stage is open.** Each stage reads and writes a readable file (`--emit <stage>`,
   `--from <file>`), so an agent can inspect or edit any stage and compile on from it. A stage
   depends only on the stages before it; nothing reaches around the chain.

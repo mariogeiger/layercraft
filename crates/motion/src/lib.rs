@@ -36,13 +36,13 @@ pub use fit::fit;
 pub use frame::{Frame, finish, frame};
 pub use limit::{MoveLimits, limit};
 pub use merge::merge;
-pub use plan::{compile, placeholders};
+pub use plan::compile;
 pub use time::{Limits, estimate};
 
 use layercraft_geom::{Carrier, GeomError, Warp};
 pub use layercraft_geom::{bead_area, disc_area};
-use layercraft_machine::TemplateError;
 use layercraft_path::Role;
+use layercraft_template::TemplateError;
 use layercraft_tune::TuneError;
 use serde::{Deserialize, Serialize};
 

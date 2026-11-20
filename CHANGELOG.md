@@ -2,6 +2,28 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.22.0
+
+### Changed
+
+- Every default is hard-coded in one file, `apps/layercraft/src/defaults.rs`: the X2D's
+  measurements, limits and plates, each quality's and each material's settings, layercraft's own
+  choices (bending layers, convection rolls) and the command line's defaults, as typed values
+  written in plain units, the qualities and materials each written as another with what differs.
+  The owner asked for every setting in one place. Nothing is read from Bambu Studio any more:
+  compiles work without it, and the dogfood tests no longer skip. The G-code is the same as
+  0.21.1's for every quality, material and plate.
+- In a print of several filaments, the chamber is cooled for the one that softens first, at the
+  strongest auxiliary fan any asks (PLA's in a PETG print with a PLA interface): it was the first
+  filament's alone.
+- The settings block a `.gcode.3mf` declares holds what the printer's G-code reads and what the
+  print is (38 settings), not the 459 of the maker's profiles.
+- `--bed` takes `Textured PEI Plate`, `Cool Plate`, `Engineering Plate` or `High Temp Plate`
+  and refuses any other name and a plate the material does not hold to (PETG on the Cool
+  Plate); an unknown name printed on the textured plate's temperatures before.
+- The template language is its own crate, `layercraft-template` (was `layercraft-machine`); the
+  filament-change template reads each filament's pull-backs from per-filament lists.
+
 ## 0.21.1
 
 ### Changed

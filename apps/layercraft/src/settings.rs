@@ -1,37 +1,234 @@
-//! The stages' parameters read from a Bambu Lab machine description.
-//!
-//! Bambu's settings follow conventions of their own: a line width of 0 means the default
-//! width, a percentage is of the nozzle diameter; an acceleration of 0 means the default one,
-//! a percentage is of it; a filament's `nil` leaves the printer's value. This file holds those
-//! conventions so the stages see plain numbers. What the description does not tell of the printer
-//! comes from its folder in `printers/` (`printers`).
+//! From the defaults (`defaults`) to each stage's parameters: a printer printing a quality in a
+//! material on a plate (`read`), and the variables of the printer's G-code templates for a
+//! print's filaments (`Filaments::scope`). What follows from the values is derived here, once:
+//! the bending layers' bounds, how far apart sparse lines lie, how wide a band a bead crosses,
+//! the toolhead's shape and the firmware's limits.
 
-use crate::printers::printer;
-use layercraft_machine::{Kind, Machine, MachineError, Scope, Value};
-use layercraft_motion::{Heat, Limits, MotionParams, RoleMotion, Templates, placeholders};
-use layercraft_path::{Crossing, Face, PathParams, SparsePattern, SupportLines};
-use layercraft_region::{RegionParams, SupportParams};
+use crate::defaults::{
+    BENDING, MATERIALS, Material, Plate, Printer, QUALITIES, Quality, ROLLS_PLY_LAYERS, ROLLS_TILT,
+};
+use layercraft_motion::{Heat, Limits, MotionParams, Templates};
+use layercraft_path::{Crossing, PathParams, SparsePattern};
+use layercraft_region::RegionParams;
 use layercraft_section::{Foliation, Layering};
+use layercraft_template::{Scope, Value, render_number};
 use layercraft_verify::{Envelope, Toolhead};
 
-/// Everything the stages need, read once.
+/// Everything the stages need for one filament, read once.
 pub struct Settings {
     pub layering: Layering,
     pub region: RegionParams,
     pub path: PathParams,
     pub motion: MotionParams,
     pub envelope: Envelope,
-    pub scope: Scope,
-    pub bed_type: String,
-    pub filament_kind: String,
-    pub filament_code: String,
-    pub filament_density: f64,
-    pub printer_model: String,
-    pub nozzle_diameter: f64,
-    /// The scope's per-filament settings: one item each, the filament's.
-    pub filament_keys: Vec<String>,
     /// The temperatures of the filament and the bed.
     pub heat: Heat,
+    pub printer: &'static Printer,
+    pub material: &'static Material,
+    pub plate: Plate,
+}
+
+/// The entry named `name` among `entries`, or why there is none.
+fn named<T>(entries: &'static [(&'static str, T)], name: &str, what: &str) -> Result<&'static T, String> {
+    entries.iter().find(|(n, _)| *n == name).map(|(_, entry)| entry).ok_or_else(|| {
+        let known: Vec<&str> = entries.iter().map(|(n, _)| *n).collect();
+        format!("not supported: the {what} `{name}`; there are {}", known.join(", "))
+    })
+}
+
+pub fn quality(name: &str) -> Result<&'static Quality, String> {
+    named(&QUALITIES, name, "quality")
+}
+
+pub fn material(name: &str) -> Result<&'static Material, String> {
+    named(&MATERIALS, name, "material")
+}
+
+/// The plate the printer's files name `name`.
+pub fn plate(name: &str) -> Result<Plate, String> {
+    Plate::ALL.into_iter().find(|p| p.name() == name).ok_or_else(|| {
+        let known: Vec<&str> = Plate::ALL.iter().map(|p| p.name()).collect();
+        format!("not supported: the plate `{name}`; there are {}", known.join(", "))
+    })
+}
+
+/// Convection rolls for sparse infill, the default (`defaults::ROLLS_TILT`).
+pub fn rolls(layer_height: f64) -> SparsePattern {
+    SparsePattern::Rolls { tilt: ROLLS_TILT, ply: ROLLS_PLY_LAYERS * layer_height }
+}
+
+/// The firmware's motion limits as it takes them: accelerations (`M201`), speeds (`M203`),
+/// print, retract and travel accelerations (`M204`) and jerks (`M205`); then the fans off.
+fn limits_gcode(p: &Printer) -> String {
+    let f = &p.firmware;
+    let [ax, ay, az, ae] = f.max_accel.map(render_number);
+    let [vx, vy, vz, ve] = f.max_speed.map(render_number);
+    let [jx, jy, jz, je] = f.jerk;
+    let (print, retract, travel) =
+        (render_number(f.print_accel), render_number(f.retract_accel), render_number(f.travel_accel));
+    format!(
+        "M201 X{ax} Y{ay} Z{az} E{ae}\nM203 X{vx} Y{vy} Z{vz} E{ve}\nM204 P{print} R{retract} T{travel}\n\
+         M205 X{jx:.2} Y{jy:.2} Z{jz:.2} E{je:.2}\nM106 S0\nM106 P2 S0\n"
+    )
+}
+
+/// The stages' parameters for `printer` printing `quality` in `material` on `plate`.
+pub fn read(
+    printer: &'static Printer,
+    quality: &Quality,
+    material: &'static Material,
+    plate: Plate,
+) -> Result<Settings, String> {
+    let bed = material.beds.iter().find(|(p, _)| *p == plate).map(|(_, t)| *t).ok_or_else(|| {
+        format!("not supported: {} on the {}, which it does not hold to", material.kind, plate.name())
+    })?;
+    let nozzle = printer.nozzle_diameter;
+    let q = quality;
+    let w = &q.widths;
+    let m = &q.motion;
+    let cooling = &material.cooling;
+    let shape = &printer.nozzle;
+    // Bridges are laid a nozzle wide.
+    let widest = [w.outer_wall, w.inner_wall, w.sparse, w.top_surface, w.solid, nozzle]
+        .into_iter()
+        .fold(0.0, f64::max);
+    // A bead across a band narrower than `v²/a` never runs at its speed: it speeds up and stops.
+    let run = |speed: f64, accel: f64| if accel > 0.0 { speed * speed / accel } else { 0.0 };
+    let crossing = Crossing {
+        top: run(m.top_surface.speed, m.top_surface.accel),
+        inside: run(m.solid.speed, m.solid.accel),
+        first_layer: run(m.first_layer_infill_speed, m.first_layer_accel),
+    };
+    let max_speed = printer.firmware.max_speed[0].min(printer.firmware.max_speed[1]);
+    let max_speed_z = printer.firmware.max_speed[2];
+    let gcode = &printer.gcode;
+    Ok(Settings {
+        layering: Layering {
+            first_layer_height: q.first_layer_height,
+            layer_height: q.layer_height,
+            // The rise a layer may take: what the nozzle reaches below the rest of the head,
+            // less the room kept under it.
+            foliation: Some(Foliation {
+                max_slope: BENDING.max_slope,
+                min_layer_height: q.layer_height * (1.0 - BENDING.slab_spread),
+                max_layer_height: q.layer_height * (1.0 + BENDING.slab_spread),
+                max_rise: (shape.protrusion - printer.head_margin).max(0.0),
+                parallel_layers: BENDING.parallel_layers,
+                cell: BENDING.cell * nozzle,
+                face_reach: (shape.face_diameter + widest) / 2.0,
+                ironing: BENDING.ironing,
+            }),
+        },
+        region: RegionParams {
+            walls: q.walls,
+            outer_wall_width: w.outer_wall,
+            inner_wall_width: w.inner_wall,
+            top_layers: q.top_layers,
+            bottom_layers: q.bottom_layers,
+            first_layer_shrink: q.first_layer_shrink,
+            first_layer_width: w.first_layer,
+            one_wall_on_top: q.one_wall_on_top,
+            // The path stage lays sparse lines this far apart, one direction per layer.
+            sparse_gap: if q.sparse_density > 0.0 {
+                layercraft_geom::bead_spacing(w.sparse, q.layer_height) / q.sparse_density
+            } else {
+                0.0
+            },
+            bridge_width: nozzle,
+            min_sparse_area: q.min_sparse_area,
+            supports: q.supports.clone(),
+        },
+        path: PathParams {
+            outer_wall_width: w.outer_wall,
+            inner_wall_width: w.inner_wall,
+            top_surface_width: w.top_surface,
+            solid_width: w.solid,
+            sparse_width: w.sparse,
+            sparse_density: q.sparse_density,
+            infill_wall_overlap: q.infill_wall_overlap,
+            infill_angle: q.infill_angle,
+            first_layer_width: w.first_layer,
+            bridge_width: nozzle,
+            monotone: q.monotone.to_vec(),
+            crossing,
+            resolution: q.resolution,
+            sparse_pattern: rolls(q.layer_height),
+            support: q.support_lines.clone(),
+        },
+        motion: MotionParams {
+            filament_diameter: material.diameter,
+            flow_ratio: material.flow_ratio,
+            max_volumetric_speed: material.max_volumetric_speed,
+            outer_wall: m.outer_wall.clone(),
+            inner_wall: m.inner_wall.clone(),
+            top_surface: m.top_surface.clone(),
+            solid: m.solid.clone(),
+            sparse: m.sparse.clone(),
+            bridge: m.bridge.clone(),
+            support: m.support.clone(),
+            support_interface: m.support_interface.clone(),
+            overhang_speeds: m.overhang_speeds.to_vec(),
+            first_layer_wall_speed: m.first_layer_wall_speed,
+            first_layer_infill_speed: m.first_layer_infill_speed,
+            first_layer_accel: m.first_layer_accel,
+            travel: m.travel.clone(),
+            retract_length: material.retract_length,
+            retract_speed: printer.retract_speed,
+            deretract_speed: printer.deretract_speed,
+            retract_min_travel: printer.retract_min_travel,
+            seam_gap: q.seam_gap,
+            wipe_distance: material.wipe_distance,
+            retract_before_wipe: printer.retract_before_wipe,
+            z_hop: printer.z_hop,
+            lift_radius: printer.spiral_lift_radius,
+            face_radius: shape.face_diameter / 2.0,
+            // Every layer takes its time to cool: one laid faster stays soft under the next,
+            // and sags or smears.
+            slow_down_layer_time: cooling.layer_time,
+            slow_down_min_speed: cooling.min_speed,
+            fan_speed: cooling.fan,
+            overhang_fan_speed: cooling.overhang_fan,
+            overhang_fan_share: cooling.overhang_share,
+            fan_off_layers: cooling.fan_off_layers,
+            resolution: q.resolution,
+            arc_fitting: q.arc_fitting,
+            limits: Limits {
+                max_accel: printer.firmware.max_accel[0].min(printer.firmware.max_accel[1]),
+                jerk: printer.firmware.jerk[0].min(printer.firmware.jerk[1]),
+                max_speed_xy: max_speed,
+                max_speed_z,
+            },
+            templates: Templates {
+                limits: limits_gcode(printer),
+                start: gcode.start.to_string(),
+                end: gcode.end.to_string(),
+                layer_change: gcode.layer_change.to_string(),
+                prologue: gcode.prologue.to_string(),
+                change_filament: gcode.filament_change.to_string(),
+            },
+        },
+        envelope: Envelope {
+            area: printer.area,
+            max_z: printer.max_z,
+            max_speed,
+            max_speed_z,
+            filament_diameter: material.diameter,
+            max_volumetric_speed: material.max_volumetric_speed,
+            toolhead: Toolhead {
+                face_radius: shape.face_diameter / 2.0,
+                flank_slope: shape.flank_degrees.to_radians().tan(),
+                column_radius: shape.column_diameter / 2.0,
+                protrusion: shape.protrusion,
+                margin: printer.head_margin,
+            },
+            ironing: BENDING.ironing,
+            resolution: q.resolution,
+        },
+        heat: Heat { nozzle: vec![material.nozzle], bed: [bed, bed] },
+        printer,
+        material,
+        plate,
+    })
 }
 
 /// A print's filaments by material, each with the settings of its own kind: the first's shape
@@ -57,488 +254,143 @@ impl Filaments<'_> {
         Heat { nozzle, bed: self.first.heat.bed }
     }
 
-    /// The template scope for the filaments coloured `colours`, by material: each per-filament
-    /// setting one item per filament, its own, the colours listed, every filament fed to the
-    /// first extruder.
+    /// The variables of the printer's templates, and the settings the printed file declares, for
+    /// the filaments coloured `colours`, by material, every one fed to the first extruder: the
+    /// print's, then one item per filament, its own, named as the printer's maker names them. The
+    /// program's own (its layers, its extent, the filaments a change swaps) are the frame's.
     pub fn scope(&self, colours: &[String]) -> Scope {
         let n = colours.len().max(1);
-        let mut scope = self.first.scope.clone();
-        let item = |k: usize, key: &str| match self.of(k).scope.get(key) {
-            Some(Value::List(items)) => items.first().cloned(),
-            _ => None,
-        };
-        for key in self
-            .first
-            .filament_keys
-            .iter()
-            .map(String::as_str)
-            .chain(["flush_volumetric_speeds", "flush_temperatures"])
-        {
-            let items: Option<Vec<Value>> = (0..n).map(|k| item(k, key)).collect();
-            if let Some(items) = items {
-                scope.insert(key.to_string(), Value::List(items));
+        let s = self.first;
+        let printer = s.printer;
+        let materials: Vec<&Material> = (0..n).map(|k| self.of(k).material).collect();
+        let num = Value::Num;
+        let each =
+            |item: &dyn Fn(&Material) -> Value| Value::List(materials.iter().map(|m| item(m)).collect());
+        let pulled = |d: Option<f64>| (Value::Bool(d.is_some()), num(d.unwrap_or(0.0)));
+        let (cut, cut_by): (Vec<Value>, Vec<Value>) =
+            materials.iter().map(|m| pulled(m.withdraw_at_cut)).unzip();
+        let (exit, exit_by): (Vec<Value>, Vec<Value>) =
+            materials.iter().map(|m| pulled(m.withdraw_at_exit)).unzip();
+        let softest = materials.iter().map(|m| m.softening).fold(f64::INFINITY, f64::min);
+        let strongest = materials.iter().map(|m| m.cooling.aux_full).fold(0.0, f64::max);
+        let entries = [
+            ("printer_model", Value::Str(printer.name.into())),
+            ("printable_height", num(printer.max_z)),
+            ("nozzle_diameter", Value::List(vec![num(printer.nozzle_diameter)])),
+            ("layer_height", num(s.layering.layer_height)),
+            ("initial_layer_print_height", num(s.layering.first_layer_height)),
+            ("initial_layer_acceleration", num(s.motion.first_layer_accel)),
+            ("travel_acceleration", num(s.motion.travel.accel)),
+            ("curr_bed_type", Value::Str(s.plate.name().into())),
+            ("bed_temperature_initial_layer_single", num(s.heat.bed[0])),
+            ("flush_length", num(printer.flush)),
+            ("retract_length_toolchange", Value::List(printer.toolchange_retraction.map(num).to_vec())),
+            // The nozzle printed with: the first extruder's, the printer's own, no other hot end.
+            ("nozzle_diameter_at_nozzle_id", Value::List(vec![num(printer.nozzle_diameter)])),
+            ("initial_nozzle_id", num(0.0)),
+            ("current_nozzle_id", num(0.0)),
+            ("next_nozzle_id", num(0.0)),
+            ("initial_no_support_hotend", num(-1.0)),
+            ("current_hotend", num(-1.0)),
+            ("next_hotend", num(-1.0)),
+            ("filament_map", each(&|_| num(1.0))),
+            ("filament_colour", Value::List(colours.iter().map(|c| Value::Str(c.clone())).collect())),
+            ("filament_type", each(&|m| Value::Str(m.kind.into()))),
+            ("filament_ids", each(&|m| Value::Str(m.code.into()))),
+            ("nozzle_temperature_initial_layer", each(&|m| num(m.nozzle[0]))),
+            ("nozzle_temperature", each(&|m| num(m.nozzle[1]))),
+            ("filament_max_volumetric_speed", each(&|m| num(m.max_volumetric_speed))),
+            ("flush_volumetric_speeds", each(&|m| num(m.max_volumetric_speed))),
+            ("flush_temperatures", each(&|m| num(m.flush_temperature))),
+            ("filament_cooling_before_tower", each(&|m| num(m.cooling_after_change))),
+            ("long_retractions_when_cut", Value::List(cut)),
+            ("retraction_distances_when_cut", Value::List(cut_by)),
+            ("long_retractions_when_ec", Value::List(exit)),
+            ("retraction_distances_when_ec", Value::List(exit_by)),
+            ("close_additional_fan_first_x_layers", each(&|m| num(m.cooling.aux_first_layers))),
+            ("first_x_layer_fan_speed", each(&|m| num(m.cooling.aux_first))),
+            ("additional_cooling_fan_speed", each(&|m| num(m.cooling.aux_full))),
+            ("additional_fan_full_speed_layer", each(&|m| num(m.cooling.aux_full_layer))),
+            // Over the print's filaments: the chamber cooled for the one softening first, at
+            // the strongest auxiliary fan any asks.
+            ("min_vitrification_temperature", num(softest)),
+            ("max_additional_fan", num(strongest)),
+        ];
+        entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::defaults::X2D;
+
+    fn of(quality_name: &str, material_name: &str) -> Settings {
+        read(&X2D, quality(quality_name).unwrap(), material(material_name).unwrap(), X2D.plate).unwrap()
+    }
+
+    #[test]
+    fn every_quality_material_and_plate_it_holds_to_reads() {
+        for (q, _) in &QUALITIES {
+            for (m, own) in &MATERIALS {
+                for plate in Plate::ALL {
+                    let read = read(&X2D, quality(q).unwrap(), material(m).unwrap(), plate);
+                    assert_eq!(read.is_ok(), own.beds.iter().any(|(p, _)| *p == plate), "{q} {m} {plate:?}");
+                }
             }
         }
-        // A printer setting a filament may override is, for the templates, one per filament:
-        // the filament's own, or the first extruder's where it says `nil`.
-        for own in &self.first.filament_keys {
-            let Some(key) = own.strip_prefix("filament_") else { continue };
-            if !matches!(self.first.scope.get(key), Some(Value::List(_))) {
-                continue;
-            }
-            let values: Option<Vec<Value>> = (0..n)
-                .map(|k| match item(k, own) {
-                    Some(Value::Str(nil)) if nil == "nil" => item(k, key),
-                    Some(v) => Some(v),
-                    None => item(k, key),
-                })
-                .collect();
-            if let Some(values) = values {
-                scope.insert(key.to_string(), Value::List(values));
-            }
-        }
-        scope.insert(
-            "filament_colour".into(),
-            Value::List(colours.iter().map(|c| Value::Str(c.clone())).collect()),
+        assert!(quality("0.16").err().unwrap_or_default().contains("0.20, 0.12"));
+        assert!(material("wood").err().unwrap_or_default().contains("pla, petg-tr"));
+        assert!(plate("Smooth PEI Plate").is_err());
+        assert!(read(&X2D, quality("0.20").unwrap(), material("petg-tr").unwrap(), Plate::Cool).is_err());
+    }
+
+    #[test]
+    fn the_firmware_takes_the_printers_limits() {
+        assert_eq!(
+            limits_gcode(&X2D),
+            "M201 X20000 Y20000 Z500 E30000\nM203 X1000 Y1000 Z20 E30\nM204 P20000 R30000 T9000\n\
+             M205 X9.00 Y9.00 Z3.00 E2.50\nM106 S0\nM106 P2 S0\n"
         );
-        scope.insert("filament_map".into(), Value::List(vec![Value::Num(1.0); n]));
-        scope
     }
 
-    /// The filament each change flushes, in mm, from one material (row) to another (column):
-    /// none. The printer pulls the old filament back out of the nozzle before it cuts it (its
-    /// long retraction), and what little wets the nozzle mixes into the new pass's first beads,
-    /// the inner walls: the owner's choice (2026-11-18, 2026-11-20), no purge thrown away.
-    pub fn flush(&self, colours: &[String]) -> Vec<Vec<f64>> {
-        vec![vec![0.0; colours.len()]; colours.len()]
+    #[test]
+    fn a_band_is_crossed_where_a_bead_reaches_its_speed_and_sparse_lines_follow_the_density() {
+        let s = of("0.20", "pla");
+        assert_eq!(s.path.crossing, Crossing { top: 20.0, inside: 6.25, first_layer: 22.05 });
+        let gap = layercraft_geom::bead_spacing(0.45, 0.2) / 0.15;
+        assert!((s.region.sparse_gap - gap).abs() < 1e-12);
+        let fine = of("0.12", "pla");
+        let foliation = fine.layering.foliation.unwrap();
+        assert!((foliation.min_layer_height - 0.06).abs() < 1e-12);
+        assert!((foliation.max_layer_height - 0.18).abs() < 1e-12);
+        assert!((foliation.max_rise - 2.74).abs() < 1e-12);
     }
-}
 
-fn fraction(m: &Machine, kind: Kind, key: &str) -> Result<f64, MachineError> {
-    Ok(m.number(kind, key)? / 100.0)
-}
-
-/// A setting that may be a percentage of `whole`; a plain number stands for itself.
-fn share_of(m: &Machine, kind: Kind, key: &str, whole: f64) -> Result<f64, MachineError> {
-    let v = m.number(kind, key)?;
-    Ok(if m.text(kind, key)?.trim().ends_with('%') { v / 100.0 * whole } else { v })
-}
-
-/// A filament's own value of a setting, or the printer's where the filament has none (`nil`).
-fn filament_or(m: &Machine, filament_key: &str, machine_key: &str) -> Result<f64, MachineError> {
-    match m.get(Kind::Filament, filament_key).ok().and_then(|v| v.number()) {
-        Some(v) => Ok(v),
-        None => m.number(Kind::Machine, machine_key),
+    #[test]
+    fn a_print_of_petg_and_pla_gives_each_filament_its_own_settings() {
+        // PETG for the part, PLA for the supports' interface, the last standing for the third:
+        // each its temperatures and its own item in the templates' per-filament lists, the
+        // chamber cooled for the PLA.
+        let (petg, more) = (of("0.20", "petg-tr"), [of("0.20", "pla")]);
+        let filaments = Filaments { first: &petg, more: &more };
+        let heat = filaments.heat(3);
+        assert_eq!(heat.nozzle, [[250.0, 245.0], [220.0, 220.0], [220.0, 220.0]]);
+        let grey = "#808080".to_string();
+        let scope = filaments.scope(&[grey.clone(), grey]);
+        let list = |items: &[Value]| Some(Value::List(items.to_vec()));
+        let kinds = [Value::Str("PETG".into()), Value::Str("PLA".into())];
+        assert_eq!(scope.get("filament_type").cloned(), list(&kinds));
+        assert_eq!(scope.get("nozzle_temperature").cloned(), list(&[Value::Num(245.0), Value::Num(220.0)]));
+        assert_eq!(scope.get("min_vitrification_temperature"), Some(&Value::Num(45.0)));
+        assert_eq!(scope.get("max_additional_fan"), Some(&Value::Num(70.0)));
+        assert_eq!(scope.get("flush_length"), Some(&Value::Num(0.0)));
+        let pulled = [Value::Bool(true), Value::Bool(true)];
+        assert_eq!(scope.get("long_retractions_when_cut").cloned(), list(&pulled));
+        assert_eq!(
+            scope.get("retraction_distances_when_cut").cloned(),
+            list(&[Value::Num(10.0), Value::Num(10.0)])
+        );
     }
-}
-
-fn width(m: &Machine, key: &str, nozzle: f64) -> Result<f64, MachineError> {
-    let w = share_of(m, Kind::Process, key, nozzle)?;
-    if w > 0.0 { Ok(w) } else { m.number(Kind::Process, "line_width") }
-}
-
-fn accel(m: &Machine, key: &str) -> Result<f64, MachineError> {
-    let default = m.number(Kind::Process, "default_acceleration")?;
-    // A role without an acceleration of its own moves at the default one.
-    let a = share_of(m, Kind::Process, key, default).unwrap_or(default);
-    Ok(if a > 0.0 { a } else { default })
-}
-
-fn role(m: &Machine, speed: &str, acceleration: &str) -> Result<RoleMotion, MachineError> {
-    Ok(RoleMotion { speed: m.number(Kind::Process, speed)?, accel: accel(m, acceleration)?, flow: 1.0 })
-}
-
-/// The steepest top surface the layers bend to follow, in degrees, and so the most a layer leans
-/// between neighbouring corners of the triangles it bends on: across one it may lean the secant
-/// of half the triangle's largest angle more, but over any length rises no faster than along
-/// their edges, about 20°, far under the X2D nozzle's flank of 50° (`printers/`).
-const MAX_SLOPE: f64 = 20.0;
-
-/// How deep the nozzle's face may iron the beads of the layer it prints, in mm: on a bent layer
-/// it passes over those it laid just before, up the slope. The layers lean no more than keeps it
-/// so, about 0.77 mm times their slope with the X2D's face and beads: here 21.4°.
-const IRONING: f64 = 0.3;
-
-/// How much thinner and thicker than the layer height a bent slab may be: a half, as the bead
-/// then stays between half and three quarters of the nozzle's width high.
-const SLAB_SPREAD: f64 = 0.5;
-
-/// How wide the triangles layers bend on are, about, in nozzle diameters: fine enough that they
-/// cost the nozzle's face little of its reach (`face`), which grows with their spread, coarse
-/// enough that a bead crosses few of their edges. A layer meets a top surface's flat faces
-/// exactly, whatever their size.
-const BEND_CELL: f64 = 0.625;
-
-/// Convection rolls for sparse infill, the default: 30° off square to the walls, which braces
-/// them against each other and against shear alike, the other way every five layers of
-/// `layer_height`.
-pub fn rolls(layer_height: f64) -> SparsePattern {
-    SparsePattern::Rolls { tilt: 30.0, ply: 5.0 * layer_height }
-}
-
-/// The hop and the radius of the helix a lift turns, a spiral one's `spiral_radius`; a filament's
-/// own lift wins over the printer's. Bambu's automatic lift is taken as the spiral one.
-fn lift(m: &Machine, spiral_radius: f64) -> Result<(f64, f64), MachineError> {
-    use Kind::{Filament, Machine as M};
-    let z_hop = filament_or(m, "filament_z_hop", "z_hop")?;
-    let kind = match m.text(Filament, "filament_z_hop_types").ok().filter(|t| t != "nil") {
-        Some(t) => t,
-        None => m.text(M, "z_hop_types").unwrap_or_else(|_| "Normal Lift".into()),
-    };
-    let radius = match kind.as_str() {
-        "Normal Lift" => 0.0,
-        "Spiral Lift" | "Auto Lift" => spiral_radius,
-        other => return Err(MachineError::Unsupported(format!("the lift `{other}`"))),
-    };
-    Ok((z_hop, radius))
-}
-
-/// The bed's first-layer and other-layer temperature keys for a plate type.
-fn plate_keys(bed_type: &str) -> (&'static str, &'static str) {
-    match bed_type {
-        "Cool Plate" => ("cool_plate_temp_initial_layer", "cool_plate_temp"),
-        "Engineering Plate" => ("eng_plate_temp_initial_layer", "eng_plate_temp"),
-        "High Temp Plate" => ("hot_plate_temp_initial_layer", "hot_plate_temp"),
-        "Smooth PEI Plate" => ("supertack_plate_temp_initial_layer", "supertack_plate_temp"),
-        _ => ("textured_plate_temp_initial_layer", "textured_plate_temp"),
-    }
-}
-
-/// The short plate name of `slice_info`'s bed type.
-pub fn plate_code(bed_type: &str) -> &'static str {
-    match bed_type {
-        "Cool Plate" => "cool_plate",
-        "Engineering Plate" => "eng_plate",
-        "High Temp Plate" => "hot_plate",
-        _ => "textured_plate",
-    }
-}
-
-fn area(m: &Machine) -> Result<[[f64; 2]; 2], MachineError> {
-    let Value::List(corners) = m.get_all(Kind::Machine, "printable_area")? else {
-        return Err(MachineError::Missing("printable_area".into()));
-    };
-    let mut lo = [f64::MAX; 2];
-    let mut hi = [f64::MIN; 2];
-    for c in corners {
-        let text = c.render();
-        let mut xy = text.trim().split('x').map(|v| v.trim().parse::<f64>());
-        if let (Some(Ok(x)), Some(Ok(y))) = (xy.next(), xy.next()) {
-            lo = [lo[0].min(x), lo[1].min(y)];
-            hi = [hi[0].max(x), hi[1].max(y)];
-        }
-    }
-    if lo[0] > hi[0] {
-        return Err(MachineError::NotANumber("printable_area".into(), String::new()));
-    }
-    Ok([lo, hi])
-}
-
-/// The machine's motion limits as the firmware takes them: accelerations (`M201`), speeds
-/// (`M203`), print, retract and travel accelerations (`M204`) and jerks (`M205`).
-fn limits_gcode(m: &Machine) -> Result<String, MachineError> {
-    let n = |key: &str| m.number(Kind::Machine, key);
-    let f = |v: f64| layercraft_machine::render_number(v);
-    Ok(format!(
-        "M201 X{} Y{} Z{} E{}\nM203 X{} Y{} Z{} E{}\nM204 P{} R{} T{}\nM205 X{:.2} Y{:.2} Z{:.2} E{:.2}\nM106 S0\nM106 P2 S0\n",
-        f(n("machine_max_acceleration_x")?),
-        f(n("machine_max_acceleration_y")?),
-        f(n("machine_max_acceleration_z")?),
-        f(n("machine_max_acceleration_e")?),
-        f(n("machine_max_speed_x")?),
-        f(n("machine_max_speed_y")?),
-        f(n("machine_max_speed_z")?),
-        f(n("machine_max_speed_e")?),
-        f(n("machine_max_acceleration_extruding")?),
-        f(n("machine_max_acceleration_retracting")?),
-        f(n("machine_max_acceleration_travel")?),
-        n("machine_max_jerk_x")?,
-        n("machine_max_jerk_y")?,
-        n("machine_max_jerk_z")?,
-        n("machine_max_jerk_e")?,
-    ))
-}
-
-/// Reads every stage's parameters from the machine description.
-pub fn read(m: &Machine, bed_type: Option<&str>) -> Result<Settings, MachineError> {
-    use Kind::{Filament, Machine as M, Process};
-    let nozzle = m.number(M, "nozzle_diameter")?;
-    let bed_type = match bed_type {
-        Some(b) => b.to_string(),
-        None => m.text(M, "default_bed_type").unwrap_or_else(|_| "Textured PEI Plate".into()),
-    };
-    let layer_height = m.number(Process, "layer_height")?;
-    let shell = |layers: &str, thickness: &str| -> Result<usize, MachineError> {
-        let n = m.number(Process, layers)?;
-        let t = m.number(Process, thickness).unwrap_or(0.0);
-        Ok(n.max((t / layer_height).ceil()).max(0.0) as usize)
-    };
-    let outer = width(m, "outer_wall_line_width", nozzle)?;
-    let inner = width(m, "inner_wall_line_width", nozzle)?;
-    let sparse_width = width(m, "sparse_infill_line_width", nozzle)?;
-    let top_surface_width = width(m, "top_surface_line_width", nozzle)?;
-    let solid_width = width(m, "internal_solid_infill_line_width", nozzle)?;
-    // Bridges are laid a nozzle wide.
-    let widest =
-        [outer, inner, sparse_width, top_surface_width, solid_width, nozzle].into_iter().fold(0.0, f64::max);
-    // A strand held at both ends bridges up to `max_bridge_length`, 0 holding every strand up,
-    // unless `bridge_no_support` lets bridges of any length be.
-    let supports = SupportParams {
-        max_bridge: if m.number(Process, "bridge_no_support").unwrap_or(0.0) > 0.0 {
-            None
-        } else {
-            Some(m.number(Process, "max_bridge_length").unwrap_or(0.0))
-        },
-        top_gap: m.number(Process, "support_top_z_distance")?,
-        bottom_gap: m.number(Process, "support_bottom_z_distance")?,
-        xy_gap: m.number(Process, "support_object_xy_distance")?,
-        interface_layers: m.number(Process, "support_interface_top_layers")?.max(0.0) as usize,
-        on_plate_only: m.number(Process, "support_on_build_plate_only").unwrap_or(0.0) > 0.0,
-        interface_material: None,
-    };
-    let (first_bed_key, other_bed_key) = plate_keys(&bed_type);
-    let bed_first = m.number(Filament, first_bed_key)?;
-    let heat = heat(m, [bed_first, m.number(Filament, other_bed_key)?])?;
-    let filament_diameter = m.number(Filament, "filament_diameter")?;
-    let max_volumetric_speed = m.number(Filament, "filament_max_volumetric_speed")?;
-    let mut scope = m.scope();
-    scope.extend(placeholders(&bed_type, bed_first, nozzle));
-    // A filament's flush speed and temperature of 0 stand for its melt limit and its highest
-    // printing temperature.
-    let or = |key: &str, fallback: f64| match m.number(Filament, key) {
-        Ok(v) if v > 0.0 => v,
-        _ => fallback,
-    };
-    let hottest = m.number(Filament, "nozzle_temperature_range_high")?;
-    scope.insert(
-        "flush_volumetric_speeds".into(),
-        Value::List(vec![Value::Num(or("filament_flush_volumetric_speed", max_volumetric_speed))]),
-    );
-    scope.insert(
-        "flush_temperatures".into(),
-        Value::List(vec![Value::Num(or("filament_flush_temp", hottest))]),
-    );
-    // Over the print's filaments (here one): the lowest softening point, the strongest extra fan.
-    scope.insert(
-        "min_vitrification_temperature".into(),
-        Value::Num(m.number(Filament, "temperature_vitrification")?),
-    );
-    scope
-        .insert("max_additional_fan".into(), Value::Num(m.number(Filament, "additional_cooling_fan_speed")?));
-    let max_z = m.number(M, "printable_height")?;
-    let max_speed = m.number(M, "machine_max_speed_x")?.min(m.number(M, "machine_max_speed_y")?);
-    let printer = printer(&m.text(M, "printer_model")?)?;
-    let nozzle_shape = &printer.nozzle;
-    let (z_hop, lift_radius) = lift(m, printer.spiral_lift_radius)?;
-    // The filament's overhang fan, when on: over bridges, and walls past its threshold.
-    let (overhang_fan_speed, overhang_fan_share) =
-        if m.number(Filament, "enable_overhang_bridge_fan").unwrap_or(0.0) > 0.0 {
-            let share = fraction(m, Filament, "overhang_fan_threshold")?;
-            (fraction(m, Filament, "overhang_fan_speed")?.clamp(0.0, 1.0), share.clamp(0.0, 1.0))
-        } else {
-            (0.0, 0.0)
-        };
-    // A bead across a band narrower than `v²/a` never runs at its speed: it speeds up and stops.
-    let run = |speed: f64, accel: f64| if accel > 0.0 { speed * speed / accel } else { 0.0 };
-    let top = role(m, "top_surface_speed", "top_surface_acceleration")?;
-    let solid = role(m, "internal_solid_infill_speed", "internal_solid_infill_acceleration")?;
-    let crossing = Crossing {
-        top: run(top.speed, top.accel),
-        inside: run(solid.speed, solid.accel),
-        first_layer: run(
-            m.number(Process, "initial_layer_infill_speed")?,
-            accel(m, "initial_layer_acceleration")?,
-        ),
-    };
-    Ok(Settings {
-        layering: Layering {
-            first_layer_height: m.number(Process, "initial_layer_print_height")?,
-            layer_height,
-            // The rise a layer may take: what the nozzle reaches below the rest of the head,
-            // less the room kept under it.
-            foliation: Some(Foliation {
-                max_slope: MAX_SLOPE,
-                min_layer_height: layer_height * (1.0 - SLAB_SPREAD),
-                max_layer_height: layer_height * (1.0 + SLAB_SPREAD),
-                max_rise: (nozzle_shape.protrusion - printer.head_margin).max(0.0),
-                parallel_layers: 2,
-                cell: BEND_CELL * nozzle,
-                face_reach: (nozzle_shape.face_diameter + widest) / 2.0,
-                ironing: IRONING,
-            }),
-        },
-        region: RegionParams {
-            walls: m.number(Process, "wall_loops")?.max(0.0) as usize,
-            outer_wall_width: outer,
-            inner_wall_width: inner,
-            top_layers: shell("top_shell_layers", "top_shell_thickness")?,
-            bottom_layers: shell("bottom_shell_layers", "bottom_shell_thickness")?,
-            first_layer_shrink: m.number(Process, "elefant_foot_compensation").unwrap_or(0.0),
-            first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
-            one_wall_on_top: m.number(Process, "only_one_wall_top").unwrap_or(0.0) > 0.0,
-            // The path stage lays sparse lines this far apart, one direction per layer.
-            sparse_gap: match fraction(m, Process, "sparse_infill_density")? {
-                d if d > 0.0 => layercraft_geom::bead_spacing(sparse_width, layer_height) / d,
-                _ => 0.0,
-            },
-            bridge_width: nozzle,
-            min_sparse_area: m.number(Process, "minimum_sparse_infill_area").unwrap_or(0.0),
-            supports,
-        },
-        path: PathParams {
-            outer_wall_width: outer,
-            inner_wall_width: inner,
-            top_surface_width,
-            solid_width,
-            sparse_width,
-            sparse_density: fraction(m, Process, "sparse_infill_density")?,
-            infill_wall_overlap: fraction(m, Process, "infill_wall_overlap")?,
-            infill_angle: m.number(Process, "infill_direction")?,
-            first_layer_width: width(m, "initial_layer_line_width", nozzle)?,
-            bridge_width: nozzle,
-            // Bambu's monotonic patterns, for the faces they name.
-            monotone: [("top_surface_pattern", Face::Top), ("bottom_surface_pattern", Face::Bottom)]
-                .into_iter()
-                .filter(|(key, _)| m.text(Process, key).is_ok_and(|p| p.starts_with("monotonic")))
-                .map(|(_, face)| face)
-                .collect(),
-            crossing,
-            resolution: m.number(Process, "resolution")?,
-            sparse_pattern: rolls(layer_height),
-            support: SupportLines {
-                width: width(m, "support_line_width", nozzle)?,
-                interface_gap: m.number(Process, "support_interface_spacing")?,
-            },
-        },
-        motion: MotionParams {
-            filament_diameter,
-            flow_ratio: m.number(Filament, "filament_flow_ratio")?,
-            max_volumetric_speed,
-            outer_wall: role(m, "outer_wall_speed", "outer_wall_acceleration")?,
-            inner_wall: role(m, "inner_wall_speed", "inner_wall_acceleration")?,
-            top_surface: RoleMotion {
-                flow: m.number(Process, "top_solid_infill_flow_ratio").unwrap_or(1.0),
-                ..top
-            },
-            solid,
-            sparse: role(m, "sparse_infill_speed", "sparse_infill_acceleration")?,
-            bridge: RoleMotion {
-                flow: m.number(Process, "bridge_flow").unwrap_or(1.0),
-                ..role(m, "bridge_speed", "bridge_acceleration")?
-            },
-            support: role(m, "support_speed", "default_acceleration")?,
-            support_interface: role(m, "support_interface_speed", "default_acceleration")?,
-            // Bambu's quarters of a bead's width over air, then a bead wholly over it.
-            overhang_speeds: if m.number(Process, "enable_overhang_speed").unwrap_or(0.0) > 0.0 {
-                [
-                    "overhang_1_4_speed",
-                    "overhang_2_4_speed",
-                    "overhang_3_4_speed",
-                    "overhang_4_4_speed",
-                    "overhang_totally_speed",
-                ]
-                .iter()
-                .map(|key| m.number(Process, key))
-                .collect::<Result<_, _>>()?
-            } else {
-                Vec::new()
-            },
-            first_layer_wall_speed: m.number(Process, "initial_layer_speed")?,
-            first_layer_infill_speed: m.number(Process, "initial_layer_infill_speed")?,
-            first_layer_accel: accel(m, "initial_layer_acceleration")?,
-            travel: role(m, "travel_speed", "travel_acceleration")?,
-            retract_length: filament_or(m, "filament_retraction_length", "retraction_length")?,
-            retract_speed: m.number(M, "retraction_speed")?,
-            deretract_speed: m.number(M, "deretraction_speed")?,
-            retract_min_travel: m.number(M, "retraction_minimum_travel")?,
-            // The process's seam gap, a percentage of the nozzle; 15 % when the profile is silent,
-            // the gap Bambu Studio leaves on the X2D.
-            seam_gap: share_of(m, Process, "seam_gap", nozzle).unwrap_or(0.15 * nozzle),
-            // A filament's own wipe settings win over the printer's; `nil` leaves the printer's.
-            wipe_distance: if m.number(M, "wipe").unwrap_or(0.0) > 0.0 {
-                filament_or(m, "filament_wipe_distance", "wipe_distance")?
-            } else {
-                0.0
-            },
-            retract_before_wipe: filament_or(m, "filament_retract_before_wipe", "retract_before_wipe")
-                .unwrap_or(0.0)
-                / 100.0,
-            z_hop,
-            lift_radius,
-            face_radius: nozzle_shape.face_diameter / 2.0,
-            // Every layer takes its time to cool, whatever `slow_down_for_layer_cooling` says: one
-            // laid faster stays soft under the next, and sags or smears.
-            slow_down_layer_time: m.number(Filament, "slow_down_layer_time")?,
-            slow_down_min_speed: m.number(Filament, "slow_down_min_speed")?,
-            fan_speed: fraction(m, Filament, "fan_max_speed")?.clamp(0.0, 1.0),
-            overhang_fan_speed,
-            overhang_fan_share,
-            fan_off_layers: m.number(Filament, "close_fan_the_first_x_layers")?.max(0.0) as usize,
-            resolution: m.number(Process, "resolution")?,
-            arc_fitting: m.number(Process, "enable_arc_fitting")? > 0.0,
-            limits: Limits {
-                max_accel: m.number(M, "machine_max_acceleration_x")?,
-                jerk: m.number(M, "machine_max_jerk_x")?,
-                max_speed_xy: max_speed,
-                max_speed_z: m.number(M, "machine_max_speed_z")?,
-            },
-            templates: Templates {
-                limits: limits_gcode(m)?,
-                start: printer.start.clone(),
-                end: printer.end.clone(),
-                layer_change: printer.layer_change.clone(),
-                prologue: printer.prologue.clone(),
-                change_filament: printer.filament_change.clone(),
-            },
-        },
-        envelope: Envelope {
-            area: area(m)?,
-            max_z,
-            max_speed,
-            max_speed_z: m.number(M, "machine_max_speed_z")?,
-            filament_diameter,
-            max_volumetric_speed,
-            toolhead: Toolhead {
-                face_radius: nozzle_shape.face_diameter / 2.0,
-                flank_slope: nozzle_shape.flank_degrees.to_radians().tan(),
-                column_radius: nozzle_shape.column_diameter / 2.0,
-                protrusion: nozzle_shape.protrusion,
-                margin: printer.head_margin,
-            },
-            ironing: IRONING,
-            resolution: m.number(Process, "resolution")?,
-        },
-        scope,
-        filament_kind: m.text(Filament, "filament_type")?,
-        filament_code: m.text(Filament, "filament_id").unwrap_or_default(),
-        filament_density: m.number(Filament, "filament_density")?,
-        printer_model: m.text(M, "model_id").unwrap_or_default(),
-        nozzle_diameter: nozzle,
-        filament_keys: m.keys(Filament),
-        heat,
-        bed_type,
-    })
-}
-
-/// The filament's nozzle temperatures on the first layer and on the others, each within the
-/// filament's own range, and the bed's, `bed`.
-fn heat(m: &Machine, bed: [f64; 2]) -> Result<Heat, MachineError> {
-    let (low, high) = (
-        m.number(Kind::Filament, "nozzle_temperature_range_low")?,
-        m.number(Kind::Filament, "nozzle_temperature_range_high")?,
-    );
-    let mut nozzle = [0.0; 2];
-    for (t, key) in nozzle.iter_mut().zip(["nozzle_temperature_initial_layer", "nozzle_temperature"]) {
-        *t = m.number(Kind::Filament, key)?;
-        if !(low..=high).contains(t) {
-            return Err(MachineError::OutOfRange(
-                key.into(),
-                format!("{t} °C, outside the filament's {low} to {high} °C"),
-            ));
-        }
-    }
-    if !bed.iter().all(|t| t.is_finite() && *t >= 0.0) {
-        return Err(MachineError::OutOfRange("the bed's temperatures".into(), format!("{bed:?} °C")));
-    }
-    Ok(Heat { nozzle: vec![nozzle], bed })
 }

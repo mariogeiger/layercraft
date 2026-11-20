@@ -1,25 +1,21 @@
 # Bambu Lab X2D
 
-What layercraft knows of the X2D, built into it: its settings, `machine.json` for the printer,
-`quality/` and `material/` for each print quality and filament; what they do not tell, measured
-on the printer itself, in `printer.json`; and its own G-code, `start.gcode`,
-`layer-change.gcode`, `filament-change.gcode` and `end.gcode`. This page says where they come from.
+What layercraft knows of the X2D: its settings, each quality's and each material's, and its
+measurements, hard-coded with every other default in
+[`apps/layercraft/src/defaults.rs`](../../apps/layercraft/src/defaults.rs); and here its own
+G-code, `start.gcode`, `layer-change.gcode`, `filament-change.gcode` and `end.gcode`, and how its
+nozzle was measured. This page says where they come from.
 
 ## Settings
 
 - They began, on 2026-11-18, as the values of Bambu Studio 02.08.02.61's profiles
   `Bambu Lab X2D 0.4 nozzle`, `0.20mm Standard @BBL X2D`, `0.12mm High Quality @BBL X2D`,
   `Bambu PLA Basic @BBL X2D 0.4 nozzle` and `Bambu PETG Translucent @BBL X2D 0.4 nozzle`, for
-  the left, direct-drive nozzle (`Direct Drive Standard`). They are the owner's since: this
-  folder's history is theirs.
-- They keep the profiles' names and conventions: a percentage is of the nozzle's diameter or of
-  the default acceleration, a width or an acceleration of 0 stands for the default, and a
-  material's `nil` leaves the printer's value.
-- `bambu-studio.json` names the profiles of an installed Bambu Studio that still stand behind
-  the printer, each quality and each material. They bring the rest of what the printer's files
-  declare, and these settings replace theirs for the nozzle printed with; none of their G-code
-  is used.
-- A new quality or material is a file here and a line in `apps/layercraft/src/printers.rs`.
+  the left, direct-drive nozzle (`Direct Drive Standard`), read as data, as they print: a
+  percentage turned into its length or acceleration, a default into its value. They are the
+  owner's since: the file's history is theirs. Since 0.22.0 no slicer is read at all.
+- A new quality or material is an entry in `defaults.rs`, written out whole or as another's
+  with what differs (`FINE` is `STANDARD` with finer layers).
 
 ## The start
 

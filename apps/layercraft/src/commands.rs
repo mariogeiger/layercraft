@@ -1,14 +1,12 @@
 //! The command line: arguments and what each command does.
 
+use crate::defaults::{self, COLOUR, X2D};
 use crate::deliver::{Delivery, Setup, deliver};
 use crate::pipeline::{self, Stage, stage_file};
 use crate::settings;
 use clap::{Parser, Subcommand};
 use layercraft_path::SparsePattern;
 use std::path::{Path, PathBuf};
-
-/// The colour of a filament the design gives none.
-const GREY: &str = "#808080";
 
 /// Colours given on the command line, comma separated, each `#RRGGBB`.
 fn colours(text: &str) -> Result<Vec<String>, String> {
@@ -40,11 +38,11 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
         /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = "0.20")]
+        #[arg(long, default_value = defaults::QUALITY)]
         quality: String,
         /// The filaments, one per material, comma separated, the last standing for those past
         /// them: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = "pla")]
+        #[arg(long, default_value = defaults::MATERIAL)]
         material: String,
         /// The filament the supports' interface is laid in, numbered from 1 as the materials
         /// are (default: the column's): one that does not weld to the part, as PLA under PETG,
@@ -92,13 +90,13 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
         /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = "0.20")]
+        #[arg(long, default_value = defaults::QUALITY)]
         quality: String,
         /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = "pla")]
+        #[arg(long, default_value = defaults::MATERIAL)]
         material: String,
         /// The filament's colour for the printer's screen.
-        #[arg(long, default_value = "#808080")]
+        #[arg(long, default_value = COLOUR)]
         colour: String,
         /// The plate type, such as "Textured PEI Plate" (default: the printer's).
         #[arg(long)]
@@ -122,10 +120,10 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
         /// The print quality: 0.20 or 0.12, its layer height in mm.
-        #[arg(long, default_value = "0.20")]
+        #[arg(long, default_value = defaults::QUALITY)]
         quality: String,
         /// The filament: pla (Bambu PLA Basic) or petg-tr (Bambu PETG Translucent).
-        #[arg(long, default_value = "pla")]
+        #[arg(long, default_value = defaults::MATERIAL)]
         material: String,
         /// Only layers FROM..TO (end excluded).
         #[arg(long)]
@@ -159,8 +157,8 @@ struct Choices {
     interface: Option<usize>,
 }
 
-/// The printer in `quality` and `materials` (one per material, comma separated), its settings
-/// for each filament and the tuning, as `choices` make them.
+/// The printer in `quality` and `materials` (one per material, comma separated) on the plate
+/// `bed`, its settings for each filament and the tuning, as `choices` make them.
 fn setup(
     quality: &str,
     materials: &str,
@@ -170,11 +168,14 @@ fn setup(
 ) -> Result<Setup, String> {
     let Choices { flat, infill, interface } = choices;
     let tuning = tune.map(pipeline::read_tuning).transpose()?.unwrap_or_default();
-    let mut names = materials.split(',').map(str::trim);
-    let first = names.next().unwrap_or_default();
-    let machine = crate::printers::machine(quality, first).map_err(|e| e.to_string())?;
-    let read = |machine: &layercraft_machine::Machine| -> Result<settings::Settings, String> {
-        let mut settings = settings::read(machine, bed).map_err(|e| e.to_string())?;
+    let quality = settings::quality(quality)?;
+    let plate = bed.map(settings::plate).transpose()?.unwrap_or(X2D.plate);
+    let interface = match interface {
+        Some(k) => Some(k.checked_sub(1).ok_or("the supports' interface filament is numbered from 1")?),
+        None => None,
+    };
+    let read = |name: &str| -> Result<settings::Settings, String> {
+        let mut settings = settings::read(&X2D, quality, settings::material(name.trim())?, plate)?;
         if flat {
             settings.layering.foliation = None;
         }
@@ -185,17 +186,13 @@ fn setup(
             }
             None => {}
         }
-        if let Some(k) = interface {
-            let k = k.checked_sub(1).ok_or("the supports' interface filament is numbered from 1")?;
-            settings.region.supports.interface_material = Some(k);
-        }
+        settings.region.supports.interface_material = interface;
         Ok(settings)
     };
-    let settings = read(&machine)?;
-    let more = names
-        .map(|name| read(&crate::printers::machine(quality, name).map_err(|e| e.to_string())?))
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(Setup { machine, settings, more, tuning })
+    let mut each = materials.split(',').map(read);
+    let settings = each.next().ok_or("no material given")??;
+    let more = each.collect::<Result<Vec<_>, String>>()?;
+    Ok(Setup { settings, more, tuning })
 }
 
 /// The middle of the plate's printable area.
@@ -248,10 +245,12 @@ pub fn run(cli: Cli) -> Result<(), String> {
                 .unwrap_or_else(|| "part".into());
             let colours = match colour {
                 Some(text) => colours(&text)?,
-                None if !output.materials.is_empty() => {
-                    output.materials.iter().map(|m| m.colour.clone().unwrap_or_else(|| GREY.into())).collect()
-                }
-                None => vec![GREY.into()],
+                None if !output.materials.is_empty() => output
+                    .materials
+                    .iter()
+                    .map(|m| m.colour.clone().unwrap_or_else(|| COLOUR.into()))
+                    .collect(),
+                None => vec![COLOUR.into()],
             };
             let delivery = Delivery { setup: &s, colours, object_name, gcode: gcode.as_deref(), out: &out };
             println!("{}", deliver(output.program, &delivery)?);

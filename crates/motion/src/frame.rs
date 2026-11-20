@@ -5,17 +5,17 @@
 //! layer change before each layer's first pass, a filament change before each pass of another
 //! material than the one before, and the end. The first layer's extent, the highest layer and the
 //! filaments come from the moves themselves, so a program merged from several, or edited by hand,
-//! gets the frame it needs. A change flushes `flush[from][to]` mm of filament, as the caller says.
+//! gets the frame it needs; the settings, each filament's among them, come in the scope.
 //!
 //! Between the templates the frame holds the temperatures (`Heat`): the start leaves the first
 //! filament and the bed at their first layer's, so a layer that needs another sets it on its way
 //! up (`M104`, `M140`), the nozzle following the filament loaded; and a change leaves the nozzle
-//! at whatever its cut and flush cooled it to, so the pass after it waits for its own (`M109`).
+//! at whatever its cut cooled it to, so the pass after it waits for its own (`M109`).
 
 use crate::moves::chained;
 use crate::time::{Limits, estimate};
 use crate::{Heat, Layer, MotionError, Program, Summary, Templates, disc_area};
-use layercraft_machine::{Scope, Value, expand};
+use layercraft_template::{Scope, Value, expand};
 
 /// The machine's G-code around a program's layers.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,20 +24,6 @@ pub struct Frame {
     /// One per pass, before it.
     pub layers: Vec<String>,
     pub end: String,
-}
-
-/// Item `k` of the list `key` in `scope`, or the value itself when it is no list.
-fn item(scope: &Scope, key: &str, k: usize) -> Option<Value> {
-    match scope.get(key)? {
-        Value::List(items) => items.get(k).cloned(),
-        other => Some(other.clone()),
-    }
-}
-
-/// The first of the settings `(key, item)` that holds a number: a filament's own, then the
-/// printer's; zero when none does.
-fn first_number(scope: &Scope, keys: &[(&str, usize)]) -> f64 {
-    keys.iter().find_map(|(key, k)| item(scope, key, *k).and_then(|v| v.number())).unwrap_or(0.0)
 }
 
 fn expand_text(which: &str, template: &str, scope: &Scope) -> Result<String, MotionError> {
@@ -119,15 +105,13 @@ pub fn finish(program: &Program, limits: &Limits, filament_diameter: f64) -> Sum
     }
 }
 
-/// The machine's G-code around `program`: `templates` expanded with `scope`, the machine's
-/// settings and the slicer's placeholders, and what the program itself tells, at the
-/// temperatures `heat` gives.
+/// The machine's G-code around `program`: `templates` expanded with `scope`, the settings, and
+/// what the program itself tells, at the temperatures `heat` gives.
 pub fn frame(
     program: &Program,
     templates: &Templates,
     heat: &Heat,
     scope: &Scope,
-    flush: &[Vec<f64>],
 ) -> Result<Frame, MotionError> {
     let mut scope = scope.clone();
     let num = Value::Num;
@@ -151,11 +135,6 @@ pub fn frame(
         return Err(MotionError::BadParams(
             "the machine has no filament change to print several materials".into(),
         ));
-    }
-    if materials > 1
-        && (flush.len() < materials || flush.iter().take(materials).any(|row| row.len() < materials))
-    {
-        return Err(MotionError::BadParams(format!("no flush given between the {materials} materials")));
     }
     let t = templates;
     let mut pieces = Vec::new();
@@ -197,66 +176,12 @@ pub fn frame(
         }
         if layer.material != material {
             let (from, to) = (material, layer.material);
-            let length = flush.get(from).and_then(|row| row.get(to)).copied().unwrap_or(0.0);
-            if !(length.is_finite() && length >= 0.0) {
-                return Err(MotionError::BadParams(format!(
-                    "flush of {length} mm from material {from} to {to}"
-                )));
-            }
             let (old_temp, new_temp) = (heat.nozzle_at(from, layer.index)?, heat.nozzle_at(to, layer.index)?);
             let change = [
                 ("current_filament_id", num(from as f64)),
                 ("next_filament_id", num(to as f64)),
-                ("current_nozzle_id", num(0.0)),
-                ("next_nozzle_id", num(0.0)),
-                ("current_hotend", num(-1.0)),
-                ("next_hotend", num(-1.0)),
-                ("flush_length", num(length)),
                 ("old_filament_temp", num(old_temp)),
                 ("new_filament_temp", num(new_temp)),
-                // How the old filament is pulled back when the change cuts it, and when it
-                // leaves the extruder: the filament's own setting, else the printer's.
-                (
-                    "long_retraction_when_cut",
-                    Value::Bool(
-                        first_number(
-                            &scope,
-                            &[("filament_long_retractions_when_cut", from), ("long_retractions_when_cut", 0)],
-                        ) > 0.0,
-                    ),
-                ),
-                (
-                    "retraction_distance_when_cut",
-                    num(first_number(
-                        &scope,
-                        &[
-                            ("filament_retraction_distances_when_cut", from),
-                            ("retraction_distances_when_cut", 0),
-                        ],
-                    )),
-                ),
-                (
-                    "long_retraction_when_ec",
-                    Value::Bool(
-                        first_number(
-                            &scope,
-                            &[
-                                ("filament_long_retractions_when_ec", from),
-                                ("long_retractions_when_ec", from),
-                            ],
-                        ) > 0.0,
-                    ),
-                ),
-                (
-                    "retraction_distance_when_ec",
-                    num(first_number(
-                        &scope,
-                        &[
-                            ("filament_retraction_distances_when_ec", from),
-                            ("retraction_distances_when_ec", from),
-                        ],
-                    )),
-                ),
             ];
             for (key, value) in change {
                 scope.insert(key.into(), value);

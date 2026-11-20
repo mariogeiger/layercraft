@@ -3,17 +3,14 @@
 //! own G-code around the layers, every move verified, then written as G-code and packaged with
 //! the plate's summary and thumbnails. Compiled, read or merged, every program leaves this way.
 
-use crate::settings::{Filaments, Settings, plate_code};
-use layercraft_machine::Machine;
+use crate::settings::{Filaments, Settings};
 use layercraft_motion::{MoveLimits, Program};
 use layercraft_tune::{Field, Tuning};
 use std::path::Path;
 
-/// The machine description, the stages' settings read from it for the first filament and for
-/// those after it (`more`, one per material, the last standing for those past them), and the
-/// tuning given.
+/// The stages' settings for the first filament and for those after it (`more`, one per
+/// material, the last standing for those past them), and the tuning given.
 pub struct Setup {
-    pub machine: Machine,
     pub settings: Settings,
     pub more: Vec<Settings>,
     pub tuning: Tuning,
@@ -66,8 +63,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let slowed = layercraft_motion::limit(&mut program, &limits);
     let heat = filaments.heat(materials);
     let frame =
-        layercraft_motion::frame(&program, &motion.templates, &heat, &scope, &filaments.flush(colours))
-            .map_err(|e| e.to_string())?;
+        layercraft_motion::frame(&program, &motion.templates, &heat, &scope).map_err(|e| e.to_string())?;
     let violations = layercraft_verify::verify(&program, &settings.envelope);
     if let Some(first) = violations.first() {
         for v in &violations {
@@ -84,7 +80,7 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     let header = layercraft_gcode::Header {
         generator: format!("layercraft {}", env!("CARGO_PKG_VERSION")),
         filament_diameter: motion.filament_diameter,
-        filament_density: settings.filament_density,
+        filament_density: settings.material.density,
         settings: keys,
     };
     let text = layercraft_gcode::write(&program, &frame, &motion.limits, &header);
@@ -93,13 +89,13 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
     }
     let summary = layercraft_motion::finish(&program, &motion.limits, motion.filament_diameter);
     let filament_area = layercraft_motion::disc_area(motion.filament_diameter);
-    let grams_of = |k: usize, mm: f64| mm * filament_area * filaments.of(k).filament_density / 1000.0;
+    let grams_of = |k: usize, mm: f64| mm * filament_area * filaments.of(k).material.density / 1000.0;
     let grams: f64 = summary.filament_mm_by_material.iter().enumerate().map(|(k, &mm)| grams_of(k, mm)).sum();
     let settings_json: serde_json::Map<String, serde_json::Value> = scope
         .iter()
         .map(|(k, v)| {
             let json = match v {
-                layercraft_machine::Value::List(items) => {
+                layercraft_template::Value::List(items) => {
                     serde_json::Value::Array(items.iter().map(|i| i.render().into()).collect())
                 }
                 other => other.render().into(),
@@ -107,13 +103,10 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
             (k.clone(), json)
         })
         .collect();
-    if d.setup.machine.slicer_version.is_empty() {
-        return Err("the installed Bambu Studio does not say its version, which the printer checks".into());
-    }
     let plate = layercraft_package::Plate {
         gcode: text,
-        printer_model: settings.printer_model.clone(),
-        nozzle_diameter: settings.nozzle_diameter,
+        printer_model: settings.printer.model_id.to_string(),
+        nozzle_diameter: settings.printer.nozzle_diameter,
         filaments: colours
             .iter()
             .enumerate()
@@ -121,21 +114,21 @@ pub fn deliver(mut program: Program, d: &Delivery) -> Result<String, String> {
                 let mm = summary.filament_mm_by_material.get(k).copied().unwrap_or(0.0);
                 let own = filaments.of(k);
                 layercraft_package::Filament {
-                    kind: own.filament_kind.clone(),
+                    kind: own.material.kind.to_string(),
                     colour: colour.clone(),
-                    code: own.filament_code.clone(),
+                    code: own.material.code.to_string(),
                     used_m: mm / 1000.0,
                     used_g: grams_of(k, mm),
                 }
             })
             .collect(),
         seconds: summary.motion_seconds,
-        bed_type: plate_code(&settings.bed_type).to_string(),
+        bed_type: settings.plate.code().to_string(),
         settings_json: serde_json::Value::Object(settings_json).to_string(),
         thumbnail: layercraft_view::thumbnail(&program, 512),
         small_thumbnail: layercraft_view::thumbnail(&program, 128),
         generator: header.generator.clone(),
-        client_version: d.setup.machine.slicer_version.clone(),
+        client_version: settings.printer.slicer_version.to_string(),
         object_name: d.object_name.clone(),
         layers: summary.layers,
         layer_height: settings.layering.layer_height,

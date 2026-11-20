@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 layercraft-geom = { path = "../geom" }
-layercraft-machine = { path = "../machine" }
+layercraft-template = { path = "../template" }
 layercraft-path = { path = "../path" }
 layercraft-tune = { path = "../tune" }
 serde.workspace = true

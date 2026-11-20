@@ -1,4 +1,4 @@
-//! The template language and the reading of per-variant settings.
+//! The template language: variables, expressions, branches and comments.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use super::*;
@@ -65,46 +65,4 @@ fn missing_or_broken_input_is_an_error() {
     assert!(expand("{1 / 0}", &s).is_err());
     assert!(expand(&format!("{{{}}}", "(".repeat(500)), &s).is_err());
     assert!(expand(&format!("{{{}1}}", "!".repeat(5000)), &s).is_err());
-}
-
-#[test]
-fn settings_follow_the_variant() {
-    let machine = Machine {
-        slicer_version: String::new(),
-        variant: "Bowden Standard".into(),
-        machine: [
-            (
-                "printer_extruder_variant".to_string(),
-                Value::List(vec![
-                    Value::Str("Direct Drive Standard".into()),
-                    Value::Str("Bowden Standard".into()),
-                ]),
-            ),
-            ("printer_extruder_id".to_string(), list(&[1.0, 2.0])),
-            (
-                "extruder_type".to_string(),
-                Value::List(vec![Value::Str("DD".into()), Value::Str("B".into()), Value::Str("C".into())]),
-            ),
-            ("retraction_length".to_string(), list(&[0.8, 2.0])),
-            ("nozzle_diameter".to_string(), list(&[0.4, 0.6, 0.8])),
-        ]
-        .into_iter()
-        .collect(),
-        process: BTreeMap::new(),
-        filament: [("density".to_string(), Value::Str("15%".into()))].into_iter().collect(),
-    };
-    assert_eq!(machine.number(Kind::Machine, "retraction_length").unwrap(), 2.0);
-    assert_eq!(machine.number(Kind::Machine, "nozzle_diameter").unwrap(), 0.6);
-    assert_eq!(machine.number(Kind::Filament, "density").unwrap(), 15.0);
-    assert!(machine.number(Kind::Process, "absent").is_err());
-    // A value given for the variant lands where it is read; the other variants keep theirs, a
-    // list given replaces the whole, and a new setting is added.
-    let mut machine = machine;
-    machine.set(Kind::Machine, "retraction_length", Value::Num(1.5));
-    assert_eq!(machine.get_all(Kind::Machine, "retraction_length").unwrap(), list(&[0.8, 1.5]));
-    assert_eq!(machine.number(Kind::Machine, "retraction_length").unwrap(), 1.5);
-    machine.set(Kind::Machine, "nozzle_diameter", list(&[0.2]));
-    assert_eq!(machine.get_all(Kind::Machine, "nozzle_diameter").unwrap(), list(&[0.2]));
-    machine.set(Kind::Process, "layer_height", Value::Num(0.12));
-    assert_eq!(machine.number(Kind::Process, "layer_height").unwrap(), 0.12);
 }

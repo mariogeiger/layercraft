@@ -86,8 +86,8 @@ fn line(len: f64) -> Paths {
     }
 }
 
-fn scope() -> layercraft_machine::Scope {
-    [("who".to_string(), layercraft_machine::Value::Str("me".into()))].into_iter().collect()
+fn scope() -> layercraft_template::Scope {
+    [("who".to_string(), layercraft_template::Value::Str("me".into()))].into_iter().collect()
 }
 
 /// One material held at 220 °C on a 60 °C bed, every layer alike: the frame sets nothing.
@@ -145,7 +145,7 @@ fn filament_follows_the_bead_volume() {
     assert!((summary.filament_mm - expected).abs() < 1e-12);
     // The plastic pushed: the flow ratio's share of the bead's volume.
     assert!((summary.volume_per_layer[0] - 0.98 * area * 10.0).abs() < 1e-12);
-    let frame = frame(&program, &p.templates, &steady(), &scope(), &[]).unwrap();
+    let frame = frame(&program, &p.templates, &steady(), &scope()).unwrap();
     assert!(frame.start.starts_with("; start me\n"), "{}", frame.start);
     assert_eq!(frame.layers.len(), 2);
 }
@@ -224,7 +224,7 @@ fn missing_template_variables_are_named() {
     let mut p = params();
     p.templates.end = "M140 S[bed]".into();
     let program = compiled(&line(1.0), &p);
-    let err = frame(&program, &p.templates, &steady(), &scope(), &[]).unwrap_err().to_string();
+    let err = frame(&program, &p.templates, &steady(), &scope()).unwrap_err().to_string();
     assert!(err.contains("bed"), "{err}");
 }
 
@@ -787,7 +787,7 @@ fn passes_of_other_materials_change_the_filament_between_them() {
     let p = params();
     let templates = Templates {
         layer_change: "; layer [layer_num]\n".into(),
-        change_filament: "; change [current_filament_id] to [next_filament_id], [flush_length] mm, [old_filament_temp] to [new_filament_temp]\n".into(),
+        change_filament: "; change [current_filament_id] to [next_filament_id], [old_filament_temp] to [new_filament_temp]\n".into(),
         ..Templates::default()
     };
     let bead = |x: f64| Move {
@@ -809,10 +809,9 @@ fn passes_of_other_materials_change_the_filament_between_them() {
         carrier: Default::default(),
         layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0), pass(1, 1, 3.0), pass(2, 1, 4.0)],
     };
-    let flush = vec![vec![0.0, 120.0], vec![90.0, 0.0]];
     // Each filament a first layer hotter than the rest, the bed cooler after the first layer.
     let heat = Heat { nozzle: vec![[250.0, 245.0], [240.0, 235.0]], bed: [70.0, 65.0] };
-    let f = frame(&program, &templates, &heat, &scope(), &flush).unwrap();
+    let f = frame(&program, &templates, &heat, &scope()).unwrap();
     // The start leaves the first layer's temperatures; the second layer sets the others for the
     // filament loaded; after a change the nozzle waits for the new filament as hot as on its
     // first layer, for the pass laid on plastic the change left to cool, then on the next layer
@@ -822,31 +821,27 @@ fn passes_of_other_materials_change_the_filament_between_them() {
         [
             "; layer 0\n",
             "; layer 1\nM140 S65 ; the bed for this layer\nM104 S245 ; the nozzle for this layer\n",
-            "; change 0 to 1, 120 mm, 245 to 235\nM109 S240 ; wait for the new filament, as hot as on the first layer\n",
+            "; change 0 to 1, 245 to 235\nM109 S240 ; wait for the new filament, as hot as on the first layer\n",
             "; layer 2\nM104 S235 ; the nozzle for this layer\n"
         ]
     );
     // A program that keeps its temperatures sets none.
     let one = Program { carrier: Default::default(), layers: vec![pass(0, 0, 1.0), pass(1, 0, 2.0)] };
     let still = Heat { nozzle: vec![[220.0, 220.0]], bed: [60.0, 60.0] };
-    assert_eq!(
-        frame(&one, &templates, &still, &scope(), &flush).unwrap().layers,
-        ["; layer 0\n", "; layer 1\n"]
-    );
+    assert_eq!(frame(&one, &templates, &still, &scope()).unwrap().layers, ["; layer 0\n", "; layer 1\n"]);
     // The machine's end sees the filament last loaded.
     let end = Templates { end: "; end [current_filament_id]\n".into(), ..templates.clone() };
-    assert!(frame(&program, &end, &heat, &scope(), &flush).unwrap().end.contains("; end 1"));
-    // Without a change in the machine's templates, or without a flush for the pair, no frame.
+    assert!(frame(&program, &end, &heat, &scope()).unwrap().end.contains("; end 1"));
+    // Without a change in the machine's templates, no frame.
     let bare = Templates { change_filament: String::new(), ..templates.clone() };
-    assert!(frame(&program, &bare, &heat, &scope(), &flush).is_err());
-    assert!(frame(&program, &templates, &heat, &scope(), &[]).is_err());
+    assert!(frame(&program, &bare, &heat, &scope()).is_err());
     // Nor without a temperature for each material, or with one no printer can be asked for.
-    assert!(frame(&program, &templates, &still, &scope(), &flush).is_err());
+    assert!(frame(&program, &templates, &still, &scope()).is_err());
     for bad in [f64::NAN, f64::INFINITY, 0.0, -10.0] {
         let hostile = Heat { nozzle: vec![[250.0, 245.0], [240.0, bad]], bed: [70.0, 65.0] };
-        assert!(frame(&program, &templates, &hostile, &scope(), &flush).is_err(), "{bad}");
+        assert!(frame(&program, &templates, &hostile, &scope()).is_err(), "{bad}");
         let hostile = Heat { bed: [70.0, bad], ..heat.clone() };
-        assert!(frame(&program, &templates, &hostile, &scope(), &flush).is_err(), "{bad}");
+        assert!(frame(&program, &templates, &hostile, &scope()).is_err(), "{bad}");
     }
     // Layers are counted once, filament by material, the first layer over its passes.
     let s = finish(&program, &p.limits, p.filament_diameter);

@@ -1,4 +1,4 @@
-//! Values of settings and template variables: numbers, strings, booleans and lists.
+//! Values of template variables: numbers, strings, booleans and lists.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,25 +12,6 @@ pub enum Value {
 }
 
 impl Value {
-    /// A setting as the printer's profiles write it: a number when it reads as one.
-    pub fn from_setting(text: &str) -> Value {
-        match text.trim().parse::<f64>() {
-            Ok(v) if v.is_finite() => Value::Num(v),
-            _ => Value::Str(text.to_string()),
-        }
-    }
-
-    /// A setting from a profile's JSON: a string, or a list of strings.
-    pub fn from_json(json: &serde_json::Value) -> Value {
-        match json {
-            serde_json::Value::String(s) => Value::from_setting(s),
-            serde_json::Value::Array(items) => Value::List(items.iter().map(Value::from_json).collect()),
-            serde_json::Value::Bool(b) => Value::Bool(*b),
-            serde_json::Value::Number(n) => n.as_f64().map(Value::Num).unwrap_or(Value::Num(0.0)),
-            other => Value::Str(other.to_string()),
-        }
-    }
-
     pub fn truthy(&self) -> bool {
         match self {
             Value::Bool(b) => *b,

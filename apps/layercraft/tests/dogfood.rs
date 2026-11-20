@@ -1,27 +1,21 @@
-//! Compiled end to end with the X2D's settings, which still stand in an installed Bambu Studio's
-//! profiles: the owner's pottery stamp, local and private, a T whose bar stands on supports, a
-//! block whose sparse infill is rolls unless lines are asked for, and two blocks in two colours
-//! whose changes flush the least. Each test skips when what it reads is missing.
+//! Compiled end to end with the X2D's own settings: the owner's pottery stamp, local and private
+//! (skipped when absent), a T whose bar stands on supports, a block whose sparse infill is rolls
+//! unless lines are asked for, and two blocks in two colours whose changes flush nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// Whether Bambu Studio, whose profiles hold the printer's G-code templates, is installed.
-fn bambu_studio() -> bool {
-    Path::new(layercraft_machine::import::BAMBU_STUDIO_PROFILES).exists()
-}
-
 #[test]
 fn the_stamp_compiles_and_passes_verify() {
     let Some(home) = home() else { return };
     let stamp = home.join("Desktop/tampon/tampon.3mf");
-    if !stamp.exists() || !bambu_studio() {
-        eprintln!("skipped: no stamp or no Bambu Studio");
+    if !stamp.exists() {
+        eprintln!("skipped: no stamp");
         return;
     }
     let out = std::env::temp_dir().join(format!("layercraft-dogfood-{}.gcode.3mf", std::process::id()));
@@ -38,10 +32,6 @@ fn the_stamp_compiles_and_passes_verify() {
 #[test]
 fn a_cantilever_compiles_onto_supports_and_passes_verify() {
     use layercraft_mesh::{Mesh, solids::cuboid};
-    if !bambu_studio() {
-        eprintln!("skipped: no Bambu Studio");
-        return;
-    }
     // A T in the middle of the plate: a 4 mm stem 10 mm high under a 20 mm bar, 8 mm out on
     // either side, flat underneath.
     let mesh = Mesh {
@@ -85,10 +75,6 @@ fn a_cantilever_compiles_onto_supports_and_passes_verify() {
 #[test]
 fn sparse_infill_is_rolls_unless_lines_are_asked_for() {
     use layercraft_mesh::{Mesh, solids::cuboid};
-    if !bambu_studio() {
-        eprintln!("skipped: no Bambu Studio");
-        return;
-    }
     // A block 12 mm square and 4 mm high in the middle of the plate: sparse between its skins.
     let mesh =
         Mesh { bodies: vec![cuboid("block", [122.0, 122.0, 0.0], [134.0, 134.0, 4.0])], ..Mesh::default() };
@@ -115,10 +101,6 @@ fn sparse_infill_is_rolls_unless_lines_are_asked_for() {
 #[test]
 fn a_colour_change_pulls_the_old_filament_back_and_flushes_nothing() {
     use layercraft_mesh::{Material, Mesh, solids::cuboid};
-    if !bambu_studio() {
-        eprintln!("skipped: no Bambu Studio");
-        return;
-    }
     // A dark block and a light one side by side, a change on every layer: the most a flush
     // that follows the colours would ask for.
     let colour = |c: &str| Material { colour: Some(c.into()) };
