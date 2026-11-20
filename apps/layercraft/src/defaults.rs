@@ -304,7 +304,7 @@ const STANDARD: Quality = Quality {
         xy_gap: 0.35,
         interface_layers: 2,
         on_plate_only: false,
-        column_material: 0,
+        column_material: None,
         interface_material: None,
     },
     support_lines: SupportLines { width: 0.42, interface_gap: 0.5 },

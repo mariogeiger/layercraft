@@ -15,9 +15,9 @@
 //! shallower air, as an engraving a layer deep, a strand would lie on the floor and fill it.
 //! Sparse infill under `min_sparse_area` is solid; first-layer beads are wider, to grip the bed.
 //! With `one_wall_on_top`, inner walls stay only under the layer above, the top reaching the
-//! outer wall. A layer keeps the sections below and above it and its `supports`, in their
-//! material's pass; each shape is split by the parameters at its centroid (`layercraft_tune`),
-//! each material in a pass of its own, walled alone, judged against the whole layer.
+//! outer wall. A layer keeps the sections below and above it and its `supports`, each column in
+//! its filament's pass (`filaments`); each shape is split by the parameters at its centroid
+//! (`layercraft_tune`), each material in its own pass, walled alone, judged against the layer.
 
 use layercraft_geom::{
     Carrier, GeomError, Moments, Region, Shape, Warp, bead_spacing, difference, intersection, offset,
@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::ops::Range;
 use std::rc::Rc;
 
+mod filaments;
 mod supports;
 
 /// The rules that split a layer.
@@ -75,11 +76,12 @@ pub struct SupportParams {
     pub interface_layers: usize,
     /// Columns only from the plate, none standing on the part.
     pub on_plate_only: bool,
-    /// The material the columns are laid in, over their whole height, in a pass of its own.
+    /// The material every column is laid in, over its whole height; none, each its own: the one
+    /// the part prints on the most of its layers (`filaments`).
     #[serde(default)]
-    pub column_material: usize,
-    /// The material the interface is laid in, in a pass of its own, when not the columns': one
-    /// that does not weld to the part lets the column come off it.
+    pub column_material: Option<usize>,
+    /// The material the interface is laid in, when not its column's: one that does not weld to
+    /// the part lets the column come off it.
     #[serde(default)]
     pub interface_material: Option<usize>,
 }
@@ -397,8 +399,10 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         let z = tops.get(*layer).copied().unwrap_or(f64::NAN);
         return Err(RegionError::Unheld { layer: layer + 1, z, area: layercraft_geom::area(loose) });
     }
-    let column_material = base.supports.column_material;
-    let interface_material = base.supports.interface_material.unwrap_or(column_material);
+    // Each column in the filament that lays it, by what the part prints on each layer.
+    let printed: Vec<Vec<usize>> =
+        layer_parts.iter().map(|parts| parts.iter().map(|(_, m, _)| *m).collect()).collect();
+    let mut laid = filaments::by_filament(std::mem::take(&mut found.columns), &printed, &base.supports)?;
     let mut passes: Vec<RegionPass> = Vec::with_capacity(areas.len());
     let mut last_material = None;
     // The sparse infill of the layer below, all its materials, which a strand over it spans.
@@ -407,7 +411,7 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         sections.layers.iter().zip(&layer_parts).zip(&inside_parts).enumerate()
     {
         let next = areas.get(i + 1).cloned().unwrap_or_default();
-        let column = found.columns.get_mut(i).map(std::mem::take).unwrap_or_default();
+        let columns = laid.get_mut(i).map(std::mem::take).unwrap_or_default();
         let blank = RegionPass {
             index: layer.index,
             top: layer.top,
@@ -417,10 +421,8 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
             above: next.clone(),
             ..RegionPass::default()
         };
-        // The columns and their interface take a pass of their materials.
-        let body = (!column.body.is_empty()).then_some(column_material);
-        let interface = (!column.interface.is_empty()).then_some(interface_material);
-        let order = pass_order(parts, body.into_iter().chain(interface), last_material);
+        // The columns take a pass of their filaments.
+        let order = pass_order(parts, columns.iter().map(|(m, _)| *m), last_material);
         last_material = order.last().copied().or(last_material);
         let around = Around {
             next: &next,
@@ -471,12 +473,11 @@ pub fn split(sections: &Sections, field: &Field<RegionParams>) -> Result<Regions
         if own.is_empty() {
             own.push(blank);
         }
-        // The layer's columns go with their material's pass, their interface with its own.
-        if let Some(pass) = own.iter_mut().find(|pass| pass.material == interface_material) {
-            pass.support_interface = column.interface;
-        }
-        if let Some(pass) = own.iter_mut().find(|pass| pass.material == column_material) {
-            pass.supports = column.body;
+        for (material, column) in columns {
+            if let Some(pass) = own.iter_mut().find(|pass| pass.material == material) {
+                pass.supports = column.body;
+                pass.support_interface = column.interface;
+            }
         }
         sparse_below = Some(sparse);
         passes.extend(own);

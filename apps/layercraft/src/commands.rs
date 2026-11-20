@@ -40,12 +40,12 @@ enum Command {
         /// Also write the G-code as plain text.
         #[arg(long)]
         gcode: Option<PathBuf>,
-        /// The filament the supports' columns are laid in, numbered from 1 as the materials are
-        /// (default: the first).
+        /// The filament every support column is laid in, numbered from 1 as the materials are
+        /// (default: each column in the one the part prints on the most of its layers).
         #[arg(long)]
         support: Option<usize>,
         /// The filament the supports' interface is laid in, numbered from 1 as the materials
-        /// are (default: the columns'): one that does not weld to the part, as PLA under PETG,
+        /// are (default: its column's): one that does not weld to the part, as PLA under PETG,
         /// lets the supports come off it. Give it a colour and a material.
         #[arg(long)]
         support_interface: Option<usize>,
@@ -139,8 +139,8 @@ enum Infill {
 }
 
 /// How a compile is made: layers kept `flat` or not, the sparse areas filled with `infill` or
-/// with the settings' rolls, the supports' columns in the material `column` or the first, their
-/// interface in the material `interface` or the columns'. Supports are no choice: whatever
+/// with the settings' rolls, the supports' columns in the material `column` or each in its own,
+/// their interface in the material `interface` or its column's. Supports are no choice: whatever
 /// hangs stands on them.
 #[derive(Clone, Copy)]
 struct Choices {
@@ -184,9 +184,7 @@ fn setup(
             None => {}
         }
         settings.region.supports.interface_material = interface;
-        if let Some(column) = column {
-            settings.region.supports.column_material = column;
-        }
+        settings.region.supports.column_material = column;
         Ok(settings)
     };
     let mut each = materials.split(',').map(read);

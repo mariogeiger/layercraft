@@ -48,7 +48,7 @@ fn region_params() -> RegionParams {
             xy_gap: 0.35,
             interface_layers: 2,
             on_plate_only: false,
-            column_material: 0,
+            column_material: None,
             interface_material: None,
         },
     }

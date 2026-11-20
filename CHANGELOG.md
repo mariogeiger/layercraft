@@ -2,6 +2,19 @@
 
 All notable user-visible changes to this project are documented here.
 
+## 0.25.0
+
+### Changed
+
+- Each support column is laid, over its whole height, in the filament the part prints on the most
+  of its layers, the first on a tie, so that it adds no filament change of its own; under a part
+  of one material nothing changes. In the USB-C cable support (grey and pink PETG, a PLA
+  interface) the columns, which stand on the pink, are pink: 3 filament changes during the print
+  instead of 23. `compile --support N` still lays every column in filament N, and with no
+  `--support-interface` the interface follows its column. The owner's choice: "Automatically",
+  rather than the first filament by default.
+- Stage files: a region's `supports.column_material` is optional, none choosing each column's.
+
 ## 0.24.0
 
 ### Changed

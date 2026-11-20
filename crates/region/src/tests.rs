@@ -287,17 +287,38 @@ const SUPPORTS: SupportParams = SupportParams {
     xy_gap: 0.35,
     interface_layers: 2,
     on_plate_only: false,
-    column_material: 0,
+    column_material: None,
     interface_material: None,
 };
 
 fn supported(bodies: Vec<layercraft_mesh::Body>, supports: SupportParams) -> Regions {
-    let sections = section(
-        &Mesh { bodies, ..Mesh::default() },
-        &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None },
-    )
-    .unwrap();
+    supported_in(Mesh { bodies, ..Mesh::default() }, supports)
+}
+
+fn supported_in(mesh: Mesh, supports: SupportParams) -> Regions {
+    let sections =
+        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
     split(&sections, &Field::uniform(RegionParams { supports, ..PARAMS })).unwrap()
+}
+
+/// The bodies in grey, material 0, and pink, material 1.
+fn grey_and_pink(bodies: Vec<layercraft_mesh::Body>) -> Mesh {
+    let colour = |c: &str| layercraft_mesh::Material { colour: Some(c.into()) };
+    Mesh { bodies, materials: vec![colour("#808080"), colour("#F5A0C0")] }
+}
+
+fn in_pink(body: layercraft_mesh::Body) -> layercraft_mesh::Body {
+    layercraft_mesh::Body { material: 1, ..body }
+}
+
+/// The materials of the passes of layer `index`, in order.
+fn materials_of(regions: &Regions, index: usize) -> Vec<usize> {
+    regions.passes.iter().filter(|p| p.index == index).map(|p| p.material).collect()
+}
+
+/// The passes that lay columns or their interface.
+fn holding(regions: &Regions) -> Vec<&RegionPass> {
+    regions.passes.iter().filter(|p| !p.supports.is_empty() || !p.support_interface.is_empty()).collect()
 }
 
 /// A T: a 4 × 4 mm stem 10 mm high under a 20 × 4 mm bar, 7.8 mm past the stem's side and the
@@ -362,18 +383,13 @@ fn the_interface_in_a_material_of_its_own_takes_a_pass_of_it() {
 #[test]
 fn the_columns_keep_their_filament_whatever_the_order_of_the_passes() {
     // The T in material 0 beside a post in material 1, every layer laid in both: the passes
-    // start with the material the layer before ended in, but the columns and their interface
-    // stay in material 0, the first filament, over their whole height.
+    // start with the material the layer before ended in, but the columns and their interface,
+    // whose layers print both materials alike, stay in the least, material 0, over their whole
+    // height.
     let mut bodies = tee();
-    bodies
-        .push(layercraft_mesh::Body { material: 1, ..cuboid("post", [20.0, -2.0, 0.0], [24.0, 2.0, 12.0]) });
-    let colour = |c: &str| layercraft_mesh::Material { colour: Some(c.into()) };
-    let mesh = Mesh { bodies, materials: vec![colour("#808080"), colour("#F5A0C0")] };
-    let sections =
-        section(&mesh, &Layering { first_layer_height: 0.2, layer_height: 0.2, foliation: None }).unwrap();
-    let regions = split(&sections, &Field::uniform(PARAMS.clone())).unwrap();
-    let held: Vec<&RegionPass> =
-        regions.passes.iter().filter(|p| !p.supports.is_empty() || !p.support_interface.is_empty()).collect();
+    bodies.push(in_pink(cuboid("post", [20.0, -2.0, 0.0], [24.0, 2.0, 12.0])));
+    let regions = supported_in(grey_and_pink(bodies), SUPPORTS);
+    let held = holding(&regions);
     assert_eq!(held.iter().map(|p| p.index).max(), Some(48));
     assert!(
         held.iter().all(|p| p.material == 0),
@@ -383,8 +399,62 @@ fn the_columns_keep_their_filament_whatever_the_order_of_the_passes() {
     let firsts = regions.layers().filter(|passes| passes.first().is_some_and(|p| p.material == 1)).count();
     assert!(firsts > 10, "the passes' order changes from layer to layer: {firsts}");
     // Asked for in material 1, they stay in it.
-    let regions = supported(tee(), SupportParams { column_material: 1, ..SUPPORTS });
+    let regions = supported(tee(), SupportParams { column_material: Some(1), ..SUPPORTS });
     assert!(regions.passes.iter().filter(|p| !p.supports.is_empty()).all(|p| p.material == 1));
+}
+
+#[test]
+fn columns_under_a_part_on_a_base_of_another_material_take_the_parts_filament() {
+    // The T in pink on a grey base 1 mm high under its stem: the columns stand on the plate,
+    // their body on layers 0 to 46, of which the base prints on 5 and the T on the 42 above.
+    // They are pink, over their whole height: above the base, every layer is one pass, and
+    // only the base's layers change filament.
+    let bodies = vec![
+        cuboid("base", [-2.0, -2.0, 0.0], [2.0, 2.0, 1.0]),
+        in_pink(cuboid("stem", [-2.0, -2.0, 1.0], [2.0, 2.0, 10.0])),
+        in_pink(cuboid("bar", [-10.0, -2.0, 10.0], [10.0, 2.0, 12.0])),
+    ];
+    let regions = supported_in(grey_and_pink(bodies.clone()), SUPPORTS);
+    let held = holding(&regions);
+    assert_eq!(held.iter().map(|p| p.index).collect::<Vec<_>>(), (0..=48).collect::<Vec<_>>());
+    assert!(held.iter().all(|p| p.material == 1));
+    for index in 0..=59 {
+        let want: &[usize] = if index < 5 { &[0, 1] } else { &[1] };
+        let mut materials = materials_of(&regions, index);
+        materials.sort_unstable();
+        assert_eq!(materials, want, "layer {index}");
+    }
+    // In the first filament, as asked, they take a pass of it on every layer.
+    let regions = supported_in(grey_and_pink(bodies), SupportParams { column_material: Some(0), ..SUPPORTS });
+    assert!(holding(&regions).iter().all(|p| p.material == 0));
+    assert_eq!(materials_of(&regions, 20).len(), 2);
+}
+
+#[test]
+fn each_column_takes_the_filament_of_its_own_layers() {
+    // A grey T 12 mm high beside a pink one 22 mm high: the grey T's columns, whose layers
+    // print both, stay grey; the pink T's, whose body reaches past the grey T, are pink. On a
+    // layer they share, each is in its own filament's pass.
+    let mut bodies = tee();
+    bodies.extend([
+        in_pink(cuboid("tall stem", [38.0, -2.0, 0.0], [42.0, 2.0, 20.0])),
+        in_pink(cuboid("tall bar", [30.0, -2.0, 20.0], [50.0, 2.0, 22.0])),
+    ]);
+    let regions = supported_in(grey_and_pink(bodies), SUPPORTS);
+    let column = 2.0 * 7.65 * 4.0;
+    let at = |index: usize, material: usize| {
+        regions.passes.iter().find(|p| p.index == index && p.material == material).unwrap()
+    };
+    for (material, side) in [(0, -20.0..20.0), (1, 20.0..60.0)] {
+        let pass = at(20, material);
+        assert!(close(area(&pass.supports), column), "material {material}: {}", area(&pass.supports));
+        assert!(
+            pass.supports.iter().flatten().flatten().all(|p| side.contains(&p[0])),
+            "material {material}"
+        );
+    }
+    assert!(holding(&regions).iter().filter(|p| p.index > 48).all(|p| p.material == 1));
+    assert!(close(area(&at(90, 1).supports), column));
 }
 
 #[test]
